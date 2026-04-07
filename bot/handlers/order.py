@@ -538,6 +538,10 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
         "Система предоплаты находится в разработке.\n"
         "Мы свяжемся с вами для подтверждения записи.",
     )
+    await callback.message.answer(
+        "Главное меню:",
+        reply_markup=main_menu_kb(is_admin=_is_admin(callback.from_user.username)),
+    )
 
 
 @router.callback_query(OrderFSM.confirm, F.data == "confirm:no")
@@ -724,7 +728,6 @@ async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None
     status_map = {
         "awaiting_payment": "Ожидает оплаты",
         "accepted": "Принята",
-        "unpaid_diagnostics": "Не оплачена диагностика",
         "interrupted": "Прервана",
         "completed": "Завершена",
         "cancelled": "Отменена",

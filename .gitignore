@@ -1,0 +1,11 @@
+.env
+*.db
+__pycache__/
+.pytest_cache/
+logs/
+
+*.json
+!pyproject.toml
+credentials.json
+service_account.json
+token.json

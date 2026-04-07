@@ -304,7 +304,6 @@ def admin_filter_kb() -> InlineKeyboardMarkup:
         ("new", "Новые"),
         ("awaiting_payment", "Ожид. оплаты"),
         ("accepted", "Приняты"),
-        ("unpaid_diagnostics", "Неоплач. диагн."),
         ("interrupted", "Прерваны"),
         ("completed", "Завершены"),
         ("cancelled", "Отменены"),
@@ -327,18 +326,33 @@ def admin_orders_kb(
 ) -> InlineKeyboardMarkup:
     """Paginated list of orders."""
     _STATUS_LABELS = {
-        "new": "[new]",
-        "awaiting_payment": "[оплата]",
-        "accepted": "[прин.",
-        "unpaid_diagnostics": "[диагн.]",
-        "interrupted": "[прерван]",
-        "completed": "[заверш.]",
-        "cancelled": "[отмен.]",
+        "new": "Новая",
+        "awaiting_payment": "Ожидает",
+        "accepted": "Принята",
+        "interrupted": "Прервана",
+        "completed": "Завершена",
+        "cancelled": "Отменена",
     }
+
+    def _fmt_date(d: str | None) -> str:
+        if not d:
+            return "?"
+        parts = d.split("-")
+        return f"{parts[2]}.{parts[1]}" if len(parts) == 3 else d
+
+    def _fmt_model(o) -> str:
+        if o.model_custom_name:
+            return o.model_custom_name
+        if o.model:
+            return o.model.name
+        return "—"
+
     rows: list[list[InlineKeyboardButton]] = []
     for o in orders:
-        status_tag = _STATUS_LABELS.get(o.status, o.status)
-        label = f"#{o.id} • {o.scheduled_date or '?'} • {status_tag}"
+        status = _STATUS_LABELS.get(o.status, o.status)
+        date = _fmt_date(o.scheduled_date)
+        model = _fmt_model(o)
+        label = f"№{o.id} · {date} · {status} · {model}"
         rows.append(
             [InlineKeyboardButton(text=label, callback_data=f"adm:order:{o.id}")]
         )

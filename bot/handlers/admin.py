@@ -56,7 +56,6 @@ _STATUS_RU: dict[str, str] = {
     "new": "Новая",
     "awaiting_payment": "Ожидает оплаты",
     "accepted": "Принята",
-    "unpaid_diagnostics": "Нет оплаты (после диагностики)",
     "interrupted": "Прервана",
     "completed": "Завершена",
     "cancelled": "Отменена",
