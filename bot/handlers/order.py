@@ -26,6 +26,7 @@ from bot.ui.keyboards import (
     order_select_kb,
     payment_kb,
     service_type_kb,
+    support_kb,
     time_slots_kb,
 )
 from bot.services.metro_search import best_metro_match, top_metro_matches
@@ -284,10 +285,8 @@ async def handle_metro_text(message: types.Message, state: FSMContext) -> None:
             await my_orders_interrupt(message, state)
         elif message.text == "Техподдержка":
             await message.answer(
-                f"Свяжитесь с техподдержкой: {SUPPORT_USER}",
-                reply_markup=main_menu_kb(
-                    is_admin=_is_admin(message.from_user.username)
-                ),
+                "Техническая поддержка:",
+                reply_markup=support_kb(SUPPORT_USER),
             )
         return
 

@@ -3,6 +3,7 @@
 __pycache__/
 .pytest_cache/
 logs/
+tests/
 
 *.json
 !pyproject.toml

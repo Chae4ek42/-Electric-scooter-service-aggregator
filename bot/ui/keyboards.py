@@ -38,6 +38,21 @@ def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def support_kb(support_user: str) -> InlineKeyboardMarkup:
+    """Inline-кнопка для перехода в чат техподдержки."""
+    username = support_user.lstrip("@")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Написать в техподдержку",
+                    url=f"https://t.me/{username}",
+                )
+            ]
+        ]
+    )
+
+
 # ── Inline keyboards ─────────────────────────────────────────
 
 BACK_BTN = InlineKeyboardButton(text="Назад", callback_data="back")
@@ -57,7 +72,6 @@ def service_type_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="Ремонт", callback_data="stype:repair")],
         [InlineKeyboardButton(text="Апгрейд", callback_data="stype:upgrade")],
-        [BACK_BTN],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -301,12 +315,9 @@ def admin_main_kb() -> InlineKeyboardMarkup:
 
 def admin_filter_kb() -> InlineKeyboardMarkup:
     statuses = [
-        ("new", "Новые"),
         ("awaiting_payment", "Ожид. оплаты"),
         ("accepted", "Приняты"),
-        ("interrupted", "Прерваны"),
         ("completed", "Завершены"),
-        ("cancelled", "Отменены"),
     ]
     rows = [
         [InlineKeyboardButton(text=label, callback_data=f"adm:orders:0:status:{key}")]
@@ -335,10 +346,10 @@ def admin_orders_kb(
     }
 
     def _fmt_date(d: str | None) -> str:
+        # Формат хранения: DD.MM.YYYY — берём только DD.MM
         if not d:
             return "?"
-        parts = d.split("-")
-        return f"{parts[2]}.{parts[1]}" if len(parts) == 3 else d
+        return d[:5]
 
     def _fmt_model(o) -> str:
         if o.model_custom_name:
