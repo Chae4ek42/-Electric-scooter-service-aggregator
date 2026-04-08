@@ -81,6 +81,13 @@ def brands_kb(brands: Sequence) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text=b.name, callback_data=f"brand:{b.id}") for b in brands
     ]
     rows = _rows(btns, cols=2)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="Другой бренд (ввести)", callback_data="brand:other"
+            )
+        ]
+    )
     rows.append([BACK_BTN])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -109,6 +116,27 @@ def malfunction_type_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Механика", callback_data="malf:Механика")],
             [InlineKeyboardButton(text="Электрика", callback_data="malf:Электрика")],
+            [BACK_BTN],
+        ]
+    )
+
+
+def upgrade_category_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Гидроизоляция", callback_data="upcat:Гидроизоляция"
+                )
+            ],
+            [InlineKeyboardButton(text="Окраска", callback_data="upcat:Окраска")],
+            [InlineKeyboardButton(text="Прошивка", callback_data="upcat:Прошивка")],
+            [
+                InlineKeyboardButton(
+                    text="Изменение конструкции",
+                    callback_data="upcat:Изменение конструкции",
+                )
+            ],
             [BACK_BTN],
         ]
     )

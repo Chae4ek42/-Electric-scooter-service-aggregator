@@ -107,11 +107,7 @@ def find_nearest_metro_by_coords(
 
 @dataclass
 class RankingContext:
-    """
-    Параметры запроса пользователя.
-
-    Формируется из данных FSM-состояния перед показом результатов.
-    """
+    """Параметры запроса пользователя."""
 
     service_type: str
     """'repair' | 'upgrade' | 'complex'"""
@@ -119,12 +115,17 @@ class RankingContext:
     malfunction_category: str | None = None
     """'Механика' | 'Электрика' | None — для ремонта"""
 
+    upgrade_category: str | None = None
+    """'Гидроизоляция' | 'Окраска' | 'Прошивка' | 'Изменение конструкции' | None"""
+
     user_metro: str | None = None
     """Название ближайшей к пользователю станции метро"""
 
+    scheduled_time: str | None = None
+    """Выбранное пользователем время (HH:MM) — для фильтрации по часам работы"""
+
     user_lat: float | None = None
     user_lon: float | None = None
-    """GPS-координаты пользователя (опционально, для будущей геострategии)"""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -235,74 +236,136 @@ class GeocodingProximityStrategy:
 # ══════════════════════════════════════════════════════════════
 
 
+@dataclass
+class RankingResult:
+    """Результат ранжирования с информацией о fallback."""
+
+    matches: list[ServiceMatch]
+    time_fallback: bool = False
+    suggested_time: str | None = None
+
+
+def _svc_covers_time(svc: Service, time_str: str | None) -> bool:
+    """Проверяет, работает ли сервис в указанное время."""
+    if not time_str or not svc.open_time or not svc.close_time:
+        return True
+    try:
+        t = int(time_str.split(":")[0]) * 60 + int(time_str.split(":")[1])
+        o = int(svc.open_time.split(":")[0]) * 60 + int(svc.open_time.split(":")[1])
+        c = int(svc.close_time.split(":")[0]) * 60 + int(svc.close_time.split(":")[1])
+        return o <= t < c
+    except (ValueError, IndexError):
+        return True
+
+
+def _find_nearest_valid_time(svc: Service, original_time: str) -> str | None:
+    """Найти ближайший к original_time слот внутри часов работы сервиса."""
+    if not svc.open_time or not svc.close_time:
+        return None
+    try:
+        orig_mins = int(original_time.split(":")[0]) * 60 + int(
+            original_time.split(":")[1]
+        )
+        open_mins = int(svc.open_time.split(":")[0]) * 60 + int(
+            svc.open_time.split(":")[1]
+        )
+        close_mins = int(svc.close_time.split(":")[0]) * 60 + int(
+            svc.close_time.split(":")[1]
+        )
+        if orig_mins < open_mins:
+            best = open_mins
+        elif orig_mins >= close_mins:
+            best = close_mins - 60
+        else:
+            return None
+        if best < open_mins:
+            return None
+        return f"{best // 60:02d}:{best % 60:02d}"
+    except (ValueError, IndexError):
+        return None
+
+
 async def rank_services(
     ctx: RankingContext,
     session: AsyncSession,
     *,
     proximity: ProximityStrategy | None = None,
     limit: int = 10,
-) -> list[ServiceMatch]:
+) -> RankingResult:
     """
-    Отфильтровать и отранжировать сервисы под запрос пользователя.
+    Отфильтровать и отранжировать сервисы.
 
-    Args:
-        ctx:       Контекст запроса (тип, категория, метро и т.д.)
-        session:   Активная SQLAlchemy async session.
-        proximity: Стратегия близости. По умолчанию — MetroProximityStrategy.
-        limit:     Максимальное число результатов.
-
-    Returns:
-        Список ServiceMatch, отсортированный по убыванию скора.
+    Возвращает RankingResult с matches и информацией о time_fallback.
     """
-    # Инициализируем стратегию близости
     if proximity is None:
         proximity = MetroProximityStrategy()
     await proximity.setup(session)
 
-    # ── Запрос к БД ───────────────────────────────────────────
-    # "complex" подходит и для ремонта, и для апгрейда
-    if ctx.service_type == "repair":
-        allowed_types = ("repair", "complex")
-    elif ctx.service_type == "upgrade":
-        allowed_types = ("upgrade", "complex")
-    else:
-        allowed_types = ("repair", "upgrade", "complex")
-
-    stmt = (
-        select(Service)
-        .where(Service.service_type.in_(allowed_types))
-        .where(Service.is_available.is_(True))
-    )
-
-    # Фильтр по категории неисправности (только для ремонта)
-    if ctx.malfunction_category:
-        stmt = stmt.join(Service.category_rel).where(
-            ServiceCategory.name == ctx.malfunction_category
+    # Гидроизоляция — особый случай: ищем по has_hydroisolation
+    if ctx.upgrade_category == "Гидроизоляция":
+        stmt = (
+            select(Service)
+            .where(Service.is_available.is_(True))
+            .where(Service.has_hydroisolation.is_(True))
         )
+    else:
+        if ctx.service_type == "repair":
+            allowed_types = ("repair", "complex")
+        elif ctx.service_type == "upgrade":
+            allowed_types = ("upgrade", "complex")
+        else:
+            allowed_types = ("repair", "upgrade", "complex")
+
+        stmt = (
+            select(Service)
+            .where(Service.service_type.in_(allowed_types))
+            .where(Service.is_available.is_(True))
+        )
+
+        if ctx.malfunction_category:
+            stmt = stmt.join(Service.category_rel).where(
+                ServiceCategory.name == ctx.malfunction_category
+            )
 
     services = (await session.execute(stmt)).scalars().all()
 
     if not services:
-        logger.debug(
-            "rank_services: нет сервисов для type=%s category=%s",
-            ctx.service_type,
-            ctx.malfunction_category,
-        )
-        return []
+        return RankingResult(matches=[])
 
-    # ── Ранжирование ──────────────────────────────────────────
+    # Фильтрация по времени работы
+    time_compatible = [s for s in services if _svc_covers_time(s, ctx.scheduled_time)]
+
+    time_fallback = False
+    suggested_time: str | None = None
+
+    if time_compatible:
+        target_services = time_compatible
+    else:
+        # Все сервисы не подходят по времени — fallback
+        target_services = services
+        time_fallback = True
+        # Найти ближайшее подходящее время у лучшего сервиса
+        if ctx.scheduled_time:
+            for svc in sorted(
+                services,
+                key=lambda s: s.yandex_rating or 0,
+                reverse=True,
+            ):
+                t = _find_nearest_valid_time(svc, ctx.scheduled_time)
+                if t:
+                    suggested_time = t
+                    break
+
+    # Ранжирование
     results: list[ServiceMatch] = []
-    for svc in services:
+    for svc in target_services:
         prox = proximity.score(svc, ctx)
-
-        # Нормализуем рейтинг Я.Карт в диапазон 0..1
         if svc.yandex_rating is not None:
             rating = min(svc.yandex_rating, MAX_YANDEX_RATING) / MAX_YANDEX_RATING
         else:
-            rating = 0.5  # нейтрально при отсутствии данных
+            rating = 0.5
 
         total = WEIGHT_PROXIMITY * prox + WEIGHT_RATING * rating
-
         results.append(
             ServiceMatch(
                 service=svc,
@@ -312,5 +375,10 @@ async def rank_services(
             )
         )
 
-    results.sort(key=lambda m: m.score, reverse=True)
-    return results[:limit]
+    # Сортировка: при равном скоре — по рейтингу Яндекс Карт
+    results.sort(key=lambda m: (m.score, m.service.yandex_rating or 0), reverse=True)
+    return RankingResult(
+        matches=results[:limit],
+        time_fallback=time_fallback,
+        suggested_time=suggested_time,
+    )

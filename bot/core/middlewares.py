@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class ActionLoggerMiddleware(BaseMiddleware):
-    """Логирует все пользовательские действия в БД"""
+    """Логирует все пользовательские действия в БД и выводит подробные логи."""
 
     async def __call__(
         self,
@@ -28,12 +28,14 @@ class ActionLoggerMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         user_id: int | None = None
+        username: str = ""
         action_type = "unknown"
         payload = ""
         state_str: str | None = None
 
         if isinstance(event, Message):
             user_id = event.from_user.id if event.from_user else None
+            username = event.from_user.username or "" if event.from_user else ""
             if event.text:
                 if event.text.startswith("/"):
                     action_type = "command"
@@ -45,8 +47,15 @@ class ActionLoggerMiddleware(BaseMiddleware):
                 payload = (
                     f"lat={event.location.latitude}, lon={event.location.longitude}"
                 )
+            elif event.contact:
+                action_type = "contact"
+            elif event.photo:
+                action_type = "photo"
+            elif event.document:
+                action_type = "document"
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id if event.from_user else None
+            username = event.from_user.username or "" if event.from_user else ""
             action_type = "button_click"
             payload = (event.data or "")[:500]
 
@@ -57,6 +66,7 @@ class ActionLoggerMiddleware(BaseMiddleware):
         if fsm:
             state_str = await fsm.get_state()
 
+        start_ts = time.monotonic()
         status = "success"
         error_context = None
         try:
@@ -66,6 +76,22 @@ class ActionLoggerMiddleware(BaseMiddleware):
             error_context = traceback.format_exc()[-1000:]
             raise
         finally:
+            elapsed_ms = (time.monotonic() - start_ts) * 1000
+            log_parts = [
+                f"user={user_id}",
+                f"@{username}" if username else "",
+                f"action={action_type}",
+                f"state={state_str or 'none'}",
+                f"payload={payload[:80]}" if payload else "",
+                f"status={status}",
+                f"elapsed={elapsed_ms:.0f}ms",
+            ]
+            log_msg = " | ".join(p for p in log_parts if p)
+            if status == "error":
+                logger.error("ACTION %s", log_msg)
+            else:
+                logger.info("ACTION %s", log_msg)
+
             try:
                 async with async_session() as session:
                     session.add(
@@ -80,7 +106,7 @@ class ActionLoggerMiddleware(BaseMiddleware):
                     )
                     await session.commit()
             except Exception:
-                logger.exception("Failed to log user action")
+                logger.exception("Failed to log user action to DB")
 
         return result
 
@@ -133,7 +159,7 @@ class ThrottlingMiddleware(BaseMiddleware):
 
 
 class ErrorMiddleware(BaseMiddleware):
-    """Обрабатывает неожидаемые ошибки"""
+    """Обрабатывает неожидаемые ошибки с подробным контекстом."""
 
     async def __call__(
         self,
@@ -143,8 +169,11 @@ class ErrorMiddleware(BaseMiddleware):
     ) -> Any:
         try:
             return await handler(event, data)
-        except Exception:
-            logger.exception("Unhandled error in handler")
+        except Exception as exc:
+            user_id_ctx = ""
+            if isinstance(event, (Message, CallbackQuery)) and event.from_user:
+                user_id_ctx = f" user={event.from_user.id}"
+            logger.exception("Unhandled error%s: %s", user_id_ctx, exc)
             try:
                 user_id = None
                 if isinstance(event, Message):

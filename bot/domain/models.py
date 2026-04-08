@@ -69,6 +69,21 @@ class Service(Base):
     telegram_handle: Mapped[str | None] = mapped_column(String(200), nullable=True)
     partnership_status: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # Время работы (формат "HH:MM")
+    open_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    close_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+
+    # Гидроизоляция
+    has_hydroisolation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
+    # Диагностика
+    diagnostics_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    diagnostics_included: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
     category_rel: Mapped["ServiceCategory | None"] = relationship(
         back_populates="services", lazy="selectin"
     )
@@ -117,7 +132,10 @@ class Order(Base):
     status: Mapped[str] = mapped_column(String(30), default="awaiting_payment")
     payment_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     model_custom_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    brand_custom_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     problem_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    upgrade_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    diagnostics_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

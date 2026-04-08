@@ -4,7 +4,7 @@
 
 - **Кнопка «Назад»** — на каждом этапе (кроме главного меню) — Inline-кнопка  «Назад», откатывает FSM-состояние на предыдущее. Реализовано для всех состояний, включая `confirm → calendar_time`.
 - **Прерывание процедуры** — кнопки «Мои заявки» и «Техподдержка» сбрасывают FSM из любого состояния. Незавершённая заявка **не сохраняется** в БД.
-- **Валидация (Pydantic)** — текстовый ввод метро (`MetroTextInput`), названия модели (`ModelNameInput`) — с русскими сообщениями об ошибках.
+- **Валидация (Pydantic)** — текстовый ввод метро (`MetroTextInput`), названия модели (`ModelNameInput`), бренда (`BrandNameInput`), описания проблемы (`ProblemDescription`) — с русскими сообщениями об ошибках.
 - **Catch-all** — запросы в состояниях кнопок отвечают: «Пожалуйста, используйте кнопки».
 
 ---
@@ -15,19 +15,21 @@
 Оставить заявку
 │
 ├─ service_type: Ремонт | Апгрейд
-├─ brand: выбор бренда
+├─ brand: выбор бренда [→ brand_custom: текстовый ввод бренда]
 ├─ model: выбор модели [→ model_custom: текстовый ввод]
 ├─ malfunction_type: Механика | Электрика  (только repair)
+├─ upgrade_category: Гидроизоляция | Окраска | Прошивка | Изменение конструкции  (только upgrade)
+├─ problem_description: описание проблемы  (все ветки кроме Гидроизоляции)
 ├─ location_method: ввести метро
 ├─ metro_search: текстовый ввод станции
 ├─ metro_confirm: подтверждение
 ├─ calendar_date: выбор даты
-├─ calendar_time: выбор времени
+├─ calendar_time: выбор времени  [→ time_fallback если сервисы не работают]
 └─ confirm: подтверждение → заглушка оплаты
 ```
 
-> `specific_problem` удалён — сервис-центр подбирается неявно от пользователя.
-> `payment` удалён — pay-хендлеры state-agnostic, срабатывают всегда.
+> `specific_problem` удалён. `payment` удалён — pay-хендлеры state-agnostic.
+> Добавлены: `brand_custom`, `upgrade_category`, `problem_description`.
 
 ---
 
@@ -57,7 +59,12 @@ Callback: `stype:repair` или `stype:upgrade`. Сохраняется в FSM-�
 #### 3.1 Бренд
 **Состояние**: `brand`
 
-Inline-сетка 2×2 из брендов БД. Callback: `brand:{id}`.
+Inline-сетка 2×2 из брендов БД. Callback: `brand:{id}`. Кнопка «Другой бренд (ввести)» (`brand:other`) — переход в `brand_custom`.
+
+#### 3.1а Кастомный бренд
+**Состояние**: `brand_custom`
+
+Текстовый ввод. Pydantic-валидация: `BrandNameInput` (2–100 символов, хотя бы одна буква). После ввода бренда сразу переходит в `model_custom` (текстовый ввод модели).
 
 #### 3.2 Модель
 **Состояние**: `model`
@@ -71,19 +78,31 @@ Pydantic-валидация: `ModelNameInput` (2–50 символов, хот�
 
 ---
 
-### 4. Категория неисправности (только repair)
+### 4. Категория неисправности / апгрейда
+
+#### 4.1 Repair — категория неисправности
 **Состояние**: `malfunction_type`
 
-Callback: `malf:Механика` / `malf:Электрика`. Сохраняется как `malfunction_category`.
+Callback: `malf:Механика` / `malf:Электрика`. Сохраняется как `malfunction_category`. Переход в `problem_description`.
 
-> **Список конкретных услуг пользователю больше не показывается.**
-> После выбора категории — сразу переход к выбору метро.
+#### 4.2 Upgrade — категория апгрейда
+**Состояние**: `upgrade_category`
 
-Для **upgrade** шаг пропускается, переход сразу после модели:
+Кнопки: **Гидроизоляция** / **Окраска** / **Прошивка** / **Изменение конструкции**. Callback: `upcat:{name}`.
 
+- Гидроизоляция — пропуск `problem_description`, сразу в `location_method`
+- Окраска / Прошивка / Изменение конструкции — переход в `problem_description`
+
+#### 4.3 Описание проблемы
+**Состояние**: `problem_description`
+
+Текстовый ввод с валидацией `ProblemDescription` (3–1000 символов).
+
+Поток:
 ```
-model → location_method  (для upgrade)
-model → malfunction_type → location_method  (для repair)
+model → malfunction_type → problem_description → location_method  (для repair)
+model → upgrade_category → problem_description → location_method  (для upgrade, кроме гидроизоляции)
+model → upgrade_category → location_method  (для гидроизоляции)
 ```
 
 ---
@@ -123,17 +142,25 @@ Callback времени: `time:HH:MM`.
 
 ```python
 ctx = RankingContext(
-    service_type=data["service_type"],       # repair / upgrade
-    malfunction_category=data["malfunction_category"],  # None для upgrade
+    service_type=data["service_type"],
+    malfunction_category=data["malfunction_category"],
+    upgrade_category=data["upgrade_category"],
     user_metro=data["metro_station"],
+    scheduled_time=time_str,
 )
-matches = await rank_services(ctx, session, limit=1)
+result = await rank_services(ctx, session, limit=1)
+# result: RankingResult(matches, time_fallback, suggested_time)
 ```
 
 Принцип ранжирования:
 - Фильтр `is_available=True`
 - Скор `= 0.6 × проксимитет + 0.4 × рейтинг`
 - Близость — BFS по графу пересадок (`metro_graph.py`)
+- Сортировка по скору, при равенстве — по `yandex_rating` убыванию
+- Гидроизоляция: фильтрация по `has_hydroisolation=True` независимо от `service_type`
+- Фильтрация по времени работы сервиса (`open_time` / `close_time`)
+
+**Time fallback**: если ни один сервис не работает в выбранное время, пользователю предлагается ближайшее доступное время (кнопка «Записаться на HH:MM») или возможность выбрать другую дату.
 
 Если сервисов нет — пользователь получает сообщение и возвращается в меню.
 
@@ -146,11 +173,13 @@ matches = await rank_services(ctx, session, limit=1)
 
 ```
 Модель: Xiaomi Mi 4 Pro
-Сервис-центр: Motrax Mall
 Метро: Курская
 Дата: 08.04.2026
 Время: 13:00
+Стоимость диагностики: 500 руб.
 ```
+
+> **Сервис-центр не отображается** до внесения предоплаты.
 
 Кнопки: **«Подтвердить»** / **«Отменить»** (заявка не сохраняется).
 
@@ -186,9 +215,8 @@ matches = await rank_services(ctx, session, limit=1)
 
 | Статус DB | Отображение |
 |---|---|
-| `awaiting_payment` | Ожидает оплаты |
+| `awaiting_payment` | Ожидает оплаты (сервис-центр скрыт) |
 | `accepted` | Принята |
-| `unpaid_diagnostics` | Не оплачена диагностика |
 | `interrupted` | Прервана |
 | `completed` | Завершена |
 | `cancelled` | Отменена |

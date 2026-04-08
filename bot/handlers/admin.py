@@ -68,7 +68,12 @@ _STATUS_RU: dict[str, str] = {
 def _fmt_order(order: Order) -> str:
     """Форматирует полную карточку заявки в Markdown."""
     # Модель
-    if order.model_custom_name:
+    if order.brand_custom_name:
+        model_str = f"{order.brand_custom_name}"
+        if order.model_custom_name:
+            model_str += f" / {order.model_custom_name}"
+        model_str += " *(вручную)*"
+    elif order.model_custom_name:
         brand_name = order.model.brand.name if order.model else "—"
         model_str = f"{brand_name} / {order.model_custom_name} *(вручную)*"
     elif order.model:
@@ -76,9 +81,12 @@ def _fmt_order(order: Order) -> str:
     else:
         model_str = "—"
 
-    # Услуга
+    # Услуга — скрываем до оплаты
     svc = order.service
-    svc_str = svc.name if svc else "—"
+    if order.status == "awaiting_payment":
+        svc_str = f"_{svc.name}_ (скрыт от клиента)" if svc else "—"
+    else:
+        svc_str = svc.name if svc else "—"
     if svc and svc.category_rel:
         svc_str += f" ({svc.category_rel.name})"
 
@@ -106,10 +114,14 @@ def _fmt_order(order: Order) -> str:
         "",
         f"*Статус:* {_STATUS_RU.get(order.status, order.status)}",
     ]
+    if order.upgrade_category:
+        lines.append(f"*Категория апгрейда:* {order.upgrade_category}")
+    if order.diagnostics_price:
+        lines.append(f"*Диагностика:* {order.diagnostics_price:.0f} ₽")
     if order.payment_id:
         lines.append(f"*ID платежа:* `{order.payment_id}`")
     if order.problem_description:
-        lines.append(f"*Описание:* {order.problem_description}")
+        lines.append(f"*Описание проблемы:* {order.problem_description}")
     return "\n".join(lines)
 
 

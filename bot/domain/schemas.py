@@ -47,3 +47,19 @@ class ModelNameInput(BaseModel):
         if not any(c.isalpha() for c in v):
             raise ValueError("Пожалуйста, введите корректное название модели")
         return v
+
+
+class BrandNameInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate_brand_name(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Название бренда слишком короткое (минимум 2 символа)")
+        if len(v) > 100:
+            raise ValueError("Название бренда слишком длинное (максимум 100 символов)")
+        if not any(c.isalpha() for c in v):
+            raise ValueError("Пожалуйста, введите корректное название бренда")
+        return v

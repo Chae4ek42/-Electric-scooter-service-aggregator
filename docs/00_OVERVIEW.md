@@ -42,8 +42,9 @@ bot/
 ├── domain/              # Доменный слой (данные и состояния)
 │   ├── models.py        # SQLAlchemy ORM: Brand, Model, Service,
 │   │                #   ServiceCategory, MetroStation, User, Order, UserAction
-│   ├── states.py        # OrderFSM — 11 состояний FSM (без specific_problem/payment)
-│   └── schemas.py       # Pydantic: MetroTextInput, ModelNameInput, ProblemDescription
+│   ├── states.py        # OrderFSM — 14 состояний FSM
+│   └── schemas.py       # Pydantic: MetroTextInput, ModelNameInput, ProblemDescription,
+│                    #   BrandNameInput
 │
 ├── services/            # Бизнес-логика и интеграции
 │   ├── seed.py          # init_db() — создание таблиц + seed данных
@@ -98,6 +99,11 @@ ORM-модели. Текущий набор полей `Service`:
 | `nearest_metro` | `str?` | Ближайшая станция метро |
 | `phone` | `str?` | Телефон |
 | `telegram_handle` | `str?` | Telegram-ссылка |
+| `open_time` | `str?` | Время открытия (HH:MM) |
+| `close_time` | `str?` | Время закрытия (HH:MM) |
+| `has_hydroisolation` | `bool` | Делают ли гидроизоляцию |
+| `diagnostics_price` | `float?` | Стоимость диагностики |
+| `diagnostics_included` | `bool` | Входит ли в стоимость |
 | `partnership_status` | `str?` | Статус партнёрства |
 | `category_id` | `int?` FK | Связь с `ServiceCategory` (Механика/Электрика) |
 

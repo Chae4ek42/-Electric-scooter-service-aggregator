@@ -17,6 +17,11 @@
   Столбец «Статус»            — статус партнёрства (напр. «Заключён договор»)
   Столбец «Доступен»          — Да | Нет
   Столбец «Категория»         — Механика | Электрика | - (пусто = без категории)
+  Столбец «Открытие»         — HH:MM (время открытия)
+  Столбец «Закрытие»         — HH:MM (время закрытия)
+  Столбец «Гидроизоляция»    — Да | Нет
+  Столбец «Диагностика»       — стоимость диагностики (число)
+  Столбец «Входит в стоимость» — Да | Нет
 
   Регистр заголовков и значений не важен.
   Дополнительные (неизвестные) столбцы игнорируются.
@@ -156,6 +161,35 @@ async def sync_services_from_sheet() -> int:
             telegram_handle = _col(row, "Telegram") or None
             partnership_status = _col(row, "Статус") or None
 
+            open_time = _col(row, "Открытие") or None
+            close_time = _col(row, "Закрытие") or None
+
+            has_hydro = _col(row, "Гидроизоляция", "нет").lower() in (
+                "да",
+                "yes",
+                "1",
+                "true",
+            )
+
+            raw_diag = _col(row, "Диагностика")
+            diagnostics_price: float | None = None
+            if raw_diag:
+                try:
+                    diagnostics_price = float(raw_diag.replace(",", "."))
+                except ValueError:
+                    logger.warning(
+                        "Лист «Сервисы»: неверная стоимость диагностики «%s» у «%s»",
+                        raw_diag,
+                        name,
+                    )
+
+            diag_included = _col(row, "Входит в стоимость", "нет").lower() in (
+                "да",
+                "yes",
+                "1",
+                "true",
+            )
+
             existing = (
                 await session.execute(select(Service).where(Service.name == name))
             ).scalar_one_or_none()
@@ -172,6 +206,11 @@ async def sync_services_from_sheet() -> int:
                 existing.phone = phone
                 existing.telegram_handle = telegram_handle
                 existing.partnership_status = partnership_status
+                existing.open_time = open_time
+                existing.close_time = close_time
+                existing.has_hydroisolation = has_hydro
+                existing.diagnostics_price = diagnostics_price
+                existing.diagnostics_included = diag_included
                 count += 1
             else:
                 # Для новых записей без специализации используем тип «комплекс»
@@ -189,6 +228,11 @@ async def sync_services_from_sheet() -> int:
                         phone=phone,
                         telegram_handle=telegram_handle,
                         partnership_status=partnership_status,
+                        open_time=open_time,
+                        close_time=close_time,
+                        has_hydroisolation=has_hydro,
+                        diagnostics_price=diagnostics_price,
+                        diagnostics_included=diag_included,
                     )
                 )
                 count += 1

@@ -20,13 +20,13 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 |---|---|
 | `user_id` | Telegram ID пользователя |
 | `state` | Текущее FSM-состояние |
-| `action_type` | `command` / `text_input` / `button_click` / `location` |
+| `action_type` | `command` / `text_input` / `button_click` / `location` / `contact` / `photo` / `document` |
 | `payload` | Текст / callback_data (max 500 симв.) |
 | `status` | `success` / `error` / `flood_attempt` |
 | `error_context` | Traceback при ошибке |
 | `timestamp` | Время записи |
 
-**Реализовано:** ✅ Middleware перехватывает `Message` и `CallbackQuery`. Запись создаётся до вызова хендлера, статус обновляется после (вкл. ошибки).
+**Реализовано:** ✅ Middleware перехватывает `Message` и `CallbackQuery`. В лог выводится подробная строка: `user_id`, `@username`, `action`, `state`, `payload`, `status`, `elapsed_ms`.
 
 ---
 
