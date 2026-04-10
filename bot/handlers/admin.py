@@ -22,7 +22,16 @@ from bot.ui.keyboards import (
     admin_orders_kb,
     main_menu_kb,
 )
-from bot.domain.models import Brand, MetroStation, Model, Order, Service, User
+from bot.domain.models import (
+    Brand,
+    MetroStation,
+    Model,
+    Order,
+    Service,
+    ServiceCategory,
+    ServiceOwner,
+    User,
+)
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -65,35 +74,43 @@ _STATUS_RU: dict[str, str] = {
 # ── Helpers ───────────────────────────────────────────────────
 
 
+def _md_escape(text: str) -> str:
+    """Escape Markdown V1 special characters in user-supplied text."""
+    for ch in ("\\", "*", "_", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def _fmt_order(order: Order) -> str:
     """Форматирует полную карточку заявки в Markdown."""
+    e = _md_escape
     # Модель
     if order.brand_custom_name:
-        model_str = f"{order.brand_custom_name}"
+        model_str = f"{e(order.brand_custom_name)}"
         if order.model_custom_name:
-            model_str += f" / {order.model_custom_name}"
+            model_str += f" / {e(order.model_custom_name)}"
         model_str += " *(вручную)*"
     elif order.model_custom_name:
         brand_name = order.model.brand.name if order.model else "—"
-        model_str = f"{brand_name} / {order.model_custom_name} *(вручную)*"
+        model_str = f"{e(brand_name)} / {e(order.model_custom_name)} *(вручную)*"
     elif order.model:
-        model_str = f"{order.model.brand.name} {order.model.name}"
+        model_str = f"{e(order.model.brand.name)} {e(order.model.name)}"
     else:
         model_str = "—"
 
     # Услуга — скрываем до оплаты
     svc = order.service
     if order.status == "awaiting_payment":
-        svc_str = f"_{svc.name}_ (скрыт от клиента)" if svc else "—"
+        svc_str = f"_{e(svc.name)}_ (скрыт от клиента)" if svc else "—"
     else:
-        svc_str = svc.name if svc else "—"
+        svc_str = e(svc.name) if svc else "—"
     if svc and svc.category_rel:
-        svc_str += f" ({svc.category_rel.name})"
+        svc_str += f" ({e(svc.category_rel.name)})"
 
     # Пользователь
     u = order.user
     tg_link = (
-        f"[@{u.username}](https://t.me/{u.username})" if u.username else u.full_name
+        f"[@{u.username}](https://t.me/{u.username})" if u.username else e(u.full_name)
     )
     user_str = f"{tg_link} (ID: `{u.id}`)"
 
@@ -102,26 +119,31 @@ def _fmt_order(order: Order) -> str:
         f"*Дата создания:* {order.created_at.strftime('%d.%m.%Y %H:%M')}",
         "",
         f"*Пользователь:* {user_str}",
-        f"*Имя:* {u.full_name}",
+        f"*Имя:* {e(u.full_name)}",
         "",
         f"*Модель:* {model_str}",
         f"*Сервис:* {svc_str}",
         f"*Тип:* {svc.service_type if svc else '—'}",
         "",
-        f"*Метро:* {order.metro_station or '—'}",
+        f"*Метро:* {e(order.metro_station) if order.metro_station else '—'}",
         f"*Дата записи:* {order.scheduled_date or '—'}",
         f"*Время:* {order.scheduled_time or '—'}",
         "",
         f"*Статус:* {_STATUS_RU.get(order.status, order.status)}",
     ]
     if order.upgrade_category:
-        lines.append(f"*Категория апгрейда:* {order.upgrade_category}")
+        lines.append(f"*Категория апгрейда:* {e(order.upgrade_category)}")
     if order.diagnostics_price:
-        lines.append(f"*Диагностика:* {order.diagnostics_price:.0f} ₽")
+        incl = (
+            " (входит в стоимость)"
+            if svc and svc.diagnostics_included
+            else " (оплачивается отдельно)"
+        )
+        lines.append(f"*Диагностика:* {order.diagnostics_price:.0f} ₽{incl}")
     if order.payment_id:
         lines.append(f"*ID платежа:* `{order.payment_id}`")
     if order.problem_description:
-        lines.append(f"*Описание проблемы:* {order.problem_description}")
+        lines.append(f"*Описание проблемы:* {e(order.problem_description)}")
     return "\n".join(lines)
 
 

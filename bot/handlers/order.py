@@ -31,13 +31,27 @@ from bot.ui.keyboards import (
 from bot.services.metro_search import best_metro_match, top_metro_matches
 from bot.services.ranking import RankingContext, rank_services
 from bot.domain.models import Brand, MetroStation, Model, Order, Service, User
-from bot.domain.schemas import BrandNameInput, MetroTextInput, ModelNameInput, ProblemDescription
+from bot.domain.schemas import (
+    BrandNameInput,
+    MetroTextInput,
+    ModelNameInput,
+    ProblemDescription,
+)
 from bot.domain.states import OrderFSM
 
 logger = logging.getLogger(__name__)
 router = Router(name="order")
 
 _MENU_TEXTS = ("Оставить заявку", "Мои заявки", "Техподдержка")
+
+
+def _pydantic_msg(exc: ValidationError) -> str:
+    """Extract human-readable error message from Pydantic ValidationError."""
+    raw = exc.errors()[0]["msg"] if exc.errors() else "Некорректный ввод"
+    # Pydantic v2 prepends 'Value error, ' — strip it
+    if raw.startswith("Value error, "):
+        raw = raw[len("Value error, ") :]
+    return raw
 
 
 def _is_admin(username: str | None) -> bool:
@@ -72,11 +86,14 @@ async def _handle_menu_interrupt(message: types.Message, state: FSMContext) -> b
     elif message.text == "Мои заявки":
         await my_orders_interrupt(message, state)
     elif message.text == "Техподдержка":
-        await message.answer("Техническая поддержка:", reply_markup=support_kb(SUPPORT_USER))
+        await message.answer(
+            "Техническая поддержка:", reply_markup=support_kb(SUPPORT_USER)
+        )
     return True
 
 
 # 1. ENTRY
+
 
 @router.message(F.text == "Оставить заявку")
 async def start_order(message: types.Message, state: FSMContext) -> None:
@@ -87,6 +104,7 @@ async def start_order(message: types.Message, state: FSMContext) -> None:
 
 
 # 2. SERVICE TYPE
+
 
 @router.callback_query(OrderFSM.service_type, F.data.startswith("stype:"))
 async def pick_service_type(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -102,6 +120,7 @@ async def pick_service_type(callback: types.CallbackQuery, state: FSMContext) ->
 
 
 # 3. BRAND
+
 
 @router.callback_query(OrderFSM.brand, F.data.startswith("brand:"))
 async def pick_brand(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -119,14 +138,19 @@ async def pick_brand(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(OrderFSM.model)
     async with async_session() as session:
         models = (
-            (await session.execute(
-                select(Model).where(Model.brand_id == brand_id).order_by(Model.name)
-            )).scalars().all()
+            (
+                await session.execute(
+                    select(Model).where(Model.brand_id == brand_id).order_by(Model.name)
+                )
+            )
+            .scalars()
+            .all()
         )
     await _safe_edit_or_answer(callback, "Выберите модель:", models_kb(models))
 
 
 # 3a. BRAND CUSTOM
+
 
 @router.message(OrderFSM.brand_custom, F.text)
 async def pick_brand_custom(message: types.Message, state: FSMContext) -> None:
@@ -135,8 +159,7 @@ async def pick_brand_custom(message: types.Message, state: FSMContext) -> None:
     try:
         validated = BrandNameInput(text=message.text)
     except ValidationError as exc:
-        err_msg = exc.errors()[0]["msg"] if exc.errors() else "Некорректный ввод"
-        await message.answer(err_msg)
+        await message.answer(_pydantic_msg(exc))
         return
     logger.info("user=%s entered custom brand=%r", message.from_user.id, validated.text)
     await state.update_data(brand_id=None, brand_custom_name=validated.text)
@@ -146,6 +169,7 @@ async def pick_brand_custom(message: types.Message, state: FSMContext) -> None:
 
 
 # 4. MODEL
+
 
 @router.callback_query(OrderFSM.model, F.data.startswith("model:"))
 async def pick_model(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -165,6 +189,7 @@ async def pick_model(callback: types.CallbackQuery, state: FSMContext) -> None:
 
 # 4a. MODEL CUSTOM
 
+
 @router.message(OrderFSM.model_custom, F.text)
 async def pick_model_custom(message: types.Message, state: FSMContext) -> None:
     if await _handle_menu_interrupt(message, state):
@@ -172,8 +197,7 @@ async def pick_model_custom(message: types.Message, state: FSMContext) -> None:
     try:
         validated = ModelNameInput(text=message.text)
     except ValidationError as exc:
-        err_msg = exc.errors()[0]["msg"] if exc.errors() else "Некорректный ввод"
-        await message.answer(err_msg)
+        await message.answer(_pydantic_msg(exc))
         return
     data = await state.get_data()
     brand_id = data.get("brand_id")
@@ -187,7 +211,9 @@ async def pick_model_custom(message: types.Message, state: FSMContext) -> None:
                 )
             ).scalar_one_or_none()
         if placeholder:
-            await state.update_data(model_id=placeholder.id, model_custom_name=validated.text)
+            await state.update_data(
+                model_id=placeholder.id, model_custom_name=validated.text
+            )
         else:
             await state.update_data(model_id=None, model_custom_name=validated.text)
     else:
@@ -202,13 +228,18 @@ async def _proceed_after_model(
     data = await state.get_data()
     if data["service_type"] == "repair":
         await state.set_state(OrderFSM.malfunction_type)
-        await _safe_edit_or_answer(event, "Выберите категорию неисправности:", malfunction_type_kb())
+        await _safe_edit_or_answer(
+            event, "Выберите категорию неисправности:", malfunction_type_kb()
+        )
     else:
         await state.set_state(OrderFSM.upgrade_category)
-        await _safe_edit_or_answer(event, "Выберите категорию апгрейда:", upgrade_category_kb())
+        await _safe_edit_or_answer(
+            event, "Выберите категорию апгрейда:", upgrade_category_kb()
+        )
 
 
 # 5. MALFUNCTION TYPE (repair)
+
 
 @router.callback_query(OrderFSM.malfunction_type, F.data.startswith("malf:"))
 async def pick_malfunction(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -221,8 +252,11 @@ async def pick_malfunction(callback: types.CallbackQuery, state: FSMContext) -> 
 
 # 5a. UPGRADE CATEGORY
 
+
 @router.callback_query(OrderFSM.upgrade_category, F.data.startswith("upcat:"))
-async def pick_upgrade_category(callback: types.CallbackQuery, state: FSMContext) -> None:
+async def pick_upgrade_category(
+    callback: types.CallbackQuery, state: FSMContext
+) -> None:
     cat = callback.data.split(":")[1]
     await state.update_data(upgrade_category=cat, malfunction_category=None)
     logger.info("user=%s picked upgrade_category=%s", callback.from_user.id, cat)
@@ -240,6 +274,7 @@ async def pick_upgrade_category(callback: types.CallbackQuery, state: FSMContext
 
 # 5b. PROBLEM DESCRIPTION
 
+
 @router.message(OrderFSM.problem_description, F.text)
 async def pick_problem_description(message: types.Message, state: FSMContext) -> None:
     if await _handle_menu_interrupt(message, state):
@@ -247,10 +282,15 @@ async def pick_problem_description(message: types.Message, state: FSMContext) ->
     try:
         validated = ProblemDescription(text=message.text)
     except ValidationError as exc:
-        err_msg = exc.errors()[0]["msg"] if exc.errors() else "Некорректный ввод"
-        await message.answer(err_msg)
+        await message.answer(
+            f"{_pydantic_msg(exc)}\nПожалуйста, опишите вашу проблему подробнее."
+        )
         return
-    logger.info("user=%s entered problem description (%d chars)", message.from_user.id, len(validated.text))
+    logger.info(
+        "user=%s entered problem description (%d chars)",
+        message.from_user.id,
+        len(validated.text),
+    )
     await state.update_data(problem_description=validated.text)
     await state.set_state(OrderFSM.location_method)
     await message.answer(
@@ -261,10 +301,13 @@ async def pick_problem_description(message: types.Message, state: FSMContext) ->
 
 # 6. LOCATION / METRO
 
+
 @router.callback_query(OrderFSM.location_method, F.data == "loc:metro")
 async def choose_metro_text(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(OrderFSM.metro_search)
-    await _safe_edit_or_answer(callback, "Введите название станции метро (или его часть):")
+    await _safe_edit_or_answer(
+        callback, "Введите название станции метро (или его часть):"
+    )
 
 
 @router.message(OrderFSM.metro_search, F.text)
@@ -274,8 +317,7 @@ async def handle_metro_text(message: types.Message, state: FSMContext) -> None:
     try:
         validated = MetroTextInput(text=message.text)
     except ValidationError as e:
-        err_msg = e.errors()[0]["msg"] if e.errors() else "Некорректный ввод"
-        await message.answer(f"{err_msg}\nПопробуйте ещё раз:")
+        await message.answer(f"{_pydantic_msg(e)}\nПопробуйте ещё раз:")
         return
 
     async with async_session() as session:
@@ -290,7 +332,12 @@ async def handle_metro_text(message: types.Message, state: FSMContext) -> None:
         station = matches[0][0]
         await state.update_data(metro_station=station.name)
         await state.set_state(OrderFSM.metro_confirm)
-        logger.info("user=%s metro match: %s (score=%.2f)", message.from_user.id, station.name, matches[0][1])
+        logger.info(
+            "user=%s metro match: %s (score=%.2f)",
+            message.from_user.id,
+            station.name,
+            matches[0][1],
+        )
         await message.answer(
             f"Найдена станция: *{station.name}* ({station.line})\n\nВсё верно?",
             reply_markup=metro_confirm_kb(station.name),
@@ -299,15 +346,20 @@ async def handle_metro_text(message: types.Message, state: FSMContext) -> None:
     else:
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         from bot.ui.keyboards import BACK_BTN
+
         buttons = []
         for st, score in matches:
-            buttons.append([
-                InlineKeyboardButton(
-                    text=f"{st.name} ({st.line})",
-                    callback_data=f"metro_pick:{st.id}",
-                )
-            ])
-        buttons.append([InlineKeyboardButton(text="Ввести заново", callback_data="metro_retry")])
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"{st.name} ({st.line})",
+                        callback_data=f"metro_pick:{st.id}",
+                    )
+                ]
+            )
+        buttons.append(
+            [InlineKeyboardButton(text="Ввести заново", callback_data="metro_retry")]
+        )
         buttons.append([BACK_BTN])
         await state.set_state(OrderFSM.metro_confirm)
         await message.answer(
@@ -318,6 +370,7 @@ async def handle_metro_text(message: types.Message, state: FSMContext) -> None:
 
 # 7. METRO CONFIRM
 
+
 @router.callback_query(OrderFSM.metro_confirm, F.data == "metro_ok")
 async def metro_confirmed(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(OrderFSM.calendar_date)
@@ -325,17 +378,23 @@ async def metro_confirmed(callback: types.CallbackQuery, state: FSMContext) -> N
 
 
 @router.callback_query(OrderFSM.metro_confirm, F.data.startswith("metro_pick:"))
-async def metro_picked_from_list(callback: types.CallbackQuery, state: FSMContext) -> None:
+async def metro_picked_from_list(
+    callback: types.CallbackQuery, state: FSMContext
+) -> None:
     station_id = int(callback.data.split(":")[1])
     async with async_session() as session:
         station = (
-            await session.execute(select(MetroStation).where(MetroStation.id == station_id))
+            await session.execute(
+                select(MetroStation).where(MetroStation.id == station_id)
+            )
         ).scalar_one_or_none()
     if station is None:
         await callback.answer("Станция не найдена", show_alert=True)
         return
     await state.update_data(metro_station=station.name)
-    logger.info("user=%s picked metro=%s from list", callback.from_user.id, station.name)
+    logger.info(
+        "user=%s picked metro=%s from list", callback.from_user.id, station.name
+    )
     await state.set_state(OrderFSM.calendar_date)
     await _safe_edit_or_answer(callback, "Выберите дату:", calendar_kb())
 
@@ -343,10 +402,13 @@ async def metro_picked_from_list(callback: types.CallbackQuery, state: FSMContex
 @router.callback_query(OrderFSM.metro_confirm, F.data == "metro_retry")
 async def metro_retry(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(OrderFSM.metro_search)
-    await _safe_edit_or_answer(callback, "Введите название станции метро (или его часть):")
+    await _safe_edit_or_answer(
+        callback, "Введите название станции метро (или его часть):"
+    )
 
 
 # 8. CALENDAR -- DATE
+
 
 @router.callback_query(OrderFSM.calendar_date, F.data.startswith("date:"))
 async def pick_date(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -354,10 +416,13 @@ async def pick_date(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.update_data(scheduled_date=date_str)
     logger.info("user=%s picked date=%s", callback.from_user.id, date_str)
     await state.set_state(OrderFSM.calendar_time)
-    await _safe_edit_or_answer(callback, f"Выберите время на {date_str}:", time_slots_kb(date_str))
+    await _safe_edit_or_answer(
+        callback, f"Выберите время на {date_str}:", time_slots_kb(date_str)
+    )
 
 
 # 9. CALENDAR -- TIME -> ranking -> confirm
+
 
 @router.callback_query(OrderFSM.calendar_time, F.data.startswith("time:"))
 async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -371,6 +436,7 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
 
     service_id: int | None = None
     diagnostics_price: float | None = None
+    diagnostics_included: bool = False
     model = None
 
     async with async_session() as session:
@@ -398,16 +464,23 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
 
         if result.time_fallback and result.suggested_time:
             from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text=f"Записаться на {result.suggested_time}",
-                    callback_data=f"time:{result.suggested_time}",
-                )],
-                [InlineKeyboardButton(
-                    text="Выбрать другую дату",
-                    callback_data="back",
-                )],
-            ])
+
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"Записаться на {result.suggested_time}",
+                            callback_data=f"time:{result.suggested_time}",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="Выбрать другую дату",
+                            callback_data="back",
+                        )
+                    ],
+                ]
+            )
             await _safe_edit_or_answer(
                 callback,
                 f"К сожалению, в {time_str} подходящие сервисы не работают.\n"
@@ -420,8 +493,18 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
             best = result.matches[0]
             service_id = best.service.id
             diagnostics_price = best.service.diagnostics_price
+            diagnostics_included = best.service.diagnostics_included
 
     if service_id is None:
+        logger.warning(
+            "user=%s no services found: type=%s malf=%s upcat=%s metro=%s time=%s",
+            callback.from_user.id,
+            data.get("service_type"),
+            data.get("malfunction_category"),
+            data.get("upgrade_category"),
+            data.get("metro_station"),
+            time_str,
+        )
         await state.clear()
         await _safe_edit_or_answer(
             callback,
@@ -429,7 +512,11 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    await state.update_data(service_id=service_id, diagnostics_price=diagnostics_price)
+    await state.update_data(
+        service_id=service_id,
+        diagnostics_price=diagnostics_price,
+        diagnostics_included=diagnostics_included,
+    )
     await state.set_state(OrderFSM.confirm)
 
     custom_name = data.get("model_custom_name")
@@ -440,13 +527,20 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
         brand_name = model.brand.name if model and model.brand else ""
         model_display = f"{brand_name} {custom_name}".strip()
     elif model:
-        model_display = f"{model.brand.name} {model.name}" if model.brand else model.name
+        model_display = (
+            f"{model.brand.name} {model.name}" if model.brand else model.name
+        )
     else:
         model_display = ""
 
     price_line = ""
     if diagnostics_price:
-        price_line = f"\nСтоимость диагностики: {diagnostics_price:.0f} руб."
+        incl = (
+            " (входит в стоимость)"
+            if data.get("diagnostics_included")
+            else " (оплачивается отдельно)"
+        )
+        price_line = f"\nСтоимость диагностики: {diagnostics_price:.0f} руб.{incl}"
 
     summary = (
         "*Подтвердите заявку:*\n\n"
@@ -457,11 +551,17 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
         f"{price_line}"
     )
 
-    logger.info("user=%s confirm screen: service_id=%s diag_price=%s", callback.from_user.id, service_id, diagnostics_price)
+    logger.info(
+        "user=%s confirm screen: service_id=%s diag_price=%s",
+        callback.from_user.id,
+        service_id,
+        diagnostics_price,
+    )
     await _safe_edit_or_answer(callback, summary, confirm_kb())
 
 
 # 10. CONFIRM
+
 
 @router.callback_query(OrderFSM.confirm, F.data == "confirm:yes")
 async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -480,11 +580,15 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
             await session.flush()
 
         svc = (
-            await session.execute(select(Service).where(Service.id == data["service_id"]))
+            await session.execute(
+                select(Service).where(Service.id == data["service_id"])
+            )
         ).scalar_one_or_none()
         if not svc or not svc.is_available:
             await state.clear()
-            await _safe_edit_or_answer(callback, "Сервис-центр стал недоступен. Начните заново.")
+            await _safe_edit_or_answer(
+                callback, "Сервис-центр стал недоступен. Начните заново."
+            )
             return
 
         order = Order(
@@ -510,9 +614,19 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
     price_text = ""
     dp = data.get("diagnostics_price")
     if dp:
-        price_text = f"\n\nСтоимость диагностики: {dp:.0f} руб."
+        incl = (
+            " (входит в стоимость)"
+            if data.get("diagnostics_included")
+            else " (оплачивается отдельно)"
+        )
+        price_text = f"\n\nСтоимость диагностики: {dp:.0f} руб.{incl}"
 
-    logger.info("user=%s order #%s created (service_id=%s)", callback.from_user.id, order_id, data["service_id"])
+    logger.info(
+        "user=%s order #%s created (service_id=%s)",
+        callback.from_user.id,
+        order_id,
+        data["service_id"],
+    )
 
     await _safe_edit_or_answer(
         callback,
@@ -535,6 +649,7 @@ async def cancel_order(callback: types.CallbackQuery, state: FSMContext) -> None
 
 # 11. PAYMENT STUB
 
+
 @router.callback_query(F.data.startswith("pay:proceed:"))
 async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -556,7 +671,11 @@ async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> No
         if order and order.status not in ("cancelled", "completed"):
             order.status = "cancelled"
             await session.commit()
-            logger.info("user=%s cancelled order #%s via payment", callback.from_user.id, order_id)
+            logger.info(
+                "user=%s cancelled order #%s via payment",
+                callback.from_user.id,
+                order_id,
+            )
     await state.clear()
     await _safe_edit_or_answer(callback, f"Заявка №{order_id} отменена.")
 
@@ -567,6 +686,7 @@ async def noop_handler(callback: types.CallbackQuery) -> None:
 
 
 # UNIVERSAL BACK BUTTON
+
 
 @router.callback_query(F.data == "back")
 async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -585,14 +705,26 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
     elif current == OrderFSM.brand_custom.state:
         await state.set_state(OrderFSM.brand)
         async with async_session() as session:
-            brands = (await session.execute(select(Brand).order_by(Brand.name))).scalars().all()
-        await _safe_edit_or_answer(callback, "Выберите бренд самоката:", brands_kb(brands))
+            brands = (
+                (await session.execute(select(Brand).order_by(Brand.name)))
+                .scalars()
+                .all()
+            )
+        await _safe_edit_or_answer(
+            callback, "Выберите бренд самоката:", brands_kb(brands)
+        )
 
     elif current == OrderFSM.model.state:
         await state.set_state(OrderFSM.brand)
         async with async_session() as session:
-            brands = (await session.execute(select(Brand).order_by(Brand.name))).scalars().all()
-        await _safe_edit_or_answer(callback, "Выберите бренд самоката:", brands_kb(brands))
+            brands = (
+                (await session.execute(select(Brand).order_by(Brand.name)))
+                .scalars()
+                .all()
+            )
+        await _safe_edit_or_answer(
+            callback, "Выберите бренд самоката:", brands_kb(brands)
+        )
 
     elif current == OrderFSM.model_custom.state:
         if data.get("brand_custom_name"):
@@ -603,9 +735,15 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
             brand_id = data.get("brand_id")
             async with async_session() as session:
                 models = (
-                    (await session.execute(
-                        select(Model).where(Model.brand_id == brand_id).order_by(Model.name)
-                    )).scalars().all()
+                    (
+                        await session.execute(
+                            select(Model)
+                            .where(Model.brand_id == brand_id)
+                            .order_by(Model.name)
+                        )
+                    )
+                    .scalars()
+                    .all()
                 )
             await _safe_edit_or_answer(callback, "Выберите модель:", models_kb(models))
 
@@ -615,9 +753,15 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
             await state.set_state(OrderFSM.model)
             async with async_session() as session:
                 models = (
-                    (await session.execute(
-                        select(Model).where(Model.brand_id == brand_id).order_by(Model.name)
-                    )).scalars().all()
+                    (
+                        await session.execute(
+                            select(Model)
+                            .where(Model.brand_id == brand_id)
+                            .order_by(Model.name)
+                        )
+                    )
+                    .scalars()
+                    .all()
                 )
             await _safe_edit_or_answer(callback, "Выберите модель:", models_kb(models))
         else:
@@ -630,9 +774,15 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
             await state.set_state(OrderFSM.model)
             async with async_session() as session:
                 models = (
-                    (await session.execute(
-                        select(Model).where(Model.brand_id == brand_id).order_by(Model.name)
-                    )).scalars().all()
+                    (
+                        await session.execute(
+                            select(Model)
+                            .where(Model.brand_id == brand_id)
+                            .order_by(Model.name)
+                        )
+                    )
+                    .scalars()
+                    .all()
                 )
             await _safe_edit_or_answer(callback, "Выберите модель:", models_kb(models))
         else:
@@ -643,17 +793,23 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
         stype = data.get("service_type", "repair")
         if stype == "repair":
             await state.set_state(OrderFSM.malfunction_type)
-            await _safe_edit_or_answer(callback, "Выберите категорию неисправности:", malfunction_type_kb())
+            await _safe_edit_or_answer(
+                callback, "Выберите категорию неисправности:", malfunction_type_kb()
+            )
         else:
             await state.set_state(OrderFSM.upgrade_category)
-            await _safe_edit_or_answer(callback, "Выберите категорию апгрейда:", upgrade_category_kb())
+            await _safe_edit_or_answer(
+                callback, "Выберите категорию апгрейда:", upgrade_category_kb()
+            )
 
     elif current == OrderFSM.location_method.state:
         upcat = data.get("upgrade_category")
         stype = data.get("service_type", "repair")
         if upcat == "Гидроизоляция":
             await state.set_state(OrderFSM.upgrade_category)
-            await _safe_edit_or_answer(callback, "Выберите категорию апгрейда:", upgrade_category_kb())
+            await _safe_edit_or_answer(
+                callback, "Выберите категорию апгрейда:", upgrade_category_kb()
+            )
         elif stype == "repair":
             await state.set_state(OrderFSM.problem_description)
             await _safe_edit_or_answer(callback, "Опишите проблему:")
@@ -664,13 +820,17 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
     elif current in (OrderFSM.metro_search.state, OrderFSM.metro_confirm.state):
         await state.set_state(OrderFSM.location_method)
         await _safe_edit_or_answer(
-            callback, "Как вы хотите указать ближайшую станцию метро?", location_method_kb()
+            callback,
+            "Как вы хотите указать ближайшую станцию метро?",
+            location_method_kb(),
         )
 
     elif current == OrderFSM.calendar_date.state:
         await state.set_state(OrderFSM.location_method)
         await _safe_edit_or_answer(
-            callback, "Как вы хотите указать ближайшую станцию метро?", location_method_kb()
+            callback,
+            "Как вы хотите указать ближайшую станцию метро?",
+            location_method_kb(),
         )
 
     elif current == OrderFSM.calendar_time.state:
@@ -680,7 +840,9 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
     elif current == OrderFSM.confirm.state:
         date_str = data.get("scheduled_date", "")
         await state.set_state(OrderFSM.calendar_time)
-        await _safe_edit_or_answer(callback, f"Выберите время на {date_str}:", time_slots_kb(date_str))
+        await _safe_edit_or_answer(
+            callback, f"Выберите время на {date_str}:", time_slots_kb(date_str)
+        )
 
     else:
         await state.clear()
@@ -688,6 +850,7 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
 
 
 # MY ORDERS
+
 
 @router.message(F.text == "Мои заявки")
 async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None:
@@ -708,12 +871,16 @@ async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None
 
     async with async_session() as session:
         orders = (
-            (await session.execute(
-                select(Order)
-                .where(Order.user_id == message.from_user.id)
-                .where(Order.status != "cancelled")
-                .order_by(Order.created_at.desc())
-            )).scalars().all()
+            (
+                await session.execute(
+                    select(Order)
+                    .where(Order.user_id == message.from_user.id)
+                    .where(Order.status != "cancelled")
+                    .order_by(Order.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
         )
 
         if not orders:
@@ -732,7 +899,9 @@ async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None
             ).scalar_one_or_none()
 
             if o.brand_custom_name:
-                model_name = f"{o.brand_custom_name} {o.model_custom_name or ''}".strip()
+                model_name = (
+                    f"{o.brand_custom_name} {o.model_custom_name or ''}".strip()
+                )
             elif o.model_custom_name and model:
                 model_name = f"{model.brand.name} {o.model_custom_name}"
             elif model:
@@ -763,16 +932,21 @@ async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None
 
 # ORDERS ACTION CALLBACKS
 
+
 @router.callback_query(F.data == "orders:action:pay")
 async def orders_action_pay(callback: types.CallbackQuery) -> None:
     async with async_session() as session:
         orders = (
-            (await session.execute(
-                select(Order)
-                .where(Order.user_id == callback.from_user.id)
-                .where(Order.status == "awaiting_payment")
-                .order_by(Order.created_at.desc())
-            )).scalars().all()
+            (
+                await session.execute(
+                    select(Order)
+                    .where(Order.user_id == callback.from_user.id)
+                    .where(Order.status == "awaiting_payment")
+                    .order_by(Order.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
         )
     if not orders:
         await callback.answer("Нет заявок, ожидающих оплаты.", show_alert=True)
@@ -787,12 +961,16 @@ async def orders_action_pay(callback: types.CallbackQuery) -> None:
 async def orders_action_cancel(callback: types.CallbackQuery) -> None:
     async with async_session() as session:
         orders = (
-            (await session.execute(
-                select(Order)
-                .where(Order.user_id == callback.from_user.id)
-                .where(Order.status.in_(["awaiting_payment", "accepted"]))
-                .order_by(Order.created_at.desc())
-            )).scalars().all()
+            (
+                await session.execute(
+                    select(Order)
+                    .where(Order.user_id == callback.from_user.id)
+                    .where(Order.status.in_(["awaiting_payment", "accepted"]))
+                    .order_by(Order.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
         )
     if not orders:
         await callback.answer("Нет заявок, доступных для отмены.", show_alert=True)
@@ -838,13 +1016,16 @@ async def orders_select(callback: types.CallbackQuery) -> None:
             if order.status != "awaiting_payment":
                 await callback.answer("Эта заявка не ожидает оплаты.", show_alert=True)
                 return
-            await callback.message.answer(f"Для оплаты заявки №{order_id} свяжитесь с оператором.")
+            await callback.message.answer(
+                f"Для оплаты заявки №{order_id} свяжитесь с оператором."
+            )
             await callback.answer()
         else:
             await callback.answer("Неизвестное действие.", show_alert=True)
 
 
 # CATCH-ALL
+
 
 @router.message(OrderFSM.service_type)
 @router.message(OrderFSM.brand)
@@ -856,5 +1037,7 @@ async def orders_select(callback: types.CallbackQuery) -> None:
 @router.message(OrderFSM.calendar_time)
 @router.message(OrderFSM.confirm)
 @router.message(OrderFSM.metro_confirm)
-async def handle_unexpected_text_in_fsm(message: types.Message, state: FSMContext) -> None:
+async def handle_unexpected_text_in_fsm(
+    message: types.Message, state: FSMContext
+) -> None:
     await message.answer("Пожалуйста, используйте кнопки для навигации.")

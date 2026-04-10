@@ -2,7 +2,7 @@
 
 ## Описание
 
-ESAS — Telegram-бот для приёма заявок на ремонт и апгрейд электросамокатов. Написан на Python 3.12 с использованием aiogram 3.x (async FSM), SQLAlchemy 2.0 + aiosqlite (SQLite), Pydantic v2. Интеграция с Google Sheets через публичный CSV-экспорт без учётных данных.
+ESAS — Telegram-бот для приёма заявок на ремонт и апгрейд электросамокатов. Написан на Python 3.12 с использованием aiogram 3.x (async FSM), SQLAlchemy 2.0 + aiosqlite (SQLite), Pydantic v2, Redis (хранение FSM-состояний и throttling). Интеграция с Google Sheets через публичный CSV-экспорт без учётных данных.
 
 ---
 
@@ -42,9 +42,12 @@ bot/
 ├── domain/              # Доменный слой (данные и состояния)
 │   ├── models.py        # SQLAlchemy ORM: Brand, Model, Service,
 │   │                #   ServiceCategory, MetroStation, User, Order, UserAction
-│   ├── states.py        # OrderFSM — 14 состояний FSM
+│   ├── states.py        # OrderFSM (14), RegistrationFSM (17), PartnerProfileFSM, PartnerOrderFSM
 │   └── schemas.py       # Pydantic: MetroTextInput, ModelNameInput, ProblemDescription,
-│                    #   BrandNameInput
+│                    #   BrandNameInput, ServiceNameInput, AddressInput, PhoneInput,
+│                    #   TelegramHandleInput, WorkHoursInput, DiagnosticsPriceInput,
+│                    #   RejectReasonInput, BankAccountInput, BankNameInput, BikInput,
+│                    #   CorrAccountInput, OrgNameInput, InnInput
 │
 ├── services/            # Бизнес-логика и интеграции
 │   ├── seed.py          # init_db() — создание таблиц + seed данных
@@ -62,7 +65,7 @@ bot/
     └── admin.py         # Панель администратора (IsAdmin фильтр)
 
 tests/
-└── test_smoke.py        # 12 авто-проверок без Telegram API
+└── test_smoke.py        # 15 авто-проверок без Telegram API
 ```
 
 ---
@@ -74,12 +77,16 @@ tests/
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `BOT_TOKEN` | **обязательно** | Токен Telegram Bot API |
+| `BOT_TOKEN` | **обязательно** | Токен клиентского бота |
+| `PARTNER_BOT_TOKEN` | `""` | Токен партнёрского бота |
 | `DATABASE_URL` | `sqlite+aiosqlite:///esas.db` | URL подключения к БД |
-| `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @) |
+| `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @) |
 | `SUPPORT_USER` | `@i_jusp` | Контакт техподдержки |
-| `GOOGLE_SHEET_ID` | `""` | ID публичной Google Таблицы |
+| `GOOGLE_SHEET_ID` | `""` | ID Google Таблицы |
+| `GOOGLE_SA_PATH` | `""` | Путь к JSON-ключу Service Account |
 | `SHEETS_SYNC_INTERVAL` | `300` | Интервал синхронизации, сек |
+| `SHEETS_COLUMNS` | *(16 столбцов)* | Порядок столбцов листа «Сервисы» (через запятую) |
+| `REDIS_URL` | `redis://localhost:6379/0` | URL Redis для FSM storage и throttling |
 | `THROTTLE_RATE` | `0.2` | Мин. интервал между запросами, сек |
 | `CALENDAR_DAYS` | `14` | Дней вперёд в календаре |
 | `WORK_HOUR_START` | `8` | Начало рабочего дня (час, моск. время) |
@@ -104,20 +111,34 @@ ORM-модели. Текущий набор полей `Service`:
 | `has_hydroisolation` | `bool` | Делают ли гидроизоляцию |
 | `diagnostics_price` | `float?` | Стоимость диагностики |
 | `diagnostics_included` | `bool` | Входит ли в стоимость |
+| `upgrade_categories` | `str?` | Категории апгрейда через запятую (Окраска, Прошивка и т.д.) |
+| `working_days` | `str?` | Рабочие дни через запятую (Пн,Вт,...) |
 | `partnership_status` | `str?` | Статус партнёрства |
+| `main_brand_scooter` | `str?` | Основной бренд самокатов |
 | `category_id` | `int?` FK | Связь с `ServiceCategory` (Механика/Электрика) |
 
 `Order.model_id` — nullable (поддерживает кнопку «Другое»). `Order.model_custom_name` — свободный ввод модели.
 
 ### `bot/domain/states.py`
-`OrderFSM` — 11 состояний:
+`OrderFSM` — 14 состояний:
 
 ```
-service_type → brand → model [→ model_custom]
-  → malfunction_type (only repair)
-    → location_method → metro_search → metro_confirm
-      → calendar_date → calendar_time
-        → confirm
+service_type → brand [→ brand_custom] → model [→ model_custom]
+  → malfunction_type (only repair) / upgrade_category (only upgrade)
+    → problem_description (кроме гидроизоляции)
+      → location_method → metro_search → metro_confirm
+        → calendar_date → calendar_time
+          → confirm
+```
+
+`RegistrationFSM` — 17 состояний (партнёрский бот):
+
+```
+reg_name → reg_service_type → reg_upgrade_categories (если апгрейд)
+  → reg_hydroisolation → reg_address → reg_metro_search → reg_metro_confirm
+    → reg_phone → reg_telegram → reg_working_days → reg_hours
+      → reg_diagnostics → reg_diag_included → reg_legal_form → reg_tax_system
+        → reg_bank_details (6 полей подряд) → reg_confirm
 ```
 
 Состояния `specific_problem` и `payment` удалены из потока. Сервис-центр подбирается автоматически после выбора времени (перед экраном подтверждения). Оплата вызывается заглушкой сразу после создания заявки.
@@ -150,11 +171,14 @@ dist = metro_transfer_distance("Ленинский проспект", "Охот�
 | Адрес | `address` | |
 | Метро ближ. | `nearest_metro` | |
 | Специализация | `service_type` | Новый без типа → `complex` |
+| Основной бренд самокатов | `main_brand_scooter` | Текст |
 | Статус | `partnership_status` | |
 | Доступен | `is_available` | да/yes/1/true → `True` |
 | Категория | `category_id` | FK на ServiceCategory |
 
-**Upsert-логика:** поиск по `name`. Если запись существует — обновляется все. Новая запись без типа — создаётся с `service_type="complex"`.
+**Upsert-логика:** поиск по `name`. Если запись существует — обновляются только реально изменившиеся поля (каждое поле сравнивается с текущим значением в БД; счётчик `изменено` инкрементируется только при наличии фактических отличий). Новая запись без типа — создаётся с `service_type="complex"`.
+
+**Лог синхронизации:** `"Sheets sync: добавлено N, изменено M"` — `M` отражает число записей, в которых реально изменилось хотя бы одно поле относительно предыдущего состояния.
 
 **При ошибке сети** (таймаут, `aiohttp.ClientError`) — бот запускается с предупреждением в лог. Если таблица доступна, но 0 записей — `ValueError`.
 
@@ -181,7 +205,7 @@ dist = metro_transfer_distance("Ленинский проспект", "Охот�
 - `cancel_order` (confirm:no) — заявка **не** сохраняется в БД (отмена до создания). `payment_cancel` — уже созданная заявка переводится в `cancelled`.
 
 ### `bot/handlers/admin.py`
-Доступ по `IsAdmin` фильтру (username в `ADMIN_USERNAMES`). Позволяет просматривать и фильтровать заявки, менять статус. FSM: `AdminFSM.orders_list`, `AdminFSM.order_detail`.
+Доступ по `IsAdmin` фильтру (username в `ADMIN_USERNAMES`). Позволяет просматривать и фильтровать клиентские заявки, менять статус. FSM: `AdminFSM.orders_list`, `AdminFSM.order_detail`. Управление партнёрами (одобрение, отклонение, приостановка) вынесено в партнёрский бот (`partner_bot/handlers/admin.py`).
 
 ---
 
@@ -220,7 +244,11 @@ Middlewares применяются к `dp.message` и `dp.callback_query`:
 
 ## Описание
 
-ESAS — Telegram-бот для приёма заявок на ремонт и апгрейд электросамокатов. Написан на Python 3.12 с использованием aiogram 3.x (async FSM), SQLAlchemy 2.0 + aiosqlite (SQLite), Pydantic v2. Интеграция с Google Sheets через публичный CSV-экспорт без учётных данных.
+ESAS — два Telegram-бота для приёма заявок на ремонт и апгрейд электросамокатов:
+- **client-bot** (`bot/`) — клиентский бот для пользователей.
+- **partner-bot** (`partner_bot/`) — бот для владельцев сервисных центров (регистрация, управление заявками, профиль).
+
+Написан на Python 3.12 с использованием aiogram 3.x (async FSM), SQLAlchemy 2.0 + aiosqlite (SQLite), Pydantic v2. Интеграция с Google Sheets через Service Account (gspread + google-auth) для чтения и записи.
 
 ---
 
@@ -278,7 +306,8 @@ bot/
     └── admin.py         # Панель администратора (IsAdmin фильтр)
 
 tests/
-└── test_smoke.py        # 12 авто-проверок без Telegram API
+├── test_smoke.py        # Комплексный smoke-тест без Telegram API
+└── test_partner.py      # 83 теста: схемы, модели, состояния, клавиатуры, импорты
 ```
 
 ---
@@ -287,7 +316,7 @@ tests/
 
 ### `bot/core/config.py`
 Все настройки — из переменных окружения через `os.environ`. Нет pydantic-settings.
-Важные переменные: `BOT_TOKEN`, `ADMIN_USERNAMES` (set[str], нижний регистр без @), `GOOGLE_SHEET_ID`, `SHEETS_SYNC_INTERVAL`.
+Важные переменные: `BOT_TOKEN`, `ADMIN_USERNAMES` (set[str], нижний регистр без @), `GOOGLE_SHEET_ID`, `SHEETS_SYNC_INTERVAL`, `SHEETS_COLUMNS`.
 
 ### `bot/domain/models.py`
 ORM-модели. `Order.model_id` — nullable (поддерживает кнопку «Другое»). `Order.model_custom_name` — свободный ввод модели.
@@ -327,11 +356,15 @@ Middlewares применяются к `dp.message` и `dp.callback_query`:
 ## Google Sheets интеграция
 
 Синхронизация — каждые `SHEETS_SYNC_INTERVAL` секунд (по умолчанию 300).
-Листы: **«Сервисы»** (upsert в таблицу `services`, поля: Название, Специализация, Категория, Доступен, Адрес, Рейтинг Я.Карт, Метро ближ.) и **«Настройки»** (runtime-параметры `WORK_HOUR_START`, `WORK_HOUR_END`, `CALENDAR_DAYS`, `SLOT_STEP_MINUTES`, `SUPPORT_USER`).
+Порядок столбцов настраивается через `SHEETS_COLUMNS` в `.env`.
+Листы: **«Сервисы»** (upsert в таблицу `services`) и **«Настройки»** (runtime-параметры).
 
 Регистр заголовков и значений в таблице не важен. Неизвестные столбцы игнорируются.
+При расхождении столбцов таблицы и `SHEETS_COLUMNS` выводится предупреждение `SYNC_COLUMNS_MISMATCH`.
 
 Если `GOOGLE_SHEET_ID` не задан — синхронизация молча пропускается.
+
+Подробная схема логирования: [LOG_SCHEMA.md](LOG_SCHEMA.md).
 
 ---
 

@@ -1,33 +1,18 @@
 """
-Синхронизация данных из публичной Google Таблицы (без credentials).
+Синхронизация данных из Google Таблицы.
 
-Читает через CSV-экспорт:
+Читает через Service Account (gspread) или CSV-экспорт:
   https://docs.google.com/spreadsheets/d/{ID}/gviz/tq?tqx=out:csv&sheet={ЛИСТ}
 
-Структура таблицы
-─────────────────────────────────────────────────────
-Лист «Сервисы»
-  Столбец «Название»          — название сервис-центра
-  Столбец «Рейтинг Я.Карты»  — число с плавающей точкой, напр. 4.8
-  Столбец «Телефон»           — номер телефона
-  Столбец «Telegram»          — ссылка/хэндл Telegram
-  Столбец «Адрес»             — строка адреса
-  Столбец «Метро ближ.»       — название ближайшей станции метро
-  Столбец «Специализация»     — ремонт | апгрейд | комплекс
-  Столбец «Статус»            — статус партнёрства (напр. «Заключён договор»)
-  Столбец «Доступен»          — Да | Нет
-  Столбец «Категория»         — Механика | Электрика | - (пусто = без категории)
-  Столбец «Открытие»         — HH:MM (время открытия)
-  Столбец «Закрытие»         — HH:MM (время закрытия)
-  Столбец «Гидроизоляция»    — Да | Нет
-  Столбец «Диагностика»       — стоимость диагностики (число)
-  Столбец «Входит в стоимость» — Да | Нет
+Порядок столбцов задаётся через переменную окружения ``SHEETS_COLUMNS``
+(см. ``bot/core/config.py``).  Маппинг «заголовок → поле модели» описан
+в ``_HEADER_TO_FIELD``.  Столбцы, не указанные в ``SHEETS_COLUMNS``,
+при чтении игнорируются; при записи — не включаются в строку.
 
-  Регистр заголовков и значений не важен.
-  Дополнительные (неизвестные) столбцы игнорируются.
+Регистр заголовков и значений не важен.
 
-  Если GOOGLE_SHEET_ID задан, но синхронизация завершилась с ошибкой
-  или загрузила 0 записей — поднимается исключение и бот не запускается.
+Если GOOGLE_SHEET_ID задан, но синхронизация завершилась с ошибкой
+или загрузила 0 записей — поднимается исключение и бот не запускается.
 """
 
 from __future__ import annotations
@@ -56,6 +41,29 @@ _TYPE_MAP: dict[str, str] = {
     "комплекс": "complex",
 }
 
+# Маппинг «заголовок таблицы» → «внутренний ключ» (нижний регистр).
+# Используется в _col() для поиска значений в строке.
+_HEADER_TO_FIELD: dict[str, str] = {
+    "название": "name",
+    "рейтинг я.карты": "yandex_rating",
+    "телефон": "phone",
+    "telegram": "telegram_handle",
+    "адрес": "address",
+    "метро ближ.": "nearest_metro",
+    "специализация": "service_type",
+    "основной бренд самокатов": "main_brand_scooter",
+    "статус": "partnership_status",
+    "доступен": "is_available",
+    "категория": "category",
+    "открытие": "open_time",
+    "закрытие": "close_time",
+    "гидроизоляция": "has_hydroisolation",
+    "диагностика": "diagnostics_price",
+    "входит в стоимость": "diagnostics_included",
+    "категории апгрейда": "upgrade_categories",
+    "рабочие дни": "working_days",
+}
+
 
 def _col(row: dict[str, str], key: str, default: str = "") -> str:
     """Регистронезависимый поиск столбца по имени."""
@@ -72,7 +80,59 @@ def _is_available() -> bool:
     return bool(GOOGLE_SHEET_ID)
 
 
+def _fetch_via_sa(sheet_id: str, sheet_name: str) -> list[dict[str, Any]] | None:
+    """Try reading via Service Account. Returns None if SA not configured."""
+    from bot.core.config import GOOGLE_SA_PATH
+
+    if not GOOGLE_SA_PATH:
+        return None
+    try:
+        from pathlib import Path
+
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        sa_path = str(Path(GOOGLE_SA_PATH).resolve())
+        creds = Credentials.from_service_account_file(
+            sa_path,
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive",
+            ],
+        )
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(sheet_id)
+        ws = sh.worksheet(sheet_name)
+        # get_all_values() устойчив к дублирующимся заголовкам в таблице
+        all_values = ws.get_all_values()
+        if not all_values:
+            return []
+        headers = all_values[0]
+        # При дублях заголовков оставляем первое вхождение
+        seen: set[str] = set()
+        deduped_headers: list[str] = []
+        for h in headers:
+            if h in seen:
+                deduped_headers.append(f"_{h}_dup")
+            else:
+                deduped_headers.append(h)
+                seen.add(h)
+        rows = []
+        for row in all_values[1:]:
+            padded = row + [""] * (len(deduped_headers) - len(row))
+            rows.append(dict(zip(deduped_headers, padded)))
+        return rows
+    except Exception as exc:
+        logger.warning("SA read failed: %s: %s", type(exc).__name__, exc)
+        return None
+
+
 async def _fetch_csv(sheet_id: str, sheet_name: str) -> list[dict[str, Any]]:
+    # Try Service Account first (works with private sheets)
+    sa_data = _fetch_via_sa(sheet_id, sheet_name)
+    if sa_data is not None:
+        return sa_data
+    # Fallback: public CSV export
     url = _CSV_URL.format(sheet_id=sheet_id, sheet_name=sheet_name)
     async with aiohttp.ClientSession() as http:
         async with http.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
@@ -99,20 +159,42 @@ async def sync_services_from_sheet() -> int:
         logger.debug("Sheets sync пропущен (GOOGLE_SHEET_ID не задан)")
         return 0
 
-    from bot.core.config import GOOGLE_SHEET_ID
+    from bot.core.config import GOOGLE_SHEET_ID, SHEETS_COLUMNS
+
+    logger.info(
+        "SYNC_START | columns_configured=%d | columns=%s",
+        len(SHEETS_COLUMNS),
+        ",".join(SHEETS_COLUMNS),
+    )
 
     # Ошибка сети / HTTP — логируем с типом и пробрасываем (бот не стартует)
     try:
         rows = await _fetch_csv(GOOGLE_SHEET_ID, "Сервисы")
     except Exception as exc:
         logger.error(
-            "Sheets sync: не удалось загрузить таблицу — %s: %s",
+            "SYNC_FETCH_ERR | error_type=%s | error=%s",
             type(exc).__name__,
             exc,
         )
         raise
 
-    count = 0
+    if rows:
+        sheet_headers = {k.strip().lower() for k in rows[0].keys()}
+        configured = {c.strip().lower() for c in SHEETS_COLUMNS}
+        missing = configured - sheet_headers
+        extra = sheet_headers - configured
+        if missing:
+            logger.warning("SYNC_COLUMNS_MISMATCH | missing_in_sheet=%s", missing)
+        if extra:
+            logger.debug("SYNC_COLUMNS_EXTRA | extra_in_sheet=%s", extra)
+        logger.info(
+            "SYNC_FETCHED | rows=%d | sheet_headers=%d", len(rows), len(sheet_headers)
+        )
+
+    added = 0
+    updated = 0
+    skipped = 0  # rows with empty «Название» (skipped)
+    unchanged = 0  # rows found in DB but no fields changed
     async with async_session() as session:
         cats = (await session.execute(select(ServiceCategory))).scalars().all()
         cat_cache: dict[str, int] = {c.name: c.id for c in cats}
@@ -121,6 +203,7 @@ async def sync_services_from_sheet() -> int:
             # Читаем только ожидаемые столбцы; остальные — игнорируются
             name = _col(row, "Название")
             if not name:
+                skipped += 1
                 continue
 
             raw_type = _col(row, "Специализация").lower()
@@ -160,6 +243,7 @@ async def sync_services_from_sheet() -> int:
             phone = _col(row, "Телефон") or None
             telegram_handle = _col(row, "Telegram") or None
             partnership_status = _col(row, "Статус") or None
+            main_brand_scooter = _col(row, "Основной бренд самокатов") or None
 
             open_time = _col(row, "Открытие") or None
             close_time = _col(row, "Закрытие") or None
@@ -195,23 +279,34 @@ async def sync_services_from_sheet() -> int:
             ).scalar_one_or_none()
 
             if existing:
-                # Обновляем service_type только если тип получен из таблицы
-                if stype:
+                # Обновляем только если реально изменилось
+                changed = False
+                if stype and existing.service_type != stype:
                     existing.service_type = stype
-                existing.is_available = available
-                existing.category_id = cat_id
-                existing.address = address
-                existing.yandex_rating = yandex_rating
-                existing.nearest_metro = nearest_metro
-                existing.phone = phone
-                existing.telegram_handle = telegram_handle
-                existing.partnership_status = partnership_status
-                existing.open_time = open_time
-                existing.close_time = close_time
-                existing.has_hydroisolation = has_hydro
-                existing.diagnostics_price = diagnostics_price
-                existing.diagnostics_included = diag_included
-                count += 1
+                    changed = True
+                for attr, val in [
+                    ("is_available", available),
+                    ("category_id", cat_id),
+                    ("address", address),
+                    ("yandex_rating", yandex_rating),
+                    ("nearest_metro", nearest_metro),
+                    ("phone", phone),
+                    ("telegram_handle", telegram_handle),
+                    ("partnership_status", partnership_status),
+                    ("main_brand_scooter", main_brand_scooter),
+                    ("open_time", open_time),
+                    ("close_time", close_time),
+                    ("has_hydroisolation", has_hydro),
+                    ("diagnostics_price", diagnostics_price),
+                    ("diagnostics_included", diag_included),
+                ]:
+                    if getattr(existing, attr) != val:
+                        setattr(existing, attr, val)
+                        changed = True
+                if changed:
+                    updated += 1
+                else:
+                    unchanged += 1
             else:
                 # Для новых записей без специализации используем тип «комплекс»
                 if not stype:
@@ -228,6 +323,7 @@ async def sync_services_from_sheet() -> int:
                         phone=phone,
                         telegram_handle=telegram_handle,
                         partnership_status=partnership_status,
+                        main_brand_scooter=main_brand_scooter,
                         open_time=open_time,
                         close_time=close_time,
                         has_hydroisolation=has_hydro,
@@ -235,19 +331,26 @@ async def sync_services_from_sheet() -> int:
                         diagnostics_included=diag_included,
                     )
                 )
-                count += 1
+                added += 1
 
         await session.commit()
 
-    logger.info("Sheets sync «Сервисы»: обновлено/добавлено %d", count)
+    logger.info(
+        "SYNC_RESULT | added=%d | updated=%d | unchanged=%d | skipped=%d",
+        added,
+        updated,
+        unchanged,
+        skipped,
+    )
 
-    if rows and count == 0:
+    processed = added + updated + unchanged
+    if rows and processed == 0:
         raise ValueError(
             f"Sheets sync: таблица содержит {len(rows)} строк(и), "
             "но ни одна не загружена — проверьте столбцы «Название» и «Специализация»"
         )
 
-    return count
+    return added + updated
 
 
 async def run_full_sync() -> None:

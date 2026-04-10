@@ -10,6 +10,9 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "pydantic>=2.6.0",
     "aiohttp>=3.9.0",
+    "gspread>=6.0.0",
+    "google-auth>=2.0.0",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -27,3 +30,7 @@ asyncio_mode = "auto"
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bot*", "partner_bot*"]

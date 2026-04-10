@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, field_validator
+import re
 
 
 class MetroTextInput(BaseModel):
@@ -62,4 +63,177 @@ class BrandNameInput(BaseModel):
             raise ValueError("Название бренда слишком длинное (максимум 100 символов)")
         if not any(c.isalpha() for c in v):
             raise ValueError("Пожалуйста, введите корректное название бренда")
+        return v
+
+
+class ServiceNameInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("Минимум 3 символа")
+        if len(v) > 200:
+            raise ValueError("Максимум 200 символов")
+        if not any(c.isalpha() for c in v):
+            raise ValueError("Введите корректное название")
+        return v
+
+
+class AddressInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 10:
+            raise ValueError("Адрес слишком короткий (минимум 10 символов)")
+        if len(v) > 400:
+            raise ValueError("Адрес слишком длинный (максимум 400 символов)")
+        return v
+
+
+class PhoneInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^\+?[\d\- ]{7,20}$", v):
+            raise ValueError("Неверный формат телефона")
+        return v
+
+
+class TelegramHandleInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip().lstrip("@")
+        if not re.match(r"^[a-zA-Z0-9_]{5,32}$", v):
+            raise ValueError("Неверный формат Telegram-хэндла")
+        return v
+
+
+class WorkHoursInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        m = re.match(r"^(\d{2}:\d{2})\s*[-\u2013]\s*(\d{2}:\d{2})$", v)
+        if not m:
+            raise ValueError("Формат: HH:MM-HH:MM (например 09:00-21:00)")
+        return v
+
+
+class DiagnosticsPriceInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        try:
+            val = int(v)
+        except ValueError:
+            raise ValueError("Введите целое число (стоимость в рублях)")
+        if val < 0:
+            raise ValueError("Стоимость не может быть отрицательной")
+        return v
+
+
+class RejectReasonInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("Причина слишком короткая (минимум 3 символа)")
+        if len(v) > 500:
+            raise ValueError("Причина слишком длинная (максимум 500 символов)")
+        return v
+
+
+class BankAccountInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^\d{20}$", v):
+            raise ValueError("Расчётный счёт должен содержать ровно 20 цифр")
+        return v
+
+
+class BankNameInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("Минимум 3 символа")
+        if len(v) > 200:
+            raise ValueError("Максимум 200 символов")
+        return v
+
+
+class BikInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^\d{9}$", v):
+            raise ValueError("БИК должен содержать ровно 9 цифр")
+        return v
+
+
+class CorrAccountInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^\d{20}$", v):
+            raise ValueError("Корреспондентский счёт должен содержать ровно 20 цифр")
+        return v
+
+
+class OrgNameInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("Минимум 3 символа")
+        if len(v) > 300:
+            raise ValueError("Максимум 300 символов")
+        return v
+
+
+class InnInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r"^\d{10}(\d{2})?$", v):
+            raise ValueError("ИНН должен содержать 10 или 12 цифр")
         return v

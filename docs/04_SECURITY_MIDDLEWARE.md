@@ -24,9 +24,13 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 | `payload` | Текст / callback_data (max 500 симв.) |
 | `status` | `success` / `error` / `flood_attempt` |
 | `error_context` | Traceback при ошибке |
+| `bot_response` | Текст первого ответа бота (max 500 симв.) |
+| `bot_response_type` | `text` или `inline` (тип клавиатуры в ответе) |
 | `timestamp` | Время записи |
 
-**Реализовано:** ✅ Middleware перехватывает `Message` и `CallbackQuery`. В лог выводится подробная строка: `user_id`, `@username`, `action`, `state`, `payload`, `status`, `elapsed_ms`.
+**Перехват ответов бота:** `_ResponseCapture` временно оборачивает `Bot.send_message` и `Bot.edit_message_text` через `unittest.mock.patch.object`. Обёртки устанавливаются перед вызовом хендлера и снимаются в `finally`.
+
+**Реализовано:** ✅ Middleware перехватывает `Message` и `CallbackQuery`. В лог выводится подробная строка: `user_id`, `@username`, `action`, `state`, `payload`, `status`, `elapsed_ms`, `response_type`.
 
 ---
 
@@ -36,12 +40,12 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 
 **Реализация:**
 
-- У каждого пользователя хранится время последнего запроса в `_last_call: dict[int, float]`.
+- Время последнего запроса каждого пользователя хранится в **Redis** (ключ `throttle:{user_id}`, TTL = 1 с).
 - Минимальный интервал: `THROTTLE_RATE = 0.2` сек.
+- При перезапуске бота throttle-данные сохраняются.
 - При нарушении:
   1. Запрос игнорируется.
-  2. Журнал — `logger.debug("throttle user_id=...")`.
-  3. В `user_actions` пишется `status="flood_attempt"`.
+  2. В `user_actions` пишется `status="flood_attempt"`.
 
 **Реализовано:** ✅
 
@@ -63,42 +67,10 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 
 ## Безопасность данных
 
+- **Markdown-экранирование**: все пользовательские данные (имя, адрес, банковские реквизиты и т.д.) в форматированных Markdown-сообщениях экранируются через `_md_escape()` (символы `\`, `*`, `_`, `` ` ``, `[`). Это предотвращает `TelegramBadRequest: can't parse entities`.
 - **Админ-доступ**: проверяется через `username.lower() in ADMIN_USERNAMES` — `set[str]` без `@`, загружаемый из env.
 - **Токен**: жёстко разрешающаяся переменная `os.environ["BOT_TOKEN"]`.
-- **Sheets sync**: читается только публичный CSV — нет credentials, нет write-доступа.
+- **Sheets sync**: приватная таблица через Service Account (JSON-ключ в `GOOGLE_SA_PATH`); ключ исключён через `.gitignore` (`*.json`).
+- **Партнёрский бот**: каждый `ServiceOwner.service_id` привязан к `telegram_id`; все запросы проверяют `order.service_id == owner.service_id`.
 - **SQLite**: локальный файл `esas.db`; для prod — сменить `DATABASE_URL` на PostgreSQL.
 - **Ввод пользователя**: весь текстовый ввод проходит через Pydantic-валидацию.
-
-
-## 1. Автоматизированное логирование (ActionLogger Middleware)
-**Назначение**: Централизованный перехват и запись всех действий пользователя в таблицу `UserActions` без дублирования кода в хендлерах.
-
-### Желаемый результат:
-- Любой входящий апдейт (Message, CallbackQuery) проходит через Middleware до попадания в логику бота.
-- **Данные для записи**:
-    - Текущее состояние FSM пользователя (если есть).
-    - Тип действия (кнопка, текст, команда).
-    - Время получения запроса.
-- **Статус завершения**: Middleware фиксирует начало операции, а хендлер или завершающий Middleware обновляет статус (`success`, `error`, `interrupted`).
-
----
-
-## 2. Защита от спама (Throttling Middleware)
-**Назначение**: Ограничение частоты запросов от одного пользователя для предотвращения перегрузки сервера и базы данных.
-
-### Желаемый результат:
-- Установка лимита (например, не более 1 запроса в 0.5 секунды для кликов по Inline-кнопкам).
-- **Действие при нарушении**:
-    1. Игнорирование запроса.
-    2. Запись в `UserActions` со статусом `flood_attempt`.
-    3. (Опционально) Отправка краткого уведомления пользователю "Пожалуйста, не нажимайте кнопки так часто".
-
----
-
-## 3. Глобальный обработчик исключений (Error Middleware)
-**Назначение**: Перехват непредвиденных ошибок в хендлерах и корректное информирование пользователя.
-
-### Желаемый результат:
-- Если в коде произошла ошибка:
-    1. Трекинг ошибки в `UserActions` со статусом `system_error` и записью traceback в `error_context`.
-    2. Пользователь получает вежливое сообщение "Произошла техническая ошибка, попробуйте позже", чтобы бот не "висел" без ответа.

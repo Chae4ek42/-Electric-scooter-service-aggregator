@@ -486,12 +486,24 @@ async def init_db() -> None:
 
         cursor = await raw_conn.execute("PRAGMA table_info('orders')")
         order_cols = {row[1] for row in await cursor.fetchall()}
-        if "model_custom_name" not in order_cols:
-            await raw_conn.execute(
-                "ALTER TABLE orders ADD COLUMN model_custom_name TEXT"
-            )
-            await raw_conn.commit()
-            logger.info("Migration: added orders.model_custom_name")
+        for col_def in (
+            ("model_custom_name", "TEXT"),
+            ("brand_custom_name", "TEXT"),
+            ("problem_description", "TEXT"),
+            ("upgrade_category", "TEXT"),
+            ("diagnostics_price", "REAL"),
+            ("partner_comment", "TEXT"),
+            ("reject_reason", "TEXT"),
+            ("accepted_at", "TEXT"),
+            ("completed_at", "TEXT"),
+        ):
+            col_name, col_type = col_def
+            if col_name not in order_cols:
+                await raw_conn.execute(
+                    f"ALTER TABLE orders ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info("Migration: added orders.%s", col_name)
+        await raw_conn.commit()
 
         cursor = await raw_conn.execute("PRAGMA table_info('services')")
         svc_cols = {row[1] for row in await cursor.fetchall()}
@@ -503,6 +515,7 @@ async def init_db() -> None:
             ("telegram_handle", "TEXT"),
             ("partnership_status", "TEXT"),
             ("is_available", "INTEGER NOT NULL DEFAULT 1"),
+            ("main_brand_scooter", "TEXT"),
         ):
             col_name, col_type = col_def
             if col_name not in svc_cols:
@@ -518,7 +531,40 @@ async def init_db() -> None:
                     f"ALTER TABLE metro_stations ADD COLUMN {col_name} REAL"
                 )
                 logger.info("Migration: added metro_stations.%s", col_name)
+
+        cursor = await raw_conn.execute("PRAGMA table_info('user_actions')")
+        action_cols = {row[1] for row in await cursor.fetchall()}
+        for col_def in (
+            ("bot_response", "TEXT"),
+            ("bot_response_type", "TEXT"),
+        ):
+            col_name, col_type = col_def
+            if col_name not in action_cols:
+                await raw_conn.execute(
+                    f"ALTER TABLE user_actions ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info("Migration: added user_actions.%s", col_name)
+
         await raw_conn.commit()
+
+        # Migrate ServiceOwner statuses from English to Russian
+        _status_migration = {
+            "pending": "ожидает",
+            "active": "активный",
+            "rejected": "отклонён",
+            "suspended": "приостановлен",
+        }
+        cursor = await raw_conn.execute("PRAGMA table_info('service_owners')")
+        so_cols = {row[1] for row in await cursor.fetchall()}
+        if "status" in so_cols:
+            for eng, rus in _status_migration.items():
+                await raw_conn.execute(
+                    "UPDATE service_owners SET status = ? WHERE status = ?",
+                    (rus, eng),
+                )
+            await raw_conn.commit()
+            logger.info("Migration: converted service_owners.status to Russian")
+
     await seed_database()
 
 

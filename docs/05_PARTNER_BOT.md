@@ -1,6 +1,6 @@
 # Партнёрский бот (Бот для владельцев сервисов)
 
-> **Статус:** Проектный документ — требует согласования перед реализацией.  
+> **Статус:** Реализовано. Все модули имплементированы и интегрированы.  
 > Существующий клиентский бот далее именуется **client-bot**. Новый бот — **partner-bot**.
 
 ---
@@ -22,19 +22,21 @@ Partner-bot — Telegram-бот для владельцев / операторо
 
 | Роль | Описание | Откуда берётся |
 |---|---|---|
-| `pending` | Зарегистрирован, ждёт одобрения | После `finish_registration` |
-| `active` | Одобрен, работает с заявками | Admin одобряет вручную или через admin-bot |
-| `suspended` | Временно заблокирован | Admin вручную |
-| `rejected` | Заявка отклонена | Admin вручную |
+| `ожидает` | Зарегистрирован, ждёт одобрения | После `finish_registration` или после редактирования профиля |
+| `активный` | Одобрен, работает с заявками | Admin одобряет вручную |
+| `приостановлен` | Временно заблокирован | Admin вручную |
+| `отклонён` | Заявка отклонена | Admin вручную |
 
-Только `active`-владелец видит заявки и может редактировать профиль.  
-`pending` видит только экран ожидания с кнопкой «Изменить данные».
+Только `активный`-владелец видит заявки и может редактировать профиль.
+`ожидает` видит только экран ожидания с кнопками «Моя анкета», «Продолжить заполнение», «Техподдержка».
+
+> **Статусы хранятся на русском языке** в колонке `service_owners.status`. Миграция с английских значений (pending/active/rejected/suspended) выполняется автоматически в `seed.py`.
 
 ---
 
 ## 3. Онбординг и регистрация
 
-### 3.1 FSM `RegistrationFSM`
+### 3.1 FSM `RegistrationFSM` — 17 состояний
 
 ```
 /start
@@ -42,71 +44,108 @@ Partner-bot — Telegram-бот для владельцев / операторо
             │
            No
             ▼
-        reg_name          ← «Введите название вашего сервисного центра»
+        reg_name              ← «Введите название вашего сервисного центра»
             ▼
-        reg_service_type  ← inline: [Ремонт / Апгрейд / Комплексный]
+        reg_service_type      ← inline: [Ремонт / Апгрейд]  (без «Комплексный»)
             ▼
-        reg_service_category  ← inline: [Электрика / Механика]
+       (если Апгрейд)
+        reg_upgrade_categories ← multi-select inline: [Окраска / Прошивка /
+            │                     Изменение конструкции / Доп оснащение]
+            │                     + кнопка «Готово ✓» (появляется при ≥1 выборе)
             ▼
-        reg_hydroisolation  ← inline: [Да / Нет] — выполняем гидроизоляцию?
+        reg_hydroisolation    ← inline: [Да / Нет]
             ▼
-        reg_address       ← Адрес»
+        reg_address           ← «Введите адрес»
             ▼
-        reg_metro         ← «Ближайшее метро» (fuzzy, как в client-bot)
+        reg_metro_search      ← «Ближайшее метро» (fuzzy, как в client-bot)
             ▼
-        reg_phone         ← «Контактный телефон» (валидация формата, повторный запрос при неверном формате)
+        reg_metro_confirm     ← inline: [Да, {станция} / Искать заново]
             ▼
-        reg_telegram      ← «Telegram-аккаунт или канал» (необязательно, инлайн кнопка для пропуска)
+        reg_phone             ← «Контактный телефон» (PhoneInput)
             ▼
-        reg_hours         ← «Время работы» формат HH:MM–HH:MM (08:00–22:00)
+        reg_telegram          ← «Telegram-аккаунт» (TelegramHandleInput / кнопка пропуска)
             ▼
-        reg_diagnostics   ← «Стоимость диагностики (руб.)» (0 = бесплатно)
+        reg_working_days      ← multi-select inline: 7 кнопок [Пн/Вт/Ср/Чт/Пт/Сб/Вс]
+            │                    + кнопка «Готово ✓» (при ≥1 выборе)
             ▼
-        reg_diag_included ← inline: [Входит в стоимость / Оплачивается отдельно]
+        reg_hours             ← «Время работы» (WorkHoursInput, HH:MM-HH:MM)
             ▼
-        reg_confirm       ← карточка с итоговыми данными + [Отправить / Заново]
+        reg_diagnostics       ← «Стоимость диагностики (руб.)» (0 = бесплатно)
             ▼
-        (создаётся ServiceOwner + запись Service со статусом is_available=False)
-        (уведомление администратору ESAS в admin-bot/admin.py)
+        reg_diag_included     ← inline: [Входит в стоимость / Оплачивается отдельно]
             ▼
-        waiting_approval  ← «Ваша заявка принята, ожидайте одобрения»
+        reg_legal_form        ← inline: [ИП / Юр. лицо]
+            ▼
+        reg_tax_system        ← inline: [ОСНО / УСН / АУСН / Патентная система / НПД]
+            ▼
+        reg_bank_details      ← 6 последовательных текстовых вводов:
+            │                    1. Расчётный счёт (BankAccountInput — 20 цифр)
+            │                    2. Название банка (BankNameInput — 3–200 символов)
+            │                    3. БИК (BikInput — 9 цифр)
+            │                    4. Корр. счёт (CorrAccountInput — 20 цифр)
+            │                    5. Наименование организации (OrgNameInput — 3–300 символов)
+            │                    6. ИНН (InnInput — 10 или 12 цифр)
+            │                    Сноска: «По этим реквизитам будут производиться выплаты»
+            ▼
+        reg_confirm           ← карточка с итоговыми данными + [Отправить / Изменить / Заново]
+            ▼
+        (создаётся ServiceOwner + draft-данные в 22 полях)
+        (уведомление администратору ESAS)
+            ▼
+        waiting_approval      ← «Ваша заявка принята, ожидайте одобрения»
 ```
-Дополнительно на каждом этапе сохранять состояние и в случае прерывания возвращаться к текущему этапу. Должны также в текстовой клавиатуре быть кнопки моя анкета, продолжить заполнение (в случае если оно было начато и не закончено. В противном случае кнопка не отображается), изменить анкету. При изменении анкеты выводится ее текущее состояние и под ним в инлайн кнопках варианты полей для изменения. При /start высылается приветственное сообщение с инлайн кнопкой зарегестрировать сервис. Все эти поля существуют тоьлко пока эта анкета не одобрена админом
+
+**Особенности:**
+- На каждом этапе состояние сохраняется в `draft_*`-поля `ServiceOwner` — прерывание не теряет данные.
+- Кнопка «Продолжить заполнение» — определяет первое пустое поле через `_next_empty_state()` и перемещает в соответствующее FSM-состояние.
+- Кнопка «Изменить» на экране подтверждения — выводит текущую анкету + 15 inline-кнопок для редактирования конкретных полей.
+- `reg_upgrade_categories` пропускается если тип = `repair`.
+- Multi-select (категории апгрейда и рабочие дни) — выбранные элементы хранятся в FSM data как `list`, при «Готово» записываются в БД через запятую.
+- Банковские реквизиты — единый FSM-стейт `reg_bank_details` с внутренним счётчиком `bank_step` (0–5), каждое поле валидируется своей Pydantic-схемой.
+
 ### 3.2 Валидация при регистрации
 
-| Поле | Правило |
-|---|---|
-| Название | 3–200 символов, хотя бы одна буква |
-| Адрес | 10–400 символов |
-| Телефон | `\+?[0-9\- ]{7,20}` |
-| Telegram | `@?[a-zA-Z0-9_]{5,32}` или `/skip` |
-| Время работы | regex `^\d{2}:\d{2}[-–]\d{2}:\d{2}$`, open < close |
-| Цена диагностики | целое число ≥ 0 |
+| Поле | Схема | Правило |
+|---|---|---|
+| Название | `ServiceNameInput` | 3–200 символов, хотя бы одна буква |
+| Адрес | `AddressInput` | 10–400 символов |
+| Телефон | `PhoneInput` | `\+?[\d\- ]{7,20}` |
+| Telegram | `TelegramHandleInput` | `@?[a-zA-Z0-9_]{5,32}` или пропуск |
+| Время работы | `WorkHoursInput` | regex `^\d{2}:\d{2}[-–]\d{2}:\d{2}$` |
+| Цена диагностики | `DiagnosticsPriceInput` | целое число ≥ 0 |
+| Расчётный счёт | `BankAccountInput` | ровно 20 цифр |
+| Название банка | `BankNameInput` | 3–200 символов |
+| БИК | `BikInput` | ровно 9 цифр |
+| Корр. счёт | `CorrAccountInput` | ровно 20 цифр |
+| Наименование организации | `OrgNameInput` | 3–300 символов |
+| ИНН | `InnInput` | 10 или 12 цифр |
 
 ### 3.3 Что происходит при одобрении
 
 1. Admin в admin-bot нажимает «Одобрить» (inline callback).
-2. `ServiceOwner.status` → `active`, `Service.is_available` → `True`.
-3. Владелец получает уведомление: «Ваш сервис одобрен и добавлен в каталог».
-4. Google Sheets: строка сервиса добавляется/обновляется через Sheets API.
-5. Следующий цикл `sheets_sync` (read) увидит её и подтвердит консистентность.
+2. Создаётся `Service` из `draft_*`-полей (включая `upgrade_categories`, `working_days`), `is_available=True`.
+3. `ServiceOwner.status` → `активный`, `ServiceOwner.service_id` → id нового сервиса.
+4. Владелец получает уведомление с **новой reply-клавиатурой** `partner_main_menu_kb()` (заменяет pending-меню).
+5. Google Sheets: строка сервиса добавляется через `sheets_writer.add_service_row()`.
 
 ---
 
-## 4. Главное меню (активный владелец)
+## 4. Главное меню
 
-```
-╔══════════════════════════════╗
-║  ESAS Partner — [Имя сервиса]║
-╠══════════════════════════════╣
-║  📋 Входящие заявки   (3 новых)
-║  📊 История и статистика
-║  ✏️  Редактировать профиль
-║  🔔 Настройки уведомлений
-║  📄 Мой статус в каталоге
-║  ❓  Помощь
-╚══════════════════════════════╝
-```
+### 4.1 Активный владелец (Reply-клавиатура)
+
+- **Входящие заявки** — непринятые заявки
+- **История заявок** — все заявки с пагинацией
+- **Редактировать профиль** — выбор поля для изменения
+- **Настройки уведомлений** — toggle-кнопки
+- **Мой статус** — карточка сервиса с текущими данными (включая `upgrade_categories`, `working_days`)
+- **Техподдержка** — ссылка на `SUPPORT_USER` (сбрасывает FSM при необходимости)
+
+### 4.2 Ожидающий владелец (pending)
+
+- **Моя анкета** — текущее состояние анкеты
+- **Продолжить заполнение** — (только если анкета не завершена) переход к первому пустому полю
+- **Техподдержка** — аналогично клиентскому боту
 
 ---
 
@@ -114,19 +153,7 @@ Partner-bot — Telegram-бот для владельцев / операторо
 
 ### 5.1 Входящие заявки
 
-При нажатии «Входящие заявки» партнёр видит список непринятых заявок:
-
-```
-📋 Входящих заявок: 3
-
-#1042 · iPhone 15 Pro · Ремонт
-📅 12 апр · 14:00 · м. Проспект Мира
-[👁 Подробнее]
-
-#1038 · Xiaomi 14 · Апгрейд — Гидроизоляция
-📅 11 апр · 11:00 · м. Чистые пруды
-[👁 Подробнее]
-```
+Список непринятых заявок с пагинацией. Каждая заявка — кнопка с номером и датой.
 
 Карточка заявки:
 ```
@@ -134,120 +161,124 @@ Partner-bot — Telegram-бот для владельцев / операторо
 ─────────────────
 Устройство:   Apple iPhone 15 Pro
 Тип услуги:   Ремонт
-Проблема:     Не заряжается, стекло треснуто
 Дата/время:   12 апреля · 14:00
-Метро:        м. Проспект Мира (~350 м от вас)
-Диагностика:  550 руб.
-─────────────────
-[✅ Принять]  [❌ Отклонить]  [💬 Написать клиенту]
-В случае принятия заявки ее статус в бд меняется (Посмотри кстати текущие возможные статусы и добавь новые если необходимо), и клиенту высылается сообщение о том, что сервис принял заявку. В случае отклонения у сервиса требуется указать причину в сообщении ниже и также отправляется уведомление клиенту с причиной. Написать клиенту - ссылка на чат с клиентом. Убери поле метро и диагностика. Эмодзи убери тоже все
+
+[Принять]  [Отклонить]  [Написать клиенту]
 ```
 
 ### 5.2 Жизненный цикл заявки (со стороны партнёра)
 
 ```
 awaiting_payment
-   ▼  (клиент оплатил диагностику)
-new_for_partner       ← партнёр видит кнопку «Принять»
    ▼
-accepted_by_partner   ← клиент видит имя сервиса, получает адрес
+accepted              ← партнёр нажал «Принять», клиент получает уведомление
    ▼
-in_progress           ← партнёр нажал Принять»
+in_progress           ← партнёр нажал «Устройство принято»
    ▼
-completed             ← партнёр нажал Завершен»
+completed             ← партнёр нажал «Завершен»
 
      ─── или ───
 
-rejected_by_partner   ← партнёр отклонил (клиент получает уведомление + автоподбор другого сервиса)
+rejected_by_partner   ← партнёр отклонил с указанием причины (RejectReasonInput)
 ```
-
-> Расширенный статусный граф относительно client-bot: добавляются `new_for_partner`, `in_progress`, `ready`, `rejected_by_partner`.
 
 ### 5.3 Действия партнёра в заявке
 
 | Действие | Когда доступно | Результат |
 |---|---|---|
-| Принять | `new_for_partner` | → `accepted_by_partner`, клиент получает карточку сервиса |
-| Отклонить | `new_for_partner` | → `rejected_by_partner`, клиент видит «сервис отказал» + повторный подбор |
-| Написать клиенту | любой статус | Deep-link или Telegram username клиента (если разрешил) |
-| Устройство принято | `accepted_by_partner` | → `in_progress` |
-| Не пришёл | `accepted_by_partner` спустя N часов | → `interrupted` |
-| Добавить комментарий | любой статус | сохраняется в `Order.partner_comment` |
+| Принять | `awaiting_payment` | → `accepted`, клиенту уведомление |
+| Отклонить | `awaiting_payment` | → `rejected_by_partner`, клиенту причина |
+| Написать клиенту | `awaiting_payment` | Deep-link на TG клиента |
+| Устройство принято | `accepted` | → `in_progress` |
+| Завершен | `in_progress` | → `completed` |
 
 ### 5.4 История заявок
 
-Фильтры: «Все», «Принятые», «Выполненные», «Отклонённые», «За неделю / месяц».  
-Пагинация: по 10 заявок на страницу с inline «← Назад / →Далее».
+Пагинация по 10 заявок на страницу с inline-кнопками навигации.
 
 ---
 
 ## 6. Редактирование профиля
 
-Позволяет менять любое поле сервиса без обращения к администратору ESAS.  
+Позволяет менять любое поле сервиса после одобрения.
+
+**Ре-модерация при изменении профиля:**
+
+При редактировании любого поля (кроме «Открыт/Закрыт») происходит:
+1. При выборе поля партнёру показывается предупреждение о деактивации.
+2. Поле обновляется в БД и Google Sheets.
+3. `ServiceOwner.status` → `ожидает` (повторная модерация).
+4. `Service.is_available` → `False` (сервис недоступен на время проверки).
+5. Reply-клавиатура меняется на `partner_pending_menu_kb`.
+
+Быстрый переключатель «Открыт/Закрыт» (`pedit:status`) **не вызывает** ре-модерацию.
+
 После каждого изменения:
 1. Запись обновляется в локальной БД.
 2. `sheets_writer.update_service_row()` перезаписывает строку в Google Sheets.
-3. Логируется в `user_actions` с `action_type="partner_profile_edit"`.
+3. Логируется в `user_actions`.
 
 ### 6.1 Редактируемые поля
 
-```
-✏️ Редактировать профиль
+Кнопки выбора поля: Название, Адрес, Телефон, Telegram, Время работы.
 
-Название           Samsung Repair Pro
-Тип услуг          Ремонт + Апгрейд (Комплексный)
-Адрес              Москва, ул. Марксистская, 5
-Ближайшее метро    м. Марксистская
-Телефон            +7 (999) 123-45-67
-Telegram           @samsungrepair
-Время работы       09:00–21:00
-Гидроизоляция      Да
-Диагностика        400 руб. · Входит в стоимость
-Статус             Активен
-
-[Изменить] (выбор поля → inline-кнопки)
-```
-
-### 6.2 Быстрые статусы (одна кнопка)
+### 6.2 Быстрые статусы
 
 | Кнопка | Действие |
 |---|---|
-| 🔴 Закрыть сегодня | `is_available=False` до 23:59, auto-reset в полночь |
-| 🟢 Открыть сейчас | `is_available=True` немедленно |
-| 🔧 На техобслуживании | `is_available=False` с причиной "обслуживание" |
+| Закрыть сегодня | `is_available=False` |
+| Открыть сейчас | `is_available=True` |
 
-### 6.3 Управление расписанием отдельных дней
+---
 
-- Партнёр может заблокировать конкретные даты (отпуск, праздники).
-- Хранится в новой таблице `service_blocked_dates (service_id, date)`.
-- client-bot при ранжировании фильтрует даты из этой таблицы.
+## 7. Уведомления
 
-## 8. Уведомления
+### 7.1 Типы событий → партнёру
 
-### 8.1 Типы событий → партнёру
-
-| Событие | Текст уведомления |
+| Событие | Описание |
 |---|---|
-| Новая заявка | «📩 Новая заявка #N · iPhone 15 · Ремонт · 14 апр 14:00» + кнопки [Принять][Отклонить] |
-| Клиент отменил | «❌ Клиент отменил заявку #N» |
-### 8.2 Настройки уведомлений
+| Новая заявка | Уведомление с номером, устройством, датой + кнопки [Принять][Отклонить] |
+| Клиент отменил | Уведомление об отмене |
 
-Партнёр может отключить каждый тип отдельно:
+### 7.2 Настройки уведомлений
 
-```
-🔔 Настройки уведомлений
+Toggle-кнопки (inline) для каждого типа:
+- Новые заявки (`notif_new_order`)
+- Отмены клиентом (`notif_cancel`)
 
-✅ Новые заявки
-✅ Отмены клиентом
-```
+Хранятся в `ServiceOwnerSettings (owner_id, notif_new_order, notif_cancel)`.
 
-Хранится в `ServiceOwnerSettings (owner_id, notif_new_order, notif_cancel, notif_payment, notif_reminder, notif_weekly_report)`.
+---
 
-## 9. Двусторонняя синхронизация с Google Sheets
+## 8. Двусторонняя синхронизация с Google Sheets
 
-Изменить полностью логику обработки гугл таблиц. Таблица будет приватная и нужно по прежнему читать ее и обновлять. Сам полностью реализуй эту логику
+Приватная таблица через Service Account (gspread + google-auth).  
+Чтение: `get_all_values()` с ручным построением словаря и дедупликацией заголовков (решает проблему дублирующихся столбцов).  
+Запись: `sheets_writer` через gspread API.
 
-### 9.4 Стратегия консистентности
+### 8.1 Колонки записи
+
+| Столбец | Поле | Примечание |
+|---|---|---|
+| Название | `name` | |
+| Специализация | `service_type` | repair/upgrade/complex |
+| Доступен | `is_available` | Да/Нет |
+| Адрес | `address` | |
+| Метро ближ. | `nearest_metro` | |
+| Телефон | `phone` | |
+| Telegram | `telegram_handle` | |
+| Открытие | `open_time` | HH:MM |
+| Закрытие | `close_time` | HH:MM |
+| Гидроизоляция | `has_hydroisolation` | Да/Нет |
+| Диагностика | `diagnostics_price` | число |
+| Входит в стоимость | `diagnostics_included` | Да/Нет |
+| Рейтинг Я.Карты | `yandex_rating` | |
+| Статус | `partnership_status` | |
+| Категория | `category` | Механика/Электрика |
+| Категории апгрейда | `upgrade_categories` | через запятую |
+| Рабочие дни | `working_days` | Пн, Вт, ... |
+
+### 8.2 Стратегия консистентности
 
 ```
 partner-bot изменил поле
@@ -256,247 +287,230 @@ partner-bot изменил поле
 local DB update (сразу)
        │
        ▼
-sheets_writer.update_service_row() (async, best-effort)
+sheets_writer.update_service_row() (sync, best-effort)
        │
-    success? ──No──► job в очереди retry_queue (SQLite таблица)
-       │                   ▲
-      Yes                  │
-       │          sheets_sync (read) каждые 5 мин
-       │          сравнивает Sheets со snapshot → если рассинхрон → retry
+    success? ──No──► job в SheetsRetryQueue (SQLite таблица)
+       │
+      Yes
        ▼
 Sheets updated
 ```
 
-`retry_queue` таблица: `(id, service_id, payload_json, attempts, last_attempt_at, created_at)`.
+### 8.3 Счётчик изменений при sync
+
+Синхронизация из таблицы (`sheets_sync.sync_services_from_sheet()`) сравнивает каждое поле с текущим значением в БД. Счётчик `изменено` инкрементируется только когда хотя бы одно поле записи фактически отличается. Лог: `"Sheets sync: добавлено N, изменено M"`.
 
 ---
 
-## 10. Архитектура монорепо (shared services)
+## 9. Панель администратора (partner-bot)
 
-### 10.1 Предлагаемая структура
+Админ-панель партнёрского бота расположена в `partner_bot/handlers/admin.py`.
+Доступна только пользователям с username из `ADMIN_USERNAMES`.
+Кнопка «Панель администратора» отображается в reply-клавиатуре для администраторов.
 
-```
-ESAS/
-├── shared/                        ← общий код, не зависит от бота
-│   ├── core/
-│   │   ├── config.py              (расширяется — добавляются PARTNER_BOT_TOKEN и др.)
-│   │   ├── database.py
-│   │   └── middlewares.py
-│   ├── domain/
-│   │   ├── models.py              (добавляются ServiceOwner, OwnerSettings, BlockedDate)
-│   │   ├── states.py              (ClientFSM + PartnerRegistrationFSM + PartnerOrderFSM)
-│   │   └── schemas.py
-│   └── services/
-│       ├── metro_graph.py
-│       ├── metro_search.py
-│       ├── ranking.py
-│       ├── seed.py
-│       ├── sheets_sync.py         (read → shared)
-│       └── sheets_writer.py       (write → новый)
-│
-├── client_bot/                    ← переименован из bot/
-│   ├── handlers/
-│   │   ├── order.py
-│   │   ├── admin.py
-│   │   └── common.py
-│   ├── ui/
-│   │   └── keyboards.py
-│   ├── __init__.py
-│   └── __main__.py
-│
-├── partner_bot/                   ← новый
-│   ├── handlers/
-│   │   ├── registration.py        (RegistrationFSM)
-│   │   ├── profile.py             (редактирование профиля)
-│   │   ├── orders.py              (входящие, история, действия)
-│   │   ├── notifications.py       (настройки уведомлений)
-│   │   ├── analytics.py           (статистика, CSV)
-│   │   └── common.py              (start, help, меню)
-│   ├── ui/
-│   │   └── keyboards.py           (партнёрские клавиатуры)
-│   ├── services/
-│   │   └── notify.py              (логика рассылки уведомлений партнёрам)
-│   ├── __init__.py
-│   └── __main__.py
-│
-├── docs/
-├── tests/
-├── pyproject.toml
-└── .env
-```
+### 9.1 Callback-данные
 
-> **Вариант B (минимальные изменения):** не переименовывать `bot/` в `client_bot/`, а добавить `partner_bot/` рядом и импортировать из `bot.*`. Менее чисто, но не требует рефакторинга путей импорта.
+Все callback-данные используют префикс `padm:` (чтобы не конфликтовать с `adm:` клиентского бота).
 
-### 10.2 Что шерится без изменений
+### 9.2 Возможности
 
-| Модуль | Почему шерится |
-|---|---|
-| `database.py` | Одна БД, один пул соединений |
-| `models.py` | Одни и те же таблицы |
-| `schemas.py` | Те же Pydantic-валидаторы |
-| `metro_graph.py` + `metro_search.py` | Одна граф-задача |
-| `ranking.py` | Ранжирование используется только client-bot; partner-bot читает результат |
-| `seed.py` | Инициализация БД одна |
-| `sheets_sync.py` | Read-синхронизация — один фоновый таск |
-| `middlewares.py` | `ActionLoggerMiddleware`, `ErrorMiddleware`, `ThrottleMiddleware` |
-
-### 10.3 Запуск двух ботов
- — один процесс, два Dispatcher'а** через `asyncio.gather`:
-```python
-# main.py
-async def main():
-    await asyncio.gather(
-        client_bot_main(),
-        partner_bot_main(),
-    )
-```
-Плюс: `sheets_sync` фоновая задача запускается один раз.  
-Минус: падение одного бота роняет оба.
-
-**Рекомендация:** два процесса + supervisor (systemd, Docker Compose).
-
----
-
-## 11. Новые модели данных
-
-### 11.1 `ServiceOwner`
-
-```python
-class ServiceOwner(Base):
-    __tablename__ = "service_owners"
-
-    id: int (PK)
-    telegram_id: BigInteger (unique, FK к users.id)
-    service_id: int (FK к services.id, nullable — до одобрения)
-    status: String(20)          # pending | active | suspended | rejected
-    registered_at: DateTime
-    approved_at: DateTime (nullable)
-    approved_by: String(200)    # username admin'а
-```
-
-### 11.2 `ServiceOwnerSettings`
-
-```python
-class ServiceOwnerSettings(Base):
-    __tablename__ = "service_owner_settings"
-
-    owner_id: int (PK, FK service_owners.id)
-    notif_new_order: Boolean (default=True)
-    notif_cancel: Boolean (default=True)
-    notif_payment: Boolean (default=True)
-    notif_reminder_1h: Boolean (default=True)
-    notif_weekly_report: Boolean (default=False)
-    quiet_hours_from: String(5) (nullable)   # "22:00"
-    quiet_hours_to: String(5) (nullable)     # "09:00"
-```
-
-### 11.3 `ServiceBlockedDate`
-
-```python
-class ServiceBlockedDate(Base):
-    __tablename__ = "service_blocked_dates"
-
-    id: int (PK)
-    service_id: int (FK services.id)
-    blocked_date: Date
-    reason: String(200) (nullable)
-```
-
-### 11.4 Расширение `Order`
-
-Новые поля, которых ещё нет:
-
-| Поле | Тип | Назначение |
+| Функция | Callback | Описание |
 |---|---|---|
-| `partner_status` | String(30) | Внутренний статус партнёра (`new_for_partner`, `accepted_by_partner`, `in_progress`, `ready`) |
-| `partner_comment` | Text | Комментарий партнёра |
-| `accepted_at` | DateTime | Когда партнёр принял заявку |
-| `completed_at` | DateTime | Когда отмечено «Выдано» |
+| Главное меню | `padm:main` | Статистика партнёров по статусам |
+| Список партнёров | `padm:partners:{page}` | Пагинация (10), сортировка по дате |
+| Фильтр по статусу | `padm:filter` → `padm:partners:0:status:{status}` | ожидает/активный/приостановлен/отклонён |
+| Карточка партнёра | `padm:partner:{id}` | Все 22 draft-поля + банковские реквизиты |
+| Одобрить | `padm:approve:{id}` | Создаёт `Service`, пишет в Sheets, уведомляет, отправляет новую клавиатуру |
+| Отклонить | `padm:reject_partner:{id}` | Меняет статус → отклонён, уведомляет |
+| Приостановить | `padm:suspend:{id}` | Статус → приостановлен, `is_available=False` |
+| Восстановить | `padm:unsuspend:{id}` | Статус → активный, `is_available=True` |
 
-### 11.5 `SheetsRetryQueue`
+### 9.3 Разделение администрирования
 
-```python
-class SheetsRetryQueue(Base):
-    __tablename__ = "sheets_retry_queue"
+| Бот | Панель | Содержимое |
+|---|---|---|
+| Клиентский (`bot/`) | `admin.py` с `adm:` | Управление клиентскими заявками (статусы заказов) |
+| Партнёрский (`partner_bot/`) | `admin.py` с `padm:` | Модерация партнёров (одобрение, отклонение, приостановка) |
 
-    id: int (PK)
-    service_id: int (FK services.id)
-    operation: String(50)   # "update" | "add" | "set_available"
-    payload_json: Text
-    attempts: int (default=0)
-    last_attempt_at: DateTime (nullable)
-    created_at: DateTime
-```
+Администраторы общие (`ADMIN_USERNAMES`), но наполнение панелей разное.
 
 ---
 
-## 12. FSM партнёрского бота
-
-### 12.1 `RegistrationFSM`
+## 10. Формат карточки партнёра в admin-panel
 
 ```
-reg_name → reg_service_type → reg_address → reg_metro_search →
-reg_metro_confirm → reg_phone → reg_telegram → reg_hours →
-reg_hydroisolation → reg_diagnostics → reg_diag_included → reg_confirm
+Партнёр #1
+Telegram ID: 123456789
+Статус: ожидает
+
+Название: Samsung Repair Pro
+Тип: Ремонт
+Гидроизоляция: Да
+Адрес: Москва, ул. Марксистская, 5
+Метро: Марксистская
+Телефон: +7 999 123 45 67
+Telegram: samsungrepair
+Рабочие дни: Пн, Вт, Ср, Чт, Пт
+Часы: 09:00—21:00
+Диагностика: 400 ₽
+Входит в стоимость: Да
+Форма: ИП
+Налогообложение: УСН
+
+Банковские реквизиты:
+  Р/с: 40702810938000012345
+  Банк: ПАО Сбербанк
+  БИК: 044525225
+  К/с: 30101810400000000225
+  Организация: ИП Звездилин Сергей Леонидович
+  ИНН: 770708389312
+
+[Одобрить]  [Отклонить]
 ```
 
-### 12.2 `PartnerProfileFSM`
+Для апгрейд-сервисов дополнительно отображается: `Категории апгрейда: Окраска, Прошивка`.
 
-```
-edit_field_select → edit_field_value → edit_field_confirm
-```
-
-### 12.3 `PartnerOrderFSM`
-
-```
-order_reject_reason   ← опциональный ввод причины отклонения
-order_comment_input   ← ввод текстового комментария к заявке
-```
-
-Большинство действий — inline callbacks без FSM (принять/отклонить по callback_data).
+Все пользовательские данные в карточке экранируются через `_md_escape()` (символы `\`, `*`, `_`, `` ` ``, `[`), чтобы избежать ошибки `TelegramBadRequest: can't parse entities`.
 
 ---
 
-## 13. Уведомление администратора ESAS
+## 11. Архитектура
 
-При регистрации нового сервиса admin получает в admin-bot:
+### 11.1 Структура пакетов
 
 ```
-🆕 Новый сервис ожидает одобрения
+bot/                              ← общий код + клиентский бот
+├── core/
+│   ├── config.py                 (BOT_TOKEN, PARTNER_BOT_TOKEN, GOOGLE_SA_PATH, ...)
+│   ├── database.py
+│   └── middlewares.py
+├── domain/
+│   ├── models.py                 (Service, ServiceOwner, ServiceOwnerSettings, ...)
+│   ├── states.py                 (OrderFSM, RegistrationFSM, PartnerProfileFSM, PartnerOrderFSM)
+│   └── schemas.py                (все Pydantic-схемы, включая банковские)
+├── services/
+│   ├── metro_graph.py
+│   ├── metro_search.py
+│   ├── ranking.py
+│   ├── seed.py
+│   ├── sheets_sync.py            (read — SA → CSV fallback)
+│   └── sheets_writer.py          (write — gspread SA)
+├── handlers/
+│   ├── common.py
+│   ├── order.py
+│   └── admin.py                  (Admin: управление клиентскими заявками)
+└── ui/
+    └── keyboards.py
 
-Название:    Samsung Repair Pro
-Тип:         Комплексный
-Адрес:       Москва, ул. Марксистская, 5
-Метро:       м. Марксистская
-Телефон:     +7 999 123 45 67
-Telegram:    @samsungrepair
-Часы:        09:00–21:00
-Диагностика: 400 руб. (входит в стоимость)
-Гидроизол.:  Да
-
-Владелец: @owner_username (TG: 123456789)
-Зарегистрирован: 08 апр 2026 · 14:23
-
-[✅ Одобрить]  [❌ Отклонить]  [✏️ Написать]
+partner_bot/                      ← партнёрский бот
+├── handlers/
+│   ├── common.py                 (/start, меню, Техподдержка, Моя анкета, Мой статус)
+│   ├── registration.py           (RegistrationFSM — 16 шагов)
+│   ├── orders.py                 (входящие, история, принять/отклонить)
+│   ├── profile.py                (редактирование профиля)
+│   ├── notifications.py          (настройки уведомлений)
+│   └── admin.py                  (Admin: модерация партнёров — одобрение, отклонение, приостановка)
+├── ui/
+│   └── keyboards.py              (партнёрские + админские клавиатуры)
+├── __init__.py
+└── __main__.py
 ```
+
+### 11.2 Модели данных
+
+#### `ServiceOwner` — 22 draft-поля
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `id`, `telegram_id`, `service_id`, `status` | — | Идентификация и статус |
+| `draft_name` | String(300) | Название сервиса |
+| `draft_service_type` | String(20) | `repair` / `upgrade` |
+| `draft_category` | String(100) | Механика / Электрика |
+| `draft_address` | String(500) | Адрес |
+| `draft_metro` | String(200) | Ближайшее метро |
+| `draft_phone` | String(50) | Телефон |
+| `draft_telegram` | String(200) | TG-хэндл |
+| `draft_open_time` / `draft_close_time` | String(5) | HH:MM |
+| `draft_hydroisolation` | Boolean | Гидроизоляция |
+| `draft_diagnostics_price` | Float | Стоимость диагностики |
+| `draft_diag_included` | Boolean | Входит в стоимость |
+| `draft_upgrade_categories` | String(500) | Через запятую: Окраска,Прошивка,... |
+| `draft_working_days` | String(100) | Через запятую: Пн,Вт,Ср,... |
+| `draft_legal_form` | String(50) | ИП / Юр. лицо |
+| `draft_tax_system` | String(100) | ОСНО / УСН / АУСН / Патентная / НПД |
+| `draft_bank_account` | String(30) | Расчётный счёт (20 цифр) |
+| `draft_bank_name` | String(200) | Название банка |
+| `draft_bik` | String(20) | БИК (9 цифр) |
+| `draft_corr_account` | String(30) | Корреспондентский счёт |
+| `draft_org_name` | String(300) | Наименование организации |
+| `draft_inn` | String(20) | ИНН (10 или 12 цифр) |
+
+#### `Service` — новые поля
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `upgrade_categories` | String(500), nullable | Категории апгрейда через запятую |
+| `working_days` | String(100), nullable | Рабочие дни через запятую |
+
+#### `ServiceOwnerSettings`
+
+| Поле | Тип | По умолчанию |
+|---|---|---|
+| `owner_id` | PK, FK | — |
+| `notif_new_order` | Boolean | True |
+| `notif_cancel` | Boolean | True |
+
+#### `SheetsRetryQueue`
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `id` | PK | — |
+| `service_id` | FK | — |
+| `operation` | String(50) | `update` / `add` / `set_available` |
+| `payload_json` | Text | JSON-данные |
+| `attempts` | Integer | Счётчик попыток |
+| `last_attempt_at` | DateTime | — |
+
+### 10.3 FSM-схема
+
+#### `RegistrationFSM` — 17 состояний
+
+```
+reg_name → reg_service_type → [reg_upgrade_categories] →
+  reg_hydroisolation → reg_address → reg_metro_search → reg_metro_confirm →
+    reg_phone → reg_telegram → reg_working_days → reg_hours →
+      reg_diagnostics → reg_diag_included → reg_legal_form → reg_tax_system →
+        reg_bank_details (×6) → reg_confirm
+```
+
+#### `PartnerProfileFSM`
+
+```
+edit_field_select → edit_field_value
+```
+
+#### `PartnerOrderFSM`
+
+```
+reject_reason   ← текстовый ввод причины отклонения (RejectReasonInput)
+```
+
+### 10.4 Запуск
+
+Один процесс, общая БД. Клиентский бот запускается через `python -m bot`, партнёрский — через `python -m partner_bot`.  
+`sheets_sync` фоновая задача запускается однократно при старте клиентского бота.
 
 ---
 
-## 14. Интеграция notify.py в client-bot
+## 11. Тесты
 
-Когда клиент оплачивает или отменяет заявку, client-bot вызывает:
-
-```python
-# shared/services/partner_notify.py
-async def notify_partner_new_order(bot: Bot, order: Order) -> None: ...
-async def notify_partner_order_cancelled(bot: Bot, order: Order) -> None: ...
-async def notify_partner_payment_received(bot: Bot, order: Order) -> None: ...
-```
-
-Для этого client-bot при инициализации передаёт инстанс **partner bot'а** (или его `Bot` объект) в общий `notify.py`.  
-Альтернатива — один `Bot`-объект для партнёрских уведомлений инициализируется в shared-слое.
-
----
+- `tests/test_partner.py` — 83 теста:
+  - Pydantic-схемы (ServiceName, Address, Phone, TelegramHandle, WorkHours, DiagnosticsPrice, RejectReason + 6 банковских)
+  - ORM-модели: все колонки ServiceOwner (22 draft-поля), Service (+upgrade_categories, working_days)
+  - FSM: 17 состояний RegistrationFSM, отсутствие `reg_service_category`
+  - Клавиатуры: multi-select (upgrade categories, working days), legal form, tax system, draft edit (15 полей), Техподдержка в обоих меню
+  - Импорт хендлеров: 5 роутеров + sheets_writer
+  - Конфиг: PARTNER_BOT_TOKEN, GOOGLE_SA_PATH
 
 ## 15. Безопасность
 

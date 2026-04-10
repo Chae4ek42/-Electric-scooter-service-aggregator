@@ -9,26 +9,32 @@
 | `brands` | `id`, `name` |
 | `models` | `id`, `brand_id` (FK), `name` |
 | `service_categories` | `id`, `name` (Механика / Электрика) |
-| `services` | `id`, `category_id` (FK, nullable), `name`, `service_type`, `is_available`, `address`, `yandex_rating`, `nearest_metro`, `phone`, `telegram_handle`, `partnership_status`, `open_time`, `close_time`, `has_hydroisolation`, `diagnostics_price`, `diagnostics_included` |
+| `services` | `id`, `category_id` (FK, nullable), `name`, `service_type`, `is_available`, `address`, `yandex_rating`, `nearest_metro`, `phone`, `telegram_handle`, `partnership_status`, `main_brand_scooter`, `open_time`, `close_time`, `has_hydroisolation`, `diagnostics_price`, `diagnostics_included`, `upgrade_categories`, `working_days` |
 | `metro_stations` | `id`, `name`, `line`, `lat` (nullable), `lon` (nullable) |
 
 **`service_type`**: `'repair'` — только ремонт, `'upgrade'` — только апгрейд, `'complex'` — оба типа.
 
 **`is_available`**: `Boolean`, `default=True`. Синхронизируется из колонки «Доступен» в Google Sheets. Все запросы к списку сервисов фильтруют `is_available.is_(True)`.
 
-> Удалённые поля: `price`, `top_service`, `main_brand`, `diagnostics_price`. Данные о 6 сервисах в seed больше не вносятся — всё из Google Sheets.
+> Удалённые поля: `price`, `top_service`. Данные о сервисах в seed не вносятся — всё из Google Sheets.
 
 ### Пользователи и заявки
 
 | Таблица | Ключевые поля |
 |---|---|
 | `users` | `id` (TG BigInteger), `username`, `full_name`, `created_at` |
-| `orders` | `id`, `user_id` (FK), `service_id` (FK), `model_id` (FK, **nullable**), `model_custom_name` (nullable), `brand_custom_name` (nullable), `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `status`, `created_at` |
+| `orders` | `id`, `user_id` (FK), `service_id` (FK), `model_id` (FK, **nullable**), `model_custom_name`, `brand_custom_name`, `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `partner_comment`, `reject_reason`, `accepted_at`, `completed_at`, `status`, `created_at` |
+| `service_owners` | `id`, `telegram_id` (BigInteger, unique), `service_id` (FK, nullable), `status`, `registered_at`, `approved_at`, `approved_by`, `draft_*` (22 поля анкеты: name, service_type, category, address, metro, phone, telegram, open_time, close_time, hydroisolation, diagnostics_price, diag_included, upgrade_categories, working_days, legal_form, tax_system, bank_account, bank_name, bik, corr_account, org_name, inn) |
+| `service_owner_settings` | `owner_id` (PK, FK), `notif_new_order`, `notif_cancel` |
+| `sheets_retry_queue` | `id`, `service_id` (FK), `operation`, `payload_json`, `attempts`, `last_attempt_at`, `created_at` |
 
 **Статусы заявки:**
 
 ```
-awaiting_payment → accepted / cancelled / interrupted / completed
+awaiting_payment → accepted → in_progress → completed
+                 → rejected_by_partner
+                 → cancelled
+                 → interrupted
 ```
 
 `model_id` nullable — поддерживает кнопку «Другое»: в этом случае имя хранится в `model_custom_name`, `model_id` — на строку-плейсхолдер «Другое» (или NULL).
@@ -67,18 +73,47 @@ awaiting_payment → accepted / cancelled / interrupted / completed
 | `MetroTextInput` | `text` | 2–100 символов |
 | `ProblemDescription` | `text` | 3–1000 символов |
 | `ModelNameInput` | `text` | 2–150 символов, хотя бы одна буква |
+| `BrandNameInput` | `text` | 2–100 символов, хотя бы одна буква |
+| `ServiceNameInput` | `text` | 3–200 символов, хотя бы одна буква |
+| `AddressInput` | `text` | 10–400 символов |
+| `PhoneInput` | `text` | regex `\+?[\d\- ]{7,20}` |
+| `TelegramHandleInput` | `text` | `@?[a-zA-Z0-9_]{5,32}`, срезает `@` |
+| `WorkHoursInput` | `text` | HH:MM-HH:MM |
+| `DiagnosticsPriceInput` | `text` | целое число ≥ 0 |
+| `RejectReasonInput` | `text` | 3–500 символов |
+| `BankAccountInput` | `text` | ровно 20 цифр |
+| `BankNameInput` | `text` | 3–200 символов |
+| `BikInput` | `text` | ровно 9 цифр |
+| `CorrAccountInput` | `text` | ровно 20 цифр |
+| `OrgNameInput` | `text` | 3–300 символов |
+| `InnInput` | `text` | 10 или 12 цифр |
 
 При ошибке пользователь получает человеческое сообщение и остаётся в том же FSM-состоянии.
 
 ---
 
-## Google Sheets интеграция (`bot/services/sheets_sync.py`)
+## Google Sheets интеграция
 
-Публичный CSV-экспорт, учётные данные не нужны.
+### Чтение (`bot/services/sheets_sync.py`)
+
+Приватная таблица через Service Account (gspread). Fallback на публичный CSV если SA не настроен.
 
 ```
 https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Сервисы
 ```
+
+### Настройка порядка столбцов
+
+Порядок и набор столбцов задаётся через переменную `SHEETS_COLUMNS` в `.env`:
+
+```env
+SHEETS_COLUMNS=Название,Рейтинг Я.Карты,Телефон,Telegram,Адрес,Метро ближ.,Специализация,Основной бренд самокатов,Статус,Доступен,Категория,Открытие,Закрытие,Гидроизоляция,Диагностика,Входит в стоимость
+```
+
+Если `SHEETS_COLUMNS` не задан — используется значение по умолчанию из `config.py`.
+При записи в таблицу строка формируется в порядке `SHEETS_COLUMNS`.
+При чтении столбцы ищутся по заголовкам (порядок не важен), но при расхождении с
+реальной таблицей выводится предупреждение `SYNC_COLUMNS_MISMATCH`.
 
 **Лист «Сервисы» — читаемые столбцы:**
 
@@ -90,7 +125,8 @@ https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&she
 | Telegram | `telegram_handle` | |
 | Адрес | `address` | |
 | Метро ближ. | `nearest_metro` | |
-| Специализация | `service_type` | ремонт/апгрейд/комплекс; пусто → `complex` |
+| Специализация | `service_type` | ремонт/апгрейд/комплекс|
+| Основной бренд самокатов | `main_brand_scooter` | Текст |
 | Статус | `partnership_status` | |
 | Доступен | `is_available` | да/yes/1/true → `True` |
 | Категория | `category_id` | FK на `service_categories` |
@@ -103,9 +139,10 @@ https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&she
 **Upsert-логика:**
 
 - Поиск по `name` внутри сессии.
-- Если запись существует — обновляются все поля (включая `is_available`). `service_type` обновляется только если получен из таблицы.
+- Если запись существует — каждое поле сравнивается с текущим значением в БД; счётчик `изменено` инкрементируется только при наличии фактических отличий. `service_type` обновляется только если получен из таблицы.
 - Если запись новая и специализация пуста — создаётся с `service_type="complex"`.
 - Дополнительные столбцы игнорируются. Регистр заголовков не важен (`_col()` делает `strip().lower()`).
+- **Лог:** `"Sheets sync: добавлено N, изменено M"` — `M` = число записей, где реально изменилось хотя бы одно поле.
 
 **Поведение при ошибках:**
 
@@ -171,14 +208,14 @@ rating = `min(yandex_rating, 5.0) / 5.0`. При отсутствии рейти
 | `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @) |
 | `SUPPORT_USER` | `@i_jusp` | Контакт техподдержки |
 | `GOOGLE_SHEET_ID` | `""` | ID публичной Google Таблицы |
-| `SHEETS_SYNC_INTERVAL` | `300` | Интервал фоновой синхронизации, сек |
-| `THROTTLE_RATE` | `0.2` | Мин. интервал между запросами, сек |
+| `SHEETS_SYNC_INTERVAL` | `300` | Интервал фоновой синхронизации, сек || `SHEETS_COLUMNS` | *(16 столбцов)* | Порядок столбцов листа «Сервисы» (через запятую) || `THROTTLE_RATE` | `0.2` | Мин. интервал между запросами, сек |
+| `REDIS_URL` | `redis://localhost:6379/0` | URL Redis для FSM storage и throttling |
 | `CALENDAR_DAYS` | `14` | Дней вперёд в календаре |
 | `WORK_HOUR_START` | `8` | Начало рабочего дня (моск. вр.) |
 | `WORK_HOUR_END` | `22` | Конец рабочего дня (моск. вр.) |
 | `TIME_SLOT_MINUTES` | `60` | Шаг тайм-слота, мин |
 
-FSM-хранилище — `MemoryStorage` (in-process; перезапуск сбрасывает состояния). Для prod — Redis-backend.
+FSM-хранилище — `RedisStorage` (из `aiogram.fsm.storage.redis`). Все FSM-состояния и throttle-таймстемпы сохраняются в Redis и переживают перезапуск бота. Конфигурируется через `REDIS_URL`.
 
 ```
 https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet={Лист}
@@ -206,6 +243,61 @@ https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&she
 | `SUPPORT_USER` | `@support` | Контакт техподдержки |
 | `GOOGLE_SHEET_ID` | `""` | ID публичной Google Таблицы |
 | `SHEETS_SYNC_INTERVAL` | `300` | Интервал синхронизации, сек |
+| `SHEETS_COLUMNS` | *(16 столбцов)* | Порядок столбцов листа «Сервисы» через запятую |
 
-FSM-хранилище — `MemoryStorage` (только in-process, перезапуск сбрасывает состояния).  
-Для prod рекомендуется добавить Redis или PostgreSQL-backed storage.
+FSM-хранилище — `RedisStorage` (все FSM-состояния и throttle-таймстемпы переживают перезапуск).
+
+---
+
+## Логирование
+
+Структурированная схема логов описана в [LOG_SCHEMA.md](LOG_SCHEMA.md).
+
+Ключевые теги: `SYNC_START`, `SYNC_FETCHED`, `SYNC_RESULT`, `SYNC_FETCH_ERR`, `SYNC_COLUMNS_MISMATCH`, `SHEETS_WRITE`, `SHEETS_WRITE_ERR`.
+
+---
+
+## Перезапуск при ошибках
+
+### Клиентский бот
+
+```powershell
+# Остановить: Ctrl+C в терминале где запущен, затем:
+python -m bot
+```
+
+### Партнёрский бот
+
+```powershell
+python -m partner_bot
+```
+
+### После изменения .env
+
+Перезапуск обязателен — переменные считываются один раз при старте.
+
+### При ошибке синхронизации с Google Sheets
+
+1. Проверить `GOOGLE_SHEET_ID` и `GOOGLE_SA_PATH` в `.env`.
+2. Посмотреть в логах тег `SYNC_FETCH_ERR` или `SYNC_COLUMNS_MISMATCH`.
+3. Если ошибка сети — бот работает со старыми данными из БД и повторит синхронизацию через `SHEETS_SYNC_INTERVAL` сек.
+4. Если ошибка «0 записей» — исправить таблицу и перезапустить бот.
+
+### При ошибке БД (повреждён `esas.db`)
+
+```powershell
+# Удалить БД (будет пересоздана при старте):
+Remove-Item esas.db
+python -m bot
+```
+
+### При зависании
+
+```powershell
+# Найти процесс:
+Get-Process python | Where-Object { $_.MainWindowTitle -eq "" }
+# Завершить:
+Stop-Process -Name python -Force
+# Перезапустить:
+python -m bot
+```

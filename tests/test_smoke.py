@@ -186,7 +186,8 @@ async def test_all() -> None:
         OrderFSM.brand,
         OrderFSM.model,
         OrderFSM.malfunction_type,
-        OrderFSM.specific_problem,
+        OrderFSM.upgrade_category,
+        OrderFSM.problem_description,
         OrderFSM.location_method,
         OrderFSM.metro_search,
         OrderFSM.metro_confirm,
@@ -229,8 +230,21 @@ async def test_all() -> None:
         session.add(test_user)
         await session.flush()
 
-        # Pick first service and model
-        svc = (await session.execute(select(Service).limit(1))).scalar_one()
+        # Pick first service and model (create temp service if empty DB)
+        svc = (await session.execute(select(Service).limit(1))).scalar_one_or_none()
+        created_svc = False
+        if svc is None:
+            cat = (await session.execute(select(ServiceCategory).limit(1))).scalar_one()
+            svc = Service(
+                name="Test Service",
+                service_type="repair",
+                category_id=cat.id,
+                is_available=True,
+                address="Test Address, 1",
+            )
+            session.add(svc)
+            await session.flush()
+            created_svc = True
         mdl = (await session.execute(select(Model).limit(1))).scalar_one()
 
         order = Order(
@@ -258,6 +272,8 @@ async def test_all() -> None:
 
         # Cleanup
         await session.delete(order)
+        if created_svc:
+            await session.delete(svc)
         await session.delete(test_user)
         await session.commit()
         print("    ✅ User + Order OK")
@@ -279,6 +295,72 @@ async def test_all() -> None:
         await session.delete(action)
         await session.commit()
         print("    ✅ UserAction OK")
+
+    # 13. ServiceOwner statuses in Russian
+    print("\n[13] Testing Russian status constants …")
+    from bot.domain.models import ServiceOwner as SO
+
+    col = SO.__table__.columns["status"]
+    assert (
+        col.default.arg == "ожидает"
+    ), f"Default is '{col.default.arg}', expected 'ожидает'"
+    print("    ServiceOwner.status default = 'ожидает'")
+
+    from partner_bot.handlers.admin import _STATUS_RU
+
+    expected_keys = {"ожидает", "активный", "отклонён", "приостановлен"}
+    assert (
+        set(_STATUS_RU.keys()) == expected_keys
+    ), f"_STATUS_RU keys = {set(_STATUS_RU.keys())}, expected {expected_keys}"
+    print(f"    _STATUS_RU keys: {sorted(_STATUS_RU.keys())}")
+    print("    ✅ Russian statuses OK")
+
+    # 14. Redis config
+    print("\n[14] Testing Redis config …")
+    from bot.core.config import REDIS_URL
+
+    assert REDIS_URL.startswith("redis://"), f"REDIS_URL = '{REDIS_URL}'"
+    print(f"    REDIS_URL = {REDIS_URL}")
+    print("    ✅ Redis config OK")
+
+    # 15. ThrottlingMiddleware has Redis support
+    print("\n[15] Testing ThrottlingMiddleware (Redis with fallback) …")
+    from bot.core.middlewares import ThrottlingMiddleware
+
+    mw = ThrottlingMiddleware()
+    assert hasattr(mw, "_KEY_PREFIX"), "ThrottlingMiddleware missing _KEY_PREFIX"
+    assert hasattr(mw, "_last"), "ThrottlingMiddleware missing _last fallback dict"
+    print("    ThrottlingMiddleware: _KEY_PREFIX for Redis, _last for fallback")
+    print("    ✅ Throttling middleware OK")
+
+    # 16. SHEETS_COLUMNS config
+    print("\n[16] Testing SHEETS_COLUMNS config …")
+    from bot.core.config import SHEETS_COLUMNS
+
+    assert isinstance(SHEETS_COLUMNS, list), "SHEETS_COLUMNS must be a list"
+    assert len(SHEETS_COLUMNS) >= 10, f"Expected ≥10 columns, got {len(SHEETS_COLUMNS)}"
+    cols_lower = [c.lower() for c in SHEETS_COLUMNS]
+    assert "название" in cols_lower, "SHEETS_COLUMNS missing 'Название'"
+    assert "доступен" in cols_lower, "SHEETS_COLUMNS missing 'Доступен'"
+    print(f"    SHEETS_COLUMNS: {len(SHEETS_COLUMNS)} columns")
+    print(f"    First 5: {SHEETS_COLUMNS[:5]}")
+    print("    ✅ SHEETS_COLUMNS OK")
+
+    # 17. Service.main_brand_scooter field
+    print("\n[17] Testing Service.main_brand_scooter field …")
+    svc_cols = {c.name for c in Service.__table__.columns}
+    assert "main_brand_scooter" in svc_cols, "Service missing main_brand_scooter column"
+    print("    Service.main_brand_scooter present")
+    print("    ✅ main_brand_scooter OK")
+
+    # 18. sheets_writer uses SHEETS_COLUMNS
+    print("\n[18] Testing sheets_writer column mapping …")
+    from bot.services.sheets_writer import _FIELD_GETTERS, _service_to_row
+
+    for col in SHEETS_COLUMNS:
+        assert col.strip().lower() in _FIELD_GETTERS, f"No getter for column '{col}'"
+    print(f"    All {len(SHEETS_COLUMNS)} columns have getters")
+    print("    ✅ sheets_writer OK")
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED ✅")

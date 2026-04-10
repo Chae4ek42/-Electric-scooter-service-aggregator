@@ -2,20 +2,87 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import traceback
 import time
 from typing import Any, Awaitable, Callable
+from unittest.mock import patch
 
-from aiogram import BaseMiddleware
+from aiogram import BaseMiddleware, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from bot.core.config import THROTTLE_RATE
+import redis.asyncio as aioredis
+
+from bot.core.config import REDIS_URL, THROTTLE_RATE
 from bot.core.database import async_session
 from bot.domain.models import UserAction
 
 logger = logging.getLogger(__name__)
+
+_redis_pool: aioredis.Redis | None = None
+_redis_available: bool | None = None  # None = not checked yet
+
+
+async def _get_redis() -> aioredis.Redis | None:
+    """Return Redis connection or None if unavailable."""
+    global _redis_pool, _redis_available
+    if _redis_available is False:
+        return None
+    if _redis_pool is None:
+        _redis_pool = aioredis.from_url(REDIS_URL, decode_responses=True)
+    if _redis_available is None:
+        try:
+            await _redis_pool.ping()
+            _redis_available = True
+        except Exception:
+            _redis_available = False
+            logger.warning("Redis unavailable for throttling, using in-memory fallback")
+            return None
+    return _redis_pool
+
+
+class _ResponseCapture:
+    """Temporarily patches Bot methods to capture the first bot reply text."""
+
+    def __init__(self, bot: Bot) -> None:
+        self._bot = bot
+        self._patches: list[Any] = []
+        self.text: str | None = None
+        self.response_type: str | None = None
+
+    def _make_wrapper(self, original):
+        capture = self
+
+        @functools.wraps(original)
+        async def wrapper(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if capture.text is None:
+                # Extract text from positional or keyword args
+                txt = kwargs.get("text") or (args[1] if len(args) > 1 else None)
+                if txt:
+                    capture.text = str(txt)[:500]
+                    rm = kwargs.get("reply_markup")
+                    if rm and hasattr(rm, "inline_keyboard"):
+                        capture.response_type = "inline"
+                    else:
+                        capture.response_type = "text"
+            return result
+
+        return wrapper
+
+    def install(self) -> None:
+        for method_name in ("send_message", "edit_message_text"):
+            original = getattr(self._bot, method_name)
+            p = patch.object(self._bot, method_name, self._make_wrapper(original))
+            p.start()
+            self._patches.append(p)
+
+    def uninstall(self) -> None:
+        for p in self._patches:
+            p.stop()
+        self._patches.clear()
 
 
 class ActionLoggerMiddleware(BaseMiddleware):
@@ -66,6 +133,13 @@ class ActionLoggerMiddleware(BaseMiddleware):
         if fsm:
             state_str = await fsm.get_state()
 
+        # Wrap Bot methods to capture bot response
+        bot: Bot | None = data.get("bot")
+        capture: _ResponseCapture | None = None
+        if bot:
+            capture = _ResponseCapture(bot)
+            capture.install()
+
         start_ts = time.monotonic()
         status = "success"
         error_context = None
@@ -76,21 +150,26 @@ class ActionLoggerMiddleware(BaseMiddleware):
             error_context = traceback.format_exc()[-1000:]
             raise
         finally:
+            if capture:
+                capture.uninstall()
             elapsed_ms = (time.monotonic() - start_ts) * 1000
+            bot_response = capture.text if capture else None
+            bot_response_type = capture.response_type if capture else None
             log_parts = [
-                f"user={user_id}",
+                f"{user_id}",
                 f"@{username}" if username else "",
                 f"action={action_type}",
                 f"state={state_str or 'none'}",
                 f"payload={payload[:80]}" if payload else "",
                 f"status={status}",
                 f"elapsed={elapsed_ms:.0f}ms",
+                f"response_type={bot_response_type}" if bot_response_type else "",
             ]
             log_msg = " | ".join(p for p in log_parts if p)
             if status == "error":
-                logger.error("ACTION %s", log_msg)
+                logger.error(log_msg)
             else:
-                logger.info("ACTION %s", log_msg)
+                logger.info(log_msg)
 
             try:
                 async with async_session() as session:
@@ -102,6 +181,8 @@ class ActionLoggerMiddleware(BaseMiddleware):
                             payload=payload,
                             status=status,
                             error_context=error_context,
+                            bot_response=bot_response,
+                            bot_response_type=bot_response_type,
                         )
                     )
                     await session.commit()
@@ -112,11 +193,13 @@ class ActionLoggerMiddleware(BaseMiddleware):
 
 
 class ThrottlingMiddleware(BaseMiddleware):
-    """Rate-limit per user (in-memory)."""
+    """Rate-limit per user (Redis with in-memory fallback)."""
+
+    _KEY_PREFIX = "throttle:"
 
     def __init__(self, rate: float = THROTTLE_RATE) -> None:
         self._rate = rate
-        self._last: dict[int, float] = {}
+        self._last: dict[int, float] = {}  # in-memory fallback
 
     async def __call__(
         self,
@@ -129,8 +212,14 @@ class ThrottlingMiddleware(BaseMiddleware):
             user_id = event.from_user.id if event.from_user else None
 
         if user_id is not None:
-            now = time.monotonic()
-            last = self._last.get(user_id, 0.0)
+            now = time.time()
+            r = await _get_redis()
+            if r is not None:
+                key = f"{self._KEY_PREFIX}{user_id}"
+                last_str = await r.get(key)
+                last = float(last_str) if last_str else 0.0
+            else:
+                last = self._last.get(user_id, 0.0)
             if now - last < self._rate:
                 try:
                     async with async_session() as session:
@@ -153,7 +242,10 @@ class ThrottlingMiddleware(BaseMiddleware):
                         "Пожалуйста, не нажимайте кнопки так часто", show_alert=False
                     )
                 return None
-            self._last[user_id] = now
+            if r is not None:
+                await r.set(key, str(now), ex=max(1, int(self._rate) + 1))
+            else:
+                self._last[user_id] = now
 
         return await handler(event, data)
 
