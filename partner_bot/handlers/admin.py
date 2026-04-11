@@ -76,16 +76,27 @@ def _fmt_partner(owner: ServiceOwner) -> str:
     if owner.draft_service_type == "upgrade":
         cats = (owner.draft_upgrade_categories or "").replace(",", ", ") or "—"
         lines.append(f"*Категории апгрейда:* {e(cats)}")
+    if owner.draft_service_type == "repair":
+        lines.append(f"*Категория ремонта:* {e(owner.draft_category or '—')}")
+    lines.append(f"*Гидроизоляция:* {'Да' if owner.draft_hydroisolation else 'Нет'}")
+    if owner.draft_hydroisolation:
+        lines.append(f"*Цена гидроизоляции:* {e(owner.draft_hydro_price or '—')}")
     lines += [
-        f"*Гидроизоляция:* {'Да' if owner.draft_hydroisolation else 'Нет'}",
         f"*Адрес:* {e(owner.draft_address or '—')}",
         f"*Метро:* {e(owner.draft_metro or '—')}",
         f"*Телефон:* {e(owner.draft_phone or '—')}",
         f"*Telegram:* {e(owner.draft_telegram or '—')}",
         f"*Рабочие дни:* {e((owner.draft_working_days or '').replace(',', ', ') or '—')}",
         f"*Часы:* {owner.draft_open_time or '?'}—{owner.draft_close_time or '?'}",
-        f"*Диагностика:* {int(owner.draft_diagnostics_price) if owner.draft_diagnostics_price else 0} ₽",
-        f"*Входит в стоимость:* {'Да' if owner.draft_diag_included else 'Нет'}",
+    ]
+    if owner.draft_diagnostics_price is not None and owner.draft_diagnostics_price > 0:
+        lines.append(f"*Диагностика:* {int(owner.draft_diagnostics_price)} ₽")
+    else:
+        lines.append("*Диагностика:* бесплатно")
+    lines.append(
+        f"*Входит в стоимость:* {'Да' if owner.draft_diag_included else 'Нет'}"
+    )
+    lines += [
         f"*Форма:* {e(owner.draft_legal_form or '—')}",
         f"*Налогообложение:* {e(owner.draft_tax_system or '—')}",
         "",
@@ -320,6 +331,7 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
             open_time=owner.draft_open_time,
             close_time=owner.draft_close_time,
             has_hydroisolation=owner.draft_hydroisolation,
+            hydroisolation_price=owner.draft_hydro_price,
             diagnostics_price=owner.draft_diagnostics_price,
             diagnostics_included=owner.draft_diag_included,
             upgrade_categories=owner.draft_upgrade_categories,

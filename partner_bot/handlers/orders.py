@@ -26,14 +26,33 @@ router = Router(name="partner_orders")
 
 PAGE_SIZE = 10
 
+
+def _model_name(order: Order) -> str:
+    """Helper: human-readable model name from order."""
+    if order.brand_custom_name:
+        return f"{order.brand_custom_name} {order.model_custom_name or ''}".strip()
+    if order.model_custom_name:
+        return order.model_custom_name
+    if order.model:
+        return (
+            f"{order.model.brand.name} {order.model.name}"
+            if order.model.brand
+            else order.model.name
+        )
+    return "—"
+
+
 _STATUS_RU = {
     "awaiting_payment": "Ожидает оплаты",
     "accepted": "Принята",
     "in_progress": "В работе",
+    "ready_for_pickup": "Готов к выдаче",
     "completed": "Завершена",
     "cancelled": "Отменена",
     "rejected_by_partner": "Отклонена",
     "interrupted": "Не пришел",
+    "client_refused": "Клиент отказался",
+    "disputed": "Оспорена",
 }
 
 
@@ -50,9 +69,9 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
             else order.model.name
         )
     else:
-        model_str = "-"
+        model_str = "—"
 
-    stype = order.service.service_type if order.service else "-"
+    stype = order.service.service_type if order.service else "—"
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплексный"}
 
     lines = [
@@ -64,7 +83,7 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
         lines.append(f"Категория: {order.upgrade_category}")
     if order.problem_description:
         lines.append(f"Проблема: {order.problem_description}")
-    lines.append(f"Дата: {order.scheduled_date or '-'} {order.scheduled_time or ''}")
+    lines.append(f"Дата: {order.scheduled_date or '—'} {order.scheduled_time or ''}")
     lines.append(f"Статус: {_STATUS_RU.get(order.status, order.status)}")
 
     if show_client and order.user:
@@ -72,10 +91,26 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
         client_info = f"@{u.username}" if u.username else u.full_name
         lines.append(f"Клиент: {client_info}")
 
+    if order.total_cost is not None:
+        lines.append(f"Итоговая стоимость: {order.total_cost:.0f} руб.")
+    if order.estimate_cost is not None:
+        lines.append(f"Смета: {order.estimate_cost:.0f} руб.")
+    if order.estimate_items:
+        lines.append(f"Работы: {order.estimate_items}")
+    if order.estimate_deadline:
+        lines.append(f"Срок: {order.estimate_deadline}")
+    if order.estimate_description:
+        lines.append(f"Описание: {order.estimate_description}")
     if order.partner_comment:
         lines.append(f"Комментарий: {order.partner_comment}")
     if order.reject_reason:
         lines.append(f"Причина отказа: {order.reject_reason}")
+    if order.refusal_reason:
+        lines.append(f"Причина отказа клиента: {order.refusal_reason}")
+    if order.dispute_reason:
+        lines.append(f"Причина оспаривания: {order.dispute_reason}")
+    if order.client_visited is not None:
+        lines.append(f"Клиент был в сервисе: {'Да' if order.client_visited else 'Нет'}")
 
     return "\n".join(lines)
 
@@ -195,7 +230,7 @@ async def order_detail(callback: types.CallbackQuery, state: FSMContext) -> None
         return
 
     client_username = order.user.username if order.user else None
-    show_client = order.status in ("accepted", "in_progress", "completed")
+    show_client = order.status not in ("awaiting_payment",)
     text = _fmt_partner_order(order, show_client=show_client)
     kb = partner_order_detail_kb(
         order_id, order.status, client_username if show_client else None
@@ -344,11 +379,102 @@ async def reject_order_reason(message: types.Message, state: FSMContext) -> None
         logger.exception("Failed to notify client about rejection")
 
 
-# ── In progress ───────────────────────────────────────────────
+# ── Client refused ─────────────────────────────────────────────
 
 
-@router.callback_query(F.data.startswith("pord:in_progress:"))
-async def order_in_progress(callback: types.CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("pord:client_refused:"))
+async def client_refused_start(
+    callback: types.CallbackQuery, state: FSMContext
+) -> None:
+    owner = await _require_active_owner(callback)
+    if not owner:
+        return
+    order_id = int(callback.data.split(":")[2])
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.service_id != owner.service_id:
+            await callback.answer("Заявка не найдена.", show_alert=True)
+            return
+        if order.status != "accepted":
+            await callback.answer("Невозможно.", show_alert=True)
+            return
+    await state.update_data(refused_order_id=order_id)
+    await state.set_state(PartnerOrderFSM.client_refused_reason)
+    await callback.message.answer("Укажите причину отказа клиента:")
+    await callback.answer()
+
+
+@router.message(PartnerOrderFSM.client_refused_reason, F.text)
+async def client_refused_reason(message: types.Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if len(text) < 3:
+        await message.answer("Слишком короткая причина. Попробуйте ещё раз:")
+        return
+
+    data = await state.get_data()
+    order_id = data.get("refused_order_id")
+    if not order_id:
+        await state.clear()
+        return
+
+    owner = await _require_active_owner(message)
+    if not owner:
+        await state.clear()
+        return
+
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.service_id != owner.service_id:
+            await message.answer("Заявка не найдена.")
+            await state.clear()
+            return
+        order.status = "client_refused"
+        order.refusal_reason = text
+        order.completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
+        await session.commit()
+        user_id = order.user_id
+        svc_name = order.service.name if order.service else ""
+        model_str = _model_name(order)
+
+    logger.info(
+        "partner %s: order #%s client_refused: %s",
+        message.from_user.id,
+        order_id,
+        text,
+    )
+    await state.clear()
+    await message.answer(f"Заявка #{order_id} — клиент отказался.")
+
+    # Notify client
+    try:
+        from bot.core.config import BOT_TOKEN
+        from aiogram import Bot
+        from bot.ui.keyboards import client_visited_kb
+
+        client_bot = Bot(token=BOT_TOKEN)
+        await client_bot.send_message(
+            user_id,
+            f"❌ Заявка #{order_id}\n\n"
+            f"Сервис сообщил, что вы отказались от ремонта.\n"
+            f"Причина: {text}\n\n"
+            f"Устройство: {model_str}\n"
+            f"Сервис: {svc_name}",
+            reply_markup=client_visited_kb(order_id),
+        )
+        await client_bot.session.close()
+    except Exception:
+        logger.exception("Failed to notify client about refusal")
+
+
+# ── Start work (estimate FSM) ────────────────────────────────
+
+
+@router.callback_query(F.data.startswith("pord:start_work:"))
+async def start_work(callback: types.CallbackQuery, state: FSMContext) -> None:
     owner = await _require_active_owner(callback)
     if not owner:
         return
@@ -364,12 +490,214 @@ async def order_in_progress(callback: types.CallbackQuery) -> None:
         if order.status != "accepted":
             await callback.answer("Невозможно.", show_alert=True)
             return
+
+    await state.update_data(estimate_order_id=order_id)
+    await state.set_state(PartnerOrderFSM.estimate_cost)
+    await callback.message.answer("Введите стоимость ремонта (число, руб.):")
+    await callback.answer()
+
+
+@router.message(PartnerOrderFSM.estimate_cost, F.text)
+async def estimate_cost_input(message: types.Message, state: FSMContext) -> None:
+    raw = message.text.strip().replace(",", ".").replace(" ", "")
+    try:
+        cost = float(raw)
+        if cost <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        await message.answer("Введите корректное число (например: 3500):")
+        return
+    await state.update_data(est_cost=cost)
+    await state.set_state(PartnerOrderFSM.estimate_items)
+    await message.answer(
+        "Укажите позиции ремонта (что будет чиниться):\n"
+        "Например: Замена колеса, ремонт контроллера"
+    )
+
+
+@router.message(PartnerOrderFSM.estimate_items, F.text)
+async def estimate_items_input(message: types.Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if len(text) < 3:
+        await message.answer("Слишком короткое описание. Попробуйте ещё раз:")
+        return
+    await state.update_data(est_items=text)
+    await state.set_state(PartnerOrderFSM.estimate_deadline)
+    await message.answer(
+        "Укажите ожидаемое время завершения:\n" "Например: 2 дня или 15.04.2026"
+    )
+
+
+@router.message(PartnerOrderFSM.estimate_deadline, F.text)
+async def estimate_deadline_input(message: types.Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if len(text) < 1:
+        await message.answer("Укажите срок:")
+        return
+    await state.update_data(est_deadline=text)
+    await state.set_state(PartnerOrderFSM.estimate_description)
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    skip_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Пропустить", callback_data="pord:estimate_skip_desc"
+                )
+            ]
+        ]
+    )
+    await message.answer("Добавьте описание (опционально):", reply_markup=skip_kb)
+
+
+@router.callback_query(
+    PartnerOrderFSM.estimate_description, F.data == "pord:estimate_skip_desc"
+)
+async def estimate_skip_desc(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(est_description=None)
+    await _show_estimate_confirm(callback.message, state)
+    await callback.answer()
+
+
+@router.message(PartnerOrderFSM.estimate_description, F.text)
+async def estimate_desc_input(message: types.Message, state: FSMContext) -> None:
+    await state.update_data(est_description=message.text.strip())
+    await _show_estimate_confirm(message, state)
+
+
+async def _show_estimate_confirm(message: types.Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    cost = data["est_cost"]
+    items = data["est_items"]
+    deadline = data["est_deadline"]
+    desc = data.get("est_description")
+    lines = [
+        "Подтвердите смету:",
+        "",
+        f"Стоимость: {cost:.0f} руб.",
+        f"Работы: {items}",
+        f"Срок: {deadline}",
+    ]
+    if desc:
+        lines.append(f"Описание: {desc}")
+
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Подтвердить", callback_data="pord:estimate_confirm"
+                ),
+                InlineKeyboardButton(text="Назад", callback_data="pord:estimate_back"),
+            ]
+        ]
+    )
+    await state.set_state(PartnerOrderFSM.estimate_confirm)
+    await message.answer("\n".join(lines), reply_markup=kb)
+
+
+@router.callback_query(PartnerOrderFSM.estimate_confirm, F.data == "pord:estimate_back")
+async def estimate_back(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PartnerOrderFSM.estimate_cost)
+    await callback.message.answer("Введите стоимость ремонта (число, руб.):")
+    await callback.answer()
+
+
+@router.callback_query(
+    PartnerOrderFSM.estimate_confirm, F.data == "pord:estimate_confirm"
+)
+async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    order_id = data.get("estimate_order_id")
+    if not order_id:
+        await state.clear()
+        await callback.answer("Ошибка.", show_alert=True)
+        return
+
+    owner = await _require_active_owner(callback)
+    if not owner:
+        await state.clear()
+        return
+
+    cost = data["est_cost"]
+    items = data["est_items"]
+    deadline = data["est_deadline"]
+    desc = data.get("est_description")
+
+    prepayment: float = 0
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.service_id != owner.service_id:
+            await callback.answer("Заявка не найдена.", show_alert=True)
+            await state.clear()
+            return
+        if order.status != "accepted":
+            await callback.answer("Невозможно.", show_alert=True)
+            await state.clear()
+            return
         order.status = "in_progress"
+        order.estimate_cost = cost
+        order.estimate_items = items
+        order.estimate_deadline = deadline
+        order.estimate_description = desc
+        if order.total_cost is None:
+            order.total_cost = cost
+        # Determine prepayment
+        if order.upgrade_category == "Гидроизоляция":
+            prepayment = 500.0
+        elif order.diagnostics_price:
+            prepayment = order.diagnostics_price
         await session.commit()
+        user_id = order.user_id
+        svc_name = order.service.name if order.service else ""
+        model_str = _model_name(order)
 
-    logger.info("partner %s: order #%s in_progress", callback.from_user.id, order_id)
-    await callback.answer("Устройство принято в работу", show_alert=True)
+    remainder = max(0.0, cost - prepayment)
+    await state.clear()
+    await callback.answer("Заявка принята в работу", show_alert=True)
 
+    logger.info(
+        "partner %s: order #%s in_progress with estimate",
+        callback.from_user.id,
+        order_id,
+    )
+
+    # Notify client
+    try:
+        from bot.core.config import BOT_TOKEN
+        from aiogram import Bot
+        from bot.ui.keyboards import client_confirm_estimate_kb
+
+        client_bot = Bot(token=BOT_TOKEN)
+        est_lines = [
+            f"🔧 Заявка #{order_id} — принята в работу\n",
+            f"Устройство: {model_str}",
+            f"Сервис: {svc_name}\n",
+            "Смета:",
+            f"  Стоимость: {cost:.0f} руб.",
+            f"  Работы: {items}",
+            f"  Срок: {deadline}",
+        ]
+        if desc:
+            est_lines.append(f"  Описание: {desc}")
+        est_lines += [
+            "",
+            f"Предоплата: {prepayment:.0f} руб.",
+            f"Остаток: {remainder:.0f} руб.",
+        ]
+        await client_bot.send_message(
+            user_id,
+            "\n".join(est_lines),
+            reply_markup=client_confirm_estimate_kb(order_id),
+        )
+        await client_bot.session.close()
+    except Exception:
+        logger.exception("Failed to notify client about estimate")
+
+    # Refresh partner view
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
@@ -385,11 +713,89 @@ async def order_in_progress(callback: types.CallbackQuery) -> None:
             pass
 
 
-# ── Complete ──────────────────────────────────────────────────
+# ── Ready for pickup ──────────────────────────────────────────
 
 
-@router.callback_query(F.data.startswith("pord:complete:"))
-async def order_complete(callback: types.CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("pord:ready:"))
+async def order_ready(callback: types.CallbackQuery) -> None:
+    owner = await _require_active_owner(callback)
+    if not owner:
+        return
+    order_id = int(callback.data.split(":")[2])
+
+    prepayment: float = 0
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.service_id != owner.service_id:
+            await callback.answer("Заявка не найдена.", show_alert=True)
+            return
+        if order.status != "in_progress":
+            await callback.answer("Невозможно.", show_alert=True)
+            return
+        order.status = "ready_for_pickup"
+        await session.commit()
+        user_id = order.user_id
+        svc_name = order.service.name if order.service else ""
+        svc_address = order.service.address if order.service else ""
+        model_str = _model_name(order)
+        total = order.total_cost or order.estimate_cost or 0
+        if order.upgrade_category == "Гидроизоляция":
+            prepayment = 500.0
+        elif order.diagnostics_price:
+            prepayment = order.diagnostics_price
+
+    remainder = max(0.0, total - prepayment)
+
+    logger.info(
+        "partner %s: order #%s ready_for_pickup", callback.from_user.id, order_id
+    )
+    await callback.answer("Готов к выдаче", show_alert=True)
+
+    # Notify client
+    try:
+        from bot.core.config import BOT_TOKEN
+        from aiogram import Bot
+        from bot.ui.keyboards import client_ready_kb
+
+        client_bot = Bot(token=BOT_TOKEN)
+        await client_bot.send_message(
+            user_id,
+            f"✅ Заявка #{order_id} — готов к выдаче!\n\n"
+            f"Устройство: {model_str}\n"
+            f"Сервис: {svc_name}\n"
+            f"Адрес: {svc_address}\n\n"
+            f"Итоговая стоимость: {total:.0f} руб.\n"
+            f"Предоплата: {prepayment:.0f} руб.\n"
+            f"К оплате: {remainder:.0f} руб.",
+            reply_markup=client_ready_kb(order_id),
+        )
+        await client_bot.session.close()
+    except Exception:
+        logger.exception("Failed to notify client about ready")
+
+    # Refresh partner view
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+    if order:
+        text = _fmt_partner_order(order, show_client=True)
+        kb = partner_order_detail_kb(
+            order_id, order.status, order.user.username if order.user else None
+        )
+        try:
+            await callback.message.edit_text(text, reply_markup=kb)
+        except Exception:
+            pass
+
+
+# ── Set total cost ────────────────────────────────────────────
+
+
+@router.callback_query(F.data.startswith("pord:set_cost:"))
+async def set_cost_start(callback: types.CallbackQuery, state: FSMContext) -> None:
     owner = await _require_active_owner(callback)
     if not owner:
         return
@@ -402,15 +808,70 @@ async def order_complete(callback: types.CallbackQuery) -> None:
         if not order or order.service_id != owner.service_id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
-        if order.status != "in_progress":
+        if order.status not in ("accepted", "in_progress"):
             await callback.answer("Невозможно.", show_alert=True)
             return
-        order.status = "completed"
-        order.completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
+
+    await state.update_data(cost_order_id=order_id)
+    await state.set_state(PartnerOrderFSM.set_total_cost)
+    await callback.message.answer("Введите итоговую стоимость ремонта (число, руб.):")
+    await callback.answer()
+
+
+@router.message(PartnerOrderFSM.set_total_cost, F.text)
+async def set_cost_value(message: types.Message, state: FSMContext) -> None:
+    raw = message.text.strip().replace(",", ".").replace(" ", "")
+    try:
+        cost = float(raw)
+        if cost <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        await message.answer("Введите корректное число (например: 3500):")
+        return
+
+    data = await state.get_data()
+    order_id = data.get("cost_order_id")
+    if not order_id:
+        await state.clear()
+        return
+
+    owner = await _require_active_owner(message)
+    if not owner:
+        await state.clear()
+        return
+
+    prepayment: float = 0
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.service_id != owner.service_id:
+            await message.answer("Заявка не найдена.")
+            await state.clear()
+            return
+        order.total_cost = cost
         await session.commit()
 
-    logger.info("partner %s: order #%s completed", callback.from_user.id, order_id)
-    await callback.answer("Заявка завершена", show_alert=True)
+        # Determine prepayment
+        if order.upgrade_category == "Гидроизоляция":
+            prepayment = 500.0
+        elif order.diagnostics_price:
+            prepayment = order.diagnostics_price
+
+    remainder = max(0.0, cost - prepayment)
+    await state.clear()
+    await message.answer(
+        f"Итоговая стоимость заявки #{order_id}: {cost:.0f} руб.\n"
+        f"Предоплата: {prepayment:.0f} руб.\n"
+        f"Остаток к оплате: {remainder:.0f} руб."
+    )
+
+    logger.info(
+        "partner %s set total_cost=%s for order #%s",
+        message.from_user.id,
+        cost,
+        order_id,
+    )
 
     # Notify client
     try:
@@ -420,23 +881,14 @@ async def order_complete(callback: types.CallbackQuery) -> None:
         client_bot = Bot(token=BOT_TOKEN)
         await client_bot.send_message(
             order.user_id,
-            f"Ваша заявка #{order_id} завершена. Спасибо за обращение!",
+            f"По вашей заявке #{order_id} определена итоговая стоимость: "
+            f"{cost:.0f} руб.\n"
+            f"Предоплата: {prepayment:.0f} руб.\n"
+            f"Остаток к оплате: {remainder:.0f} руб.",
         )
         await client_bot.session.close()
     except Exception:
-        logger.exception("Failed to notify client about completion")
-
-    async with async_session() as session:
-        order = (
-            await session.execute(select(Order).where(Order.id == order_id))
-        ).scalar_one_or_none()
-    if order:
-        text = _fmt_partner_order(order, show_client=True)
-        kb = partner_order_detail_kb(order_id, order.status)
-        try:
-            await callback.message.edit_text(text, reply_markup=kb)
-        except Exception:
-            pass
+        logger.exception("Failed to notify client about total cost")
 
 
 # ── History ───────────────────────────────────────────────────

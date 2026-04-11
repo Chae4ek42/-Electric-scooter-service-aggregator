@@ -25,7 +25,7 @@ _TYPE_MAP_REV = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex
 _FIELD_GETTERS: dict[str, Callable[[Service], str]] = {
     "название": lambda s: s.name or "",
     "рейтинг я.карты": lambda s: str(s.yandex_rating or ""),
-    "телефон": lambda s: s.phone or "",
+    "телефон": lambda s: f"'{s.phone}" if s.phone else "",
     "telegram": lambda s: s.telegram_handle or "",
     "адрес": lambda s: s.address or "",
     "метро ближ.": lambda s: s.nearest_metro or "",
@@ -37,6 +37,7 @@ _FIELD_GETTERS: dict[str, Callable[[Service], str]] = {
     "открытие": lambda s: s.open_time or "",
     "закрытие": lambda s: s.close_time or "",
     "гидроизоляция": lambda s: "Да" if s.has_hydroisolation else "Нет",
+    "цена гидроизоляции": lambda s: s.hydroisolation_price or "",
     "диагностика": lambda s: (
         str(int(s.diagnostics_price)) if s.diagnostics_price else ""
     ),

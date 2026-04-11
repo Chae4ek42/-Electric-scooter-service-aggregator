@@ -77,6 +77,7 @@ class Service(Base):
     has_hydroisolation: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    hydroisolation_price: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # Диагностика
     diagnostics_price: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -129,11 +130,14 @@ class Order(Base):
     scheduled_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     #   awaiting_payment   — создана, ожидает предоплаты
     #   accepted           — принята партнёром
-    #   in_progress        — устройство принято партнёром
+    #   in_progress        — в работе (заполнена смета)
+    #   ready_for_pickup   — готов к выдаче
     #   completed          — завершена успешно
     #   cancelled          — отменена
     #   rejected_by_partner — отклонена сервисом
     #   interrupted        — клиент не пришёл
+    #   client_refused     — клиент отказался от ремонта
+    #   disputed           — оспорена клиентом
     status: Mapped[str] = mapped_column(String(30), default="awaiting_payment")
     payment_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     model_custom_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
@@ -141,8 +145,21 @@ class Order(Base):
     problem_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     upgrade_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
     diagnostics_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
     partner_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Смета
+    estimate_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimate_items: Mapped[str | None] = mapped_column(Text, nullable=True)
+    estimate_deadline: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    estimate_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Обратная связь клиента
+    client_visited: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    client_confirmed_estimate: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    dispute_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refusal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     accepted_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -207,6 +224,7 @@ class ServiceOwner(Base):
     draft_hydroisolation: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    draft_hydro_price: Mapped[str | None] = mapped_column(String(50), nullable=True)
     draft_diagnostics_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     draft_diag_included: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False

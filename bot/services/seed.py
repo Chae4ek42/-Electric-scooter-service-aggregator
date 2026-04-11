@@ -492,10 +492,19 @@ async def init_db() -> None:
             ("problem_description", "TEXT"),
             ("upgrade_category", "TEXT"),
             ("diagnostics_price", "REAL"),
+            ("total_cost", "REAL"),
             ("partner_comment", "TEXT"),
             ("reject_reason", "TEXT"),
             ("accepted_at", "TEXT"),
             ("completed_at", "TEXT"),
+            ("estimate_cost", "REAL"),
+            ("estimate_items", "TEXT"),
+            ("estimate_deadline", "TEXT"),
+            ("estimate_description", "TEXT"),
+            ("client_visited", "INTEGER"),
+            ("client_confirmed_estimate", "INTEGER"),
+            ("dispute_reason", "TEXT"),
+            ("refusal_reason", "TEXT"),
         ):
             col_name, col_type = col_def
             if col_name not in order_cols:
@@ -516,6 +525,7 @@ async def init_db() -> None:
             ("partnership_status", "TEXT"),
             ("is_available", "INTEGER NOT NULL DEFAULT 1"),
             ("main_brand_scooter", "TEXT"),
+            ("hydroisolation_price", "TEXT"),
         ):
             col_name, col_type = col_def
             if col_name not in svc_cols:
@@ -544,6 +554,16 @@ async def init_db() -> None:
                     f"ALTER TABLE user_actions ADD COLUMN {col_name} {col_type}"
                 )
                 logger.info("Migration: added user_actions.%s", col_name)
+
+        cursor = await raw_conn.execute("PRAGMA table_info('service_owners')")
+        so_cols = {row[1] for row in await cursor.fetchall()}
+        for col_def in (("draft_hydro_price", "TEXT"),):
+            col_name, col_type = col_def
+            if col_name not in so_cols:
+                await raw_conn.execute(
+                    f"ALTER TABLE service_owners ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info("Migration: added service_owners.%s", col_name)
 
         await raw_conn.commit()
 

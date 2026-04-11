@@ -20,6 +20,7 @@ from bot.core.middlewares import (
     ErrorMiddleware,
     ThrottlingMiddleware,
 )
+from bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
 from bot.services.seed import init_db
 from bot.services.sheets_sync import run_full_sync
 
@@ -99,7 +100,7 @@ async def main() -> None:
     # Первичная синхронизация с Google Sheets.
     # Любая ошибка (сетевая или логическая) — бот не стартует.
     logger.info("Синхронизация с Google Sheets …")
-    await run_full_sync()
+    await run_full_sync(first_run=True)
 
     bot = Bot(
         token=BOT_TOKEN,
@@ -114,6 +115,7 @@ async def main() -> None:
         event_type.middleware(ErrorMiddleware())
         event_type.middleware(ThrottlingMiddleware())
         event_type.middleware(ActionLoggerMiddleware())
+        event_type.middleware(FSMActivityMiddleware("client"))
 
     # Register routers (common first — so menu-interrupts are caught)
     dp.include_router(common_router)
@@ -126,6 +128,7 @@ async def main() -> None:
         await asyncio.gather(
             _sheets_sync_loop(SHEETS_SYNC_INTERVAL),
             _payment_expire_loop(),
+            fsm_reminder_loop(bot, "client"),
             dp.start_polling(bot),
         )
     finally:

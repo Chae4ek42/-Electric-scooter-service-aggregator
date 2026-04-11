@@ -58,6 +58,7 @@ _HEADER_TO_FIELD: dict[str, str] = {
     "открытие": "open_time",
     "закрытие": "close_time",
     "гидроизоляция": "has_hydroisolation",
+    "цена гидроизоляции": "hydroisolation_price",
     "диагностика": "diagnostics_price",
     "входит в стоимость": "diagnostics_included",
     "категории апгрейда": "upgrade_categories",
@@ -145,7 +146,7 @@ async def _fetch_csv(sheet_id: str, sheet_name: str) -> list[dict[str, Any]]:
     return [dict(row) for row in reader]
 
 
-async def sync_services_from_sheet() -> int:
+async def sync_services_from_sheet(*, first_run: bool = False) -> int:
     """
     Читает лист «Сервисы» и делает upsert по названию сервиса.
     Неизвестные столбцы таблицы игнорируются.
@@ -161,11 +162,12 @@ async def sync_services_from_sheet() -> int:
 
     from bot.core.config import GOOGLE_SHEET_ID, SHEETS_COLUMNS
 
-    logger.info(
-        "SYNC_START | columns_configured=%d | columns=%s",
-        len(SHEETS_COLUMNS),
-        ",".join(SHEETS_COLUMNS),
-    )
+    if first_run:
+        logger.info(
+            "SYNC_START | columns_configured=%d | columns=%s",
+            len(SHEETS_COLUMNS),
+            ",".join(SHEETS_COLUMNS),
+        )
 
     # Ошибка сети / HTTP — логируем с типом и пробрасываем (бот не стартует)
     try:
@@ -241,6 +243,8 @@ async def sync_services_from_sheet() -> int:
 
             nearest_metro = _col(row, "Метро ближ.") or None
             phone = _col(row, "Телефон") or None
+            if phone and phone.startswith("#"):
+                phone = None  # filter Sheets formula errors (#ERROR!, #REF!, etc.)
             telegram_handle = _col(row, "Telegram") or None
             partnership_status = _col(row, "Статус") or None
             main_brand_scooter = _col(row, "Основной бренд самокатов") or None
@@ -274,6 +278,8 @@ async def sync_services_from_sheet() -> int:
                 "true",
             )
 
+            hydro_price = _col(row, "Цена гидроизоляции") or None
+
             existing = (
                 await session.execute(select(Service).where(Service.name == name))
             ).scalar_one_or_none()
@@ -297,6 +303,7 @@ async def sync_services_from_sheet() -> int:
                     ("open_time", open_time),
                     ("close_time", close_time),
                     ("has_hydroisolation", has_hydro),
+                    ("hydroisolation_price", hydro_price),
                     ("diagnostics_price", diagnostics_price),
                     ("diagnostics_included", diag_included),
                 ]:
@@ -327,6 +334,7 @@ async def sync_services_from_sheet() -> int:
                         open_time=open_time,
                         close_time=close_time,
                         has_hydroisolation=has_hydro,
+                        hydroisolation_price=hydro_price,
                         diagnostics_price=diagnostics_price,
                         diagnostics_included=diag_included,
                     )
@@ -353,5 +361,5 @@ async def sync_services_from_sheet() -> int:
     return added + updated
 
 
-async def run_full_sync() -> None:
-    await sync_services_from_sheet()
+async def run_full_sync(*, first_run: bool = False) -> None:
+    await sync_services_from_sheet(first_run=first_run)

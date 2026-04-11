@@ -23,7 +23,7 @@
 | Таблица | Ключевые поля |
 |---|---|
 | `users` | `id` (TG BigInteger), `username`, `full_name`, `created_at` |
-| `orders` | `id`, `user_id` (FK), `service_id` (FK), `model_id` (FK, **nullable**), `model_custom_name`, `brand_custom_name`, `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `partner_comment`, `reject_reason`, `accepted_at`, `completed_at`, `status`, `created_at` |
+| `orders` | `id`, `user_id` (FK), `service_id` (FK), `model_id` (FK, **nullable**), `model_custom_name`, `brand_custom_name`, `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `total_cost`, `partner_comment`, `reject_reason`, `estimate_cost`, `estimate_items`, `estimate_deadline`, `estimate_description`, `client_visited`, `client_confirmed_estimate`, `dispute_reason`, `refusal_reason`, `accepted_at`, `completed_at`, `status`, `created_at` |
 | `service_owners` | `id`, `telegram_id` (BigInteger, unique), `service_id` (FK, nullable), `status`, `registered_at`, `approved_at`, `approved_by`, `draft_*` (22 поля анкеты: name, service_type, category, address, metro, phone, telegram, open_time, close_time, hydroisolation, diagnostics_price, diag_included, upgrade_categories, working_days, legal_form, tax_system, bank_account, bank_name, bik, corr_account, org_name, inn) |
 | `service_owner_settings` | `owner_id` (PK, FK), `notif_new_order`, `notif_cancel` |
 | `sheets_retry_queue` | `id`, `service_id` (FK), `operation`, `payload_json`, `attempts`, `last_attempt_at`, `created_at` |
@@ -31,11 +31,23 @@
 **Статусы заявки:**
 
 ```
-awaiting_payment → accepted → in_progress → completed
+awaiting_payment → accepted → in_progress → ready_for_pickup → completed
                  → rejected_by_partner
                  → cancelled
                  → interrupted
+                 → client_refused  (клиент отказался, причина в refusal_reason)
+                 → disputed        (клиент оспорил, причина в dispute_reason)
 ```
+
+**Поля жизненного цикла:**
+- `estimate_cost` (Float) — стоимость в смете партнёра
+- `estimate_items` (Text) — перечень работ
+- `estimate_deadline` (String) — срок выполнения
+- `estimate_description` (Text) — описание работ (опциональное)
+- `client_visited` (Boolean, nullable) — был ли клиент в сервисе
+- `client_confirmed_estimate` (Boolean, nullable) — подтвердил ли клиент смету
+- `dispute_reason` (Text) — причина оспаривания
+- `refusal_reason` (Text) — причина отказа клиента
 
 `model_id` nullable — поддерживает кнопку «Другое»: в этом случае имя хранится в `model_custom_name`, `model_id` — на строку-плейсхолдер «Другое» (или NULL).
 
@@ -121,7 +133,7 @@ SHEETS_COLUMNS=Название,Рейтинг Я.Карты,Телефон,Tele
 |---|---|---|
 | Название | `name` | Ключ upsert |
 | Рейтинг Я.Карты | `yandex_rating` | `float`, запятая → точка |
-| Телефон | `phone` | |
+| Телефон | `phone` | При записи префиксируется `'` для предотвращения интерпретации как формулы (#ERROR!). При чтении значения `#...` игнорируются. |
 | Telegram | `telegram_handle` | |
 | Адрес | `address` | |
 | Метро ближ. | `nearest_metro` | |

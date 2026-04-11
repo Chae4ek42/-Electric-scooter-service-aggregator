@@ -11,6 +11,8 @@ load_dotenv(BASE_DIR / ".env")
 BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 PARTNER_BOT_TOKEN: str = os.environ.get("PARTNER_BOT_TOKEN", "")
 SUPPORT_USER: str = os.environ.get("SUPPORT_USER", "@i_jusp")
+COOPERATION_USER: str = os.environ.get("COOPERATION_USER", "@i_jusp")
+PARTNER_BOT_NAME: str = os.environ.get("PARTNER_BOT_NAME", "ESAS Partner")
 GOOGLE_SHEET_ID: str = os.environ.get("GOOGLE_SHEET_ID", "")
 GOOGLE_SA_PATH: str = os.environ.get("GOOGLE_SA_PATH", "")
 SHEETS_SYNC_INTERVAL: int = int(os.environ.get("SHEETS_SYNC_INTERVAL", "300"))

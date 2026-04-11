@@ -30,7 +30,7 @@ def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="Оставить заявку")],
         [
             KeyboardButton(text="Мои заявки"),
-            KeyboardButton(text="Техподдержка"),
+            KeyboardButton(text="Поддержка"),
         ],
     ]
     if is_admin:
@@ -38,19 +38,28 @@ def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
-def support_kb(support_user: str) -> InlineKeyboardMarkup:
-    """Inline-кнопка для перехода в чат техподдержки."""
-    username = support_user.lstrip("@")
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def support_kb(support_user: str, cooperation_user: str = "") -> InlineKeyboardMarkup:
+    """Inline-кнопки поддержки: техническая + сотрудничество."""
+    sup = support_user.lstrip("@")
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="Техническая поддержка",
+                url=f"https://t.me/{sup}",
+            )
+        ],
+    ]
+    if cooperation_user:
+        coop = cooperation_user.lstrip("@")
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text="Написать в техподдержку",
-                    url=f"https://t.me/{username}",
+                    text="Вопросы по сотрудничеству",
+                    url=f"https://t.me/{coop}",
                 )
             ]
-        ]
-    )
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ── Inline keyboards ─────────────────────────────────────────
@@ -272,6 +281,7 @@ def confirm_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Подтвердить", callback_data="confirm:yes"),
                 InlineKeyboardButton(text="Отменить", callback_data="confirm:no"),
             ],
+            [BACK_BTN],
         ]
     )
 
@@ -325,6 +335,112 @@ def order_select_kb(orders: list, action: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# ── Client notification keyboards ────────────────────────────
+
+
+def client_visited_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Были ли вы в сервисе? (после отказа/завершения)"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Были ли вы в сервисе?",
+                    callback_data=f"cord:ask_visited:{order_id}",
+                )
+            ]
+        ]
+    )
+
+
+def client_visited_confirm_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Да / Нет / Назад для 'Были ли вы в сервисе?'"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Да", callback_data=f"cord:visited:{order_id}:yes"
+                ),
+                InlineKeyboardButton(
+                    text="Нет", callback_data=f"cord:visited:{order_id}:no"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Назад", callback_data=f"cord:visited_back:{order_id}"
+                )
+            ],
+        ]
+    )
+
+
+def client_confirm_estimate_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Подтвердить смету / Отклонить"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Подтвердить смету",
+                    callback_data=f"cord:confirm_estimate:{order_id}",
+                ),
+                InlineKeyboardButton(
+                    text="Отклонить",
+                    callback_data=f"cord:reject_estimate:{order_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Назад",
+                    callback_data=f"cord:estimate_back:{order_id}",
+                )
+            ],
+        ]
+    )
+
+
+def client_ready_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Оплатить и завершить / Оспорить"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Оплатить и завершить",
+                    callback_data=f"cord:pay_final:{order_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Оспорить",
+                    callback_data=f"cord:dispute:{order_id}",
+                )
+            ],
+        ]
+    )
+
+
+def client_pay_confirm_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Да / Нет / Назад для оплаты"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Да, оплатить",
+                    callback_data=f"cord:pay_confirm:{order_id}",
+                ),
+                InlineKeyboardButton(
+                    text="Нет",
+                    callback_data=f"cord:pay_cancel:{order_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Назад",
+                    callback_data=f"cord:pay_back:{order_id}",
+                )
+            ],
+        ]
+    )
+
+
 ADMIN_PAGE_SIZE = 10
 
 
@@ -337,15 +453,65 @@ def admin_main_kb() -> InlineKeyboardMarkup:
                     text="Заявки по статусу", callback_data="adm:filter"
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="Заявки партнёров", callback_data="adm:partners:0"
+                )
+            ],
         ]
     )
+
+
+def admin_partner_detail_kb(owner_id: int, status: str) -> InlineKeyboardMarkup:
+    _STATUS_MAP = {
+        "pending": "ожидает",
+        "active": "активный",
+        "suspended": "приостановлен",
+    }
+    ru_status = _STATUS_MAP.get(status, status)
+    rows: list[list[InlineKeyboardButton]] = []
+    if ru_status == "ожидает":
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Одобрить", callback_data=f"padm:approve:{owner_id}"
+                ),
+                InlineKeyboardButton(
+                    text="Отклонить", callback_data=f"padm:reject_partner:{owner_id}"
+                ),
+            ]
+        )
+    elif ru_status == "активный":
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Приостановить", callback_data=f"padm:suspend:{owner_id}"
+                )
+            ]
+        )
+    elif ru_status == "приостановлен":
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Восстановить", callback_data=f"padm:unsuspend:{owner_id}"
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="К списку", callback_data="padm:partners:0")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_filter_kb() -> InlineKeyboardMarkup:
     statuses = [
         ("awaiting_payment", "Ожид. оплаты"),
         ("accepted", "Приняты"),
+        ("in_progress", "В работе"),
+        ("ready_for_pickup", "Готовы к выдаче"),
         ("completed", "Завершены"),
+        ("client_refused", "Клиент отказался"),
+        ("disputed", "Оспорены"),
     ]
     rows = [
         [InlineKeyboardButton(text=label, callback_data=f"adm:orders:0:status:{key}")]
@@ -368,9 +534,14 @@ def admin_orders_kb(
         "new": "Новая",
         "awaiting_payment": "Ожидает",
         "accepted": "Принята",
+        "in_progress": "В работе",
+        "ready_for_pickup": "К выдаче",
         "interrupted": "Прервана",
         "completed": "Завершена",
         "cancelled": "Отменена",
+        "client_refused": "Отказ",
+        "disputed": "Оспорена",
+        "rejected_by_partner": "Отклонена",
     }
 
     def _fmt_date(d: str | None) -> str:

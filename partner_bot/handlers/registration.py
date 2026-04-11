@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
 from bot.domain.models import MetroStation, ServiceOwner, User
 from bot.domain.schemas import (
@@ -34,6 +35,7 @@ from partner_bot.ui.keyboards import (
     draft_edit_kb,
     metro_confirm_kb,
     partner_pending_menu_kb,
+    reg_category_kb,
     reg_confirm_kb,
     reg_diag_included_kb,
     reg_legal_form_kb,
@@ -48,6 +50,20 @@ from partner_bot.ui.keyboards import (
 
 logger = logging.getLogger(__name__)
 router = Router(name="partner_registration")
+
+_PARTNER_MENU_TEXTS = (
+    "Входящие заявки",
+    "История заявок",
+    "Редактировать профиль",
+    "Настройки уведомлений",
+    "Мой статус",
+    "Поддержка",
+    "Открыт / Закрыт",
+    "Панель администратора",
+    "Моя анкета",
+    "Продолжить заполнение",
+    "Изменить анкету",
+)
 
 
 def _pydantic_msg(exc: ValidationError) -> str:
@@ -87,6 +103,31 @@ async def _safe_edit_or_answer(
         await event.answer()
     else:
         await event.answer(text, reply_markup=reply_markup)
+
+
+async def _handle_menu_interrupt(message: types.Message, state: FSMContext) -> bool:
+    """Cancel FSM if user presses a menu button during text input."""
+    if message.text not in _PARTNER_MENU_TEXTS:
+        return False
+    await state.clear()
+    await message.answer("Процедура прервана.")
+    return True
+
+
+_STYPE_TEXT = (
+    "🔧 *Выберите тип услуг:*\n\n"
+    "*Ремонт* — устранение неисправностей: "
+    "замена деталей, ремонт электроники, механики.\n\n"
+    "*Апгрейд* — модернизация и улучшение самоката: "
+    "гидроизоляция, окраска, прошивка, доп. оснащение."
+)
+
+_CATEGORY_TEXT = (
+    "⚙️ *Выберите категорию ремонта:*\n\n"
+    "⚒️ *Механика* — замена колёс, тормозов, подвески, рулевой.\n\n"
+    "⚡️ *Электрика* — контроллер, батарея, проводка, дисплей.\n\n"
+    "💪 *Комплекс* — и механика, и электрика."
+)
 
 
 async def _ensure_owner(tg_id: int) -> ServiceOwner:
@@ -166,7 +207,7 @@ async def reg_continue(message: types.Message, state: FSMContext) -> None:
     prompts = {
         RegistrationFSM.reg_name.state: ("Введите название сервисного центра:", None),
         RegistrationFSM.reg_service_type.state: (
-            "Выберите тип услуг:",
+            _STYPE_TEXT,
             reg_service_type_kb(),
         ),
         RegistrationFSM.reg_upgrade_categories.state: (
@@ -231,8 +272,13 @@ async def edit_draft(message: types.Message, state: FSMContext) -> None:
 _EDIT_DRAFT_MAP = {
     "edit_draft:name": (RegistrationFSM.reg_name, "Введите название:"),
     "edit_draft:service_type": (RegistrationFSM.reg_service_type, None),
+    "edit_draft:category": (RegistrationFSM.reg_category, None),
     "edit_draft:upgrade_cats": (RegistrationFSM.reg_upgrade_categories, None),
     "edit_draft:hydro": (RegistrationFSM.reg_hydroisolation, None),
+    "edit_draft:hydro_price": (
+        RegistrationFSM.reg_hydro_price,
+        "Укажите стоимость гидроизоляции (число или диапазон):",
+    ),
     "edit_draft:address": (RegistrationFSM.reg_address, "Введите адрес:"),
     "edit_draft:metro": (RegistrationFSM.reg_metro_search, "Введите станцию метро:"),
     "edit_draft:phone": (RegistrationFSM.reg_phone, "Введите телефон:"),
@@ -260,9 +306,9 @@ async def edit_draft_field(callback: types.CallbackQuery, state: FSMContext) -> 
     await state.update_data(editing_draft=True)
     await state.set_state(fsm_state)
     if callback.data == "edit_draft:service_type":
-        await _safe_edit_or_answer(
-            callback, "Выберите тип услуг:", reg_service_type_kb()
-        )
+        await _safe_edit_or_answer(callback, _STYPE_TEXT, reg_service_type_kb())
+    elif callback.data == "edit_draft:category":
+        await _safe_edit_or_answer(callback, _CATEGORY_TEXT, reg_category_kb())
     elif callback.data == "edit_draft:upgrade_cats":
         owner = await _get_owner(callback.from_user.id)
         selected = set((owner.draft_upgrade_categories or "").split(",")) - {""}
@@ -327,6 +373,8 @@ async def _after_edit(event, state: FSMContext) -> bool:
 
 @router.message(RegistrationFSM.reg_name, F.text)
 async def reg_name(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
     try:
         v = ServiceNameInput(text=message.text)
     except ValidationError as e:
@@ -336,7 +384,7 @@ async def reg_name(message: types.Message, state: FSMContext) -> None:
     if await _after_edit(message, state):
         return
     await state.set_state(RegistrationFSM.reg_service_type)
-    await message.answer("Выберите тип услуг:", reply_markup=reg_service_type_kb())
+    await message.answer(_STYPE_TEXT, reply_markup=reg_service_type_kb())
 
 
 # ── Step 2: Service type ──────────────────────────────────────
@@ -347,9 +395,23 @@ async def reg_name(message: types.Message, state: FSMContext) -> None:
 )
 async def reg_service_type(callback: types.CallbackQuery, state: FSMContext) -> None:
     stype = callback.data.split(":")[1]
-    await _update_draft(callback.from_user.id, draft_service_type=stype)
-    if await _after_edit(callback, state):
-        return
+    data = await state.get_data()
+    editing = data.get("editing_draft", False)
+
+    # Clear incompatible fields when type changes
+    clear_kwargs: dict = {"draft_service_type": stype}
+    if stype == "repair":
+        clear_kwargs["draft_upgrade_categories"] = None
+    else:
+        clear_kwargs["draft_category"] = None
+    await _update_draft(callback.from_user.id, **clear_kwargs)
+
+    # When editing from draft, do NOT call _after_edit here —
+    # chain to the follow-up question so the dependent field is also filled.
+    if not editing:
+        pass  # normal registration flow — proceed below
+    # else: keep editing_draft=True, the chained handler will call _after_edit
+
     if stype == "upgrade":
         await state.update_data(selected_upgrade_cats=[])
         await state.set_state(RegistrationFSM.reg_upgrade_categories)
@@ -357,10 +419,24 @@ async def reg_service_type(callback: types.CallbackQuery, state: FSMContext) -> 
             callback, "Выберите категории апгрейда:", reg_upgrade_categories_kb(set())
         )
     else:
-        await state.set_state(RegistrationFSM.reg_hydroisolation)
-        await _safe_edit_or_answer(
-            callback, "Выполняете гидроизоляцию?", reg_yes_no_kb("reg_hydro")
-        )
+        # repair → ask category (Электроника / Механика / Комплекс)
+        await state.set_state(RegistrationFSM.reg_category)
+        await _safe_edit_or_answer(callback, _CATEGORY_TEXT, reg_category_kb())
+
+
+# ── Step 2b: Repair category ──────────────────────────────────
+
+
+@router.callback_query(RegistrationFSM.reg_category, F.data.startswith("reg_cat:"))
+async def reg_category(callback: types.CallbackQuery, state: FSMContext) -> None:
+    cat = callback.data.split(":")[1]
+    await _update_draft(callback.from_user.id, draft_category=cat)
+    if await _after_edit(callback, state):
+        return
+    await state.set_state(RegistrationFSM.reg_hydroisolation)
+    await _safe_edit_or_answer(
+        callback, "Выполняете гидроизоляцию?", reg_yes_no_kb("reg_hydro")
+    )
 
 
 # ── Step 3: Upgrade categories (multi-select) ────────────────
@@ -416,10 +492,43 @@ async def reg_upcat_done(callback: types.CallbackQuery, state: FSMContext) -> No
 async def reg_hydro(callback: types.CallbackQuery, state: FSMContext) -> None:
     val = callback.data.split(":")[1] == "yes"
     await _update_draft(callback.from_user.id, draft_hydroisolation=val)
+    if not val:
+        await _update_draft(callback.from_user.id, draft_hydro_price=None)
     if await _after_edit(callback, state):
         return
+    if val:
+        await state.set_state(RegistrationFSM.reg_hydro_price)
+        await _safe_edit_or_answer(
+            callback,
+            "💧 Укажите стоимость гидроизоляции.\n\n"
+            "Введите фиксированную цену или диапазон:\n"
+            "• Фиксированная: `1000`\n"
+            "• Диапазон: `1000-2000`",
+        )
+    else:
+        await state.set_state(RegistrationFSM.reg_address)
+        await _safe_edit_or_answer(callback, "Введите адрес сервисного центра:")
+
+
+# ── Step 4b: Hydro price ──────────────────────────────────────
+
+
+@router.message(RegistrationFSM.reg_hydro_price, F.text)
+async def reg_hydro_price(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
+    text = message.text.strip()
+    if not re.match(r"^\d+(-\d+)?$", text):
+        await message.answer(
+            "Неверный формат. Введите число (напр. 1000) "
+            "или диапазон (напр. 1000-2000):"
+        )
+        return
+    await _update_draft(message.from_user.id, draft_hydro_price=text)
+    if await _after_edit(message, state):
+        return
     await state.set_state(RegistrationFSM.reg_address)
-    await _safe_edit_or_answer(callback, "Введите адрес сервисного центра:")
+    await message.answer("Введите адрес сервисного центра:")
 
 
 # ── Step 5: Address ───────────────────────────────────────────
@@ -427,6 +536,8 @@ async def reg_hydro(callback: types.CallbackQuery, state: FSMContext) -> None:
 
 @router.message(RegistrationFSM.reg_address, F.text)
 async def reg_address(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
     try:
         v = AddressInput(text=message.text)
     except ValidationError as e:
@@ -444,6 +555,8 @@ async def reg_address(message: types.Message, state: FSMContext) -> None:
 
 @router.message(RegistrationFSM.reg_metro_search, F.text)
 async def reg_metro_search(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
     query = message.text.strip()
     if len(query) < 2:
         await message.answer("Введите хотя бы 2 символа.")
@@ -533,6 +646,8 @@ async def reg_metro_retry(callback: types.CallbackQuery, state: FSMContext) -> N
 
 @router.message(RegistrationFSM.reg_phone, F.text)
 async def reg_phone(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
     try:
         v = PhoneInput(text=message.text)
     except ValidationError as e:
@@ -552,6 +667,8 @@ async def reg_phone(message: types.Message, state: FSMContext) -> None:
 
 @router.message(RegistrationFSM.reg_telegram, F.text)
 async def reg_telegram(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
     try:
         v = TelegramHandleInput(text=message.text)
     except ValidationError as e:
@@ -619,6 +736,8 @@ async def reg_days_done(callback: types.CallbackQuery, state: FSMContext) -> Non
 
 @router.message(RegistrationFSM.reg_hours, F.text)
 async def reg_hours(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
     try:
         v = WorkHoursInput(text=message.text)
     except ValidationError as e:
@@ -632,7 +751,13 @@ async def reg_hours(message: types.Message, state: FSMContext) -> None:
     if await _after_edit(message, state):
         return
     await state.set_state(RegistrationFSM.reg_diagnostics)
-    await message.answer("Укажите стоимость диагностики в рублях (0 = бесплатно):")
+    await message.answer(
+        "💰 *Стоимость диагностики*\n\n"
+        "Укажите стоимость диагностики в рублях.\n\n"
+        "• Если диагностика *бесплатная* — введите 0\n"
+        "• Если *платная* — укажите сумму в рублях\n\n"
+        "Пример: 500"
+    )
 
 
 # ── Step 11: Diagnostics price ────────────────────────────────
@@ -640,6 +765,8 @@ async def reg_hours(message: types.Message, state: FSMContext) -> None:
 
 @router.message(RegistrationFSM.reg_diagnostics, F.text)
 async def reg_diagnostics(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
     try:
         v = DiagnosticsPriceInput(text=message.text)
     except ValidationError as e:
@@ -651,7 +778,11 @@ async def reg_diagnostics(message: types.Message, state: FSMContext) -> None:
         return
     await state.set_state(RegistrationFSM.reg_diag_included)
     await message.answer(
-        "Диагностика входит в стоимость ремонта?", reply_markup=reg_diag_included_kb()
+        "🔧 *Диагностика входит в стоимость ремонта?*\n\n"
+        "*Входит в стоимость* — клиент оплачивает диагностику, "
+        "и если ремонт состоится, сумма диагностики вычитается из итогового счёта.\n\n"
+        "*Оплачивается отдельно* — диагностика оплачивается как отдельная услуга.",
+        reply_markup=reg_diag_included_kb(),
     )
 
 
@@ -711,6 +842,8 @@ async def reg_tax_system(callback: types.CallbackQuery, state: FSMContext) -> No
 
 @router.message(RegistrationFSM.reg_bank_details, F.text)
 async def reg_bank_detail(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
     data = await state.get_data()
     step = data.get("bank_step", 0)
     if step >= len(_BANK_FIELDS):
@@ -757,6 +890,38 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
         reply_markup=partner_pending_menu_kb(has_draft=False),
     )
 
+    # Notify admins about new application
+    try:
+        admin_list = [u.strip().lower() for u in ADMIN_USERNAMES if u.strip()]
+        if admin_list:
+            async with async_session() as session:
+                from sqlalchemy import func
+
+                admins = (
+                    (
+                        await session.execute(
+                            select(User).where(
+                                func.lower(User.username).in_(admin_list)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            for admin_user in admins:
+                try:
+                    await callback.bot.send_message(
+                        admin_user.id,
+                        f"📋 Новая заявка на партнёрство!\n"
+                        f"Сервис: {owner.draft_name}\n"
+                        f"Тип: {owner.draft_service_type}\n"
+                        f"Откройте /start → Панель администратора для проверки.",
+                    )
+                except Exception:
+                    logger.warning("Failed to notify admin %s", admin_user.id)
+    except Exception:
+        logger.exception("Failed to notify admins about new application")
+
 
 @router.callback_query(RegistrationFSM.reg_confirm, F.data == "reg:restart")
 async def reg_restart(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -772,8 +937,10 @@ async def reg_restart(callback: types.CallbackQuery, state: FSMContext) -> None:
 _STATE_ORDER = [
     RegistrationFSM.reg_name,
     RegistrationFSM.reg_service_type,
+    RegistrationFSM.reg_category,
     RegistrationFSM.reg_upgrade_categories,
     RegistrationFSM.reg_hydroisolation,
+    RegistrationFSM.reg_hydro_price,
     RegistrationFSM.reg_address,
     RegistrationFSM.reg_metro_search,
     RegistrationFSM.reg_metro_confirm,
@@ -792,8 +959,12 @@ _STATE_ORDER = [
 _STATE_PROMPTS = {
     RegistrationFSM.reg_name.state: ("Введите название сервисного центра:", None),
     RegistrationFSM.reg_service_type.state: (
-        "Выберите тип услуг:",
+        _STYPE_TEXT,
         reg_service_type_kb(),
+    ),
+    RegistrationFSM.reg_category.state: (
+        _CATEGORY_TEXT,
+        reg_category_kb(),
     ),
     RegistrationFSM.reg_upgrade_categories.state: (
         "Выберите категории апгрейда:",
@@ -802,6 +973,10 @@ _STATE_PROMPTS = {
     RegistrationFSM.reg_hydroisolation.state: (
         "Выполняете гидроизоляцию?",
         reg_yes_no_kb("reg_hydro"),
+    ),
+    RegistrationFSM.reg_hydro_price.state: (
+        "Укажите стоимость гидроизоляции (число или диапазон, напр. 1000 или 1000-2000):",
+        None,
     ),
     RegistrationFSM.reg_address.state: ("Введите адрес:", None),
     RegistrationFSM.reg_metro_search.state: ("Введите станцию метро:", None),

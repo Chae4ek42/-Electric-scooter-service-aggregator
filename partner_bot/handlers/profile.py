@@ -13,7 +13,13 @@ from bot.core.database import async_session
 from bot.domain.models import Service, ServiceOwner
 from bot.domain.schemas import (
     AddressInput,
+    BankAccountInput,
+    BankNameInput,
+    BikInput,
+    CorrAccountInput,
     DiagnosticsPriceInput,
+    InnInput,
+    OrgNameInput,
     PhoneInput,
     ServiceNameInput,
     TelegramHandleInput,
@@ -21,8 +27,9 @@ from bot.domain.schemas import (
 )
 from bot.domain.states import PartnerProfileFSM
 from bot.services.sheets_writer import set_service_available, update_service_row
-from partner_bot.handlers.common import _get_owner
+from partner_bot.handlers.common import _get_owner, _md_escape, _sort_days, _TYPE_RU
 from partner_bot.ui.keyboards import (
+    partner_main_menu_kb,
     partner_pending_menu_kb,
     profile_edit_fields_kb,
     quick_status_kb,
@@ -38,7 +45,42 @@ _FIELD_LABELS = {
     "telegram": "Telegram",
     "hours": "Время работы (ЧЧ:ММ-ЧЧ:ММ)",
     "diagnostics": "Стоимость диагностики (руб.)",
+    "metro": "Ближайшее метро",
+    "hydro_price": "Цена гидроизоляции (число или диапазон, напр. 1000 или 1000-2000)",
+    "bank_account": "Расчётный счёт (20 цифр)",
+    "bank_name": "Название банка",
+    "bik": "БИК (9 цифр)",
+    "corr_account": "Корр. счёт (20 цифр)",
+    "org_name": "Название организации",
+    "inn": "ИНН (10 или 12 цифр)",
 }
+
+# Fields that do NOT require re-moderation
+_NO_REMOD_FIELDS = {
+    "diagnostics",
+    "hydro_price",
+    "bank_account",
+    "bank_name",
+    "bik",
+    "corr_account",
+    "org_name",
+    "inn",
+}
+
+
+_PARTNER_MENU_TEXTS = (
+    "Входящие заявки",
+    "История заявок",
+    "Редактировать профиль",
+    "Настройки уведомлений",
+    "Мой статус",
+    "Поддержка",
+    "Открыт / Закрыт",
+    "Панель администратора",
+    "Моя анкета",
+    "Продолжить заполнение",
+    "Изменить анкету",
+)
 
 
 async def _require_active(event) -> tuple[ServiceOwner | None, Service | None]:
@@ -59,16 +101,19 @@ async def _require_active(event) -> tuple[ServiceOwner | None, Service | None]:
 
 
 def _format_profile(svc: Service) -> str:
+    e = _md_escape
+    wd = _sort_days(svc.working_days)
     lines = [
         "Профиль сервисного центра:",
         "",
-        f"Название: {svc.name}",
-        f"Тип: {svc.service_type}",
-        f"Адрес: {svc.address or '-'}",
-        f"Метро: {svc.nearest_metro or '-'}",
-        f"Телефон: {svc.phone or '-'}",
-        f"Telegram: {svc.telegram_handle or '-'}",
-        f"Время: {svc.open_time or '?'}-{svc.close_time or '?'}",
+        f"Название: {e(svc.name)}",
+        f"Тип: {_TYPE_RU.get(svc.service_type, svc.service_type)}",
+        f"Адрес: {e(svc.address or '-')}",
+        f"Метро: {e(svc.nearest_metro or '-')}",
+        f"Телефон: {e(svc.phone or '-')}",
+        f"Telegram: {e(svc.telegram_handle or '-')}",
+        f"Рабочие дни: {e(wd or '-')}",
+        f"Время: {svc.open_time or '?'}\u2014{svc.close_time or '?'}",
         f"Диагностика: {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
         f"Доступен: {'Да' if svc.is_available else 'Нет'}",
     ]
@@ -96,14 +141,20 @@ async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None
     if not svc:
         return
     field = callback.data.split(":")[1]
+    if field in ("status", "back"):
+        return  # handled by dedicated handlers
     label = _FIELD_LABELS.get(field, field)
     await state.set_state(PartnerProfileFSM.edit_field_value)
     await state.update_data(edit_field=field, edit_service_id=svc.id)
-    await callback.message.answer(
-        f"⚠️ При изменении профиля сервис будет деактивирован "
-        f"до повторной модерации.\n\n"
-        f"Введите новое значение для поля '{label}':"
-    )
+    if field in _NO_REMOD_FIELDS:
+        prompt = f"Введите новое значение для поля '{label}':"
+    else:
+        prompt = (
+            f"⚠️ При изменении этого поля сервис будет деактивирован "
+            f"до повторной модерации.\n\n"
+            f"Введите новое значение для поля '{label}':"
+        )
+    await callback.message.answer(prompt)
     await callback.answer()
 
 
@@ -112,6 +163,11 @@ async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None
 
 @router.message(PartnerProfileFSM.edit_field_value, F.text)
 async def accept_field_value(message: types.Message, state: FSMContext) -> None:
+    if message.text in _PARTNER_MENU_TEXTS:
+        await state.clear()
+        await message.answer("Процедура прервана.")
+        return
+
     data = await state.get_data()
     field = data.get("edit_field")
     service_id = data.get("edit_service_id")
@@ -122,22 +178,46 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
     text = message.text.strip()
 
     # Validate
+    import re as _re
+
     try:
         if field == "name":
-            ServiceNameInput(name=text)
+            ServiceNameInput(text=text)
         elif field == "address":
-            AddressInput(address=text)
+            AddressInput(text=text)
         elif field == "phone":
-            PhoneInput(phone=text)
+            PhoneInput(text=text)
         elif field == "telegram":
-            TelegramHandleInput(handle=text)
+            TelegramHandleInput(text=text)
         elif field == "hours":
-            WorkHoursInput(hours=text)
+            WorkHoursInput(text=text)
         elif field == "diagnostics":
-            DiagnosticsPriceInput(price=int(text))
+            DiagnosticsPriceInput(text=text)
+        elif field == "metro":
+            if len(text) < 2:
+                raise ValueError("Минимум 2 символа")
+        elif field == "hydro_price":
+            if not _re.match(r"^\d+(-\d+)?$", text):
+                raise ValueError(
+                    "Формат: число или диапазон (напр. 1000 или 1000-2000)"
+                )
+        elif field == "bank_account":
+            BankAccountInput(text=text)
+        elif field == "bank_name":
+            BankNameInput(text=text)
+        elif field == "bik":
+            BikInput(text=text)
+        elif field == "corr_account":
+            CorrAccountInput(text=text)
+        elif field == "org_name":
+            OrgNameInput(text=text)
+        elif field == "inn":
+            InnInput(text=text)
     except Exception as e:
         await message.answer(f"Ошибка: {e}\nПопробуйте ещё раз:")
         return
+
+    needs_remod = field not in _NO_REMOD_FIELDS
 
     # Update DB
     async with async_session() as session:
@@ -148,30 +228,70 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
             await message.answer("Сервис не найден.")
             await state.clear()
             return
-        if field == "name":
-            svc.name = text
-        elif field == "address":
-            svc.address = text
-        elif field == "phone":
-            svc.phone = text
-        elif field == "telegram":
-            svc.telegram_handle = text
-        elif field == "hours":
-            parts = text.split("-")
-            svc.open_time = parts[0].strip()
-            svc.close_time = parts[1].strip()
-        elif field == "diagnostics":
-            svc.diagnostics_price = float(text)
-
-        # Deactivate service and send for re-moderation
-        svc.is_available = False
         owner = (
             await session.execute(
                 select(ServiceOwner).where(ServiceOwner.service_id == service_id)
             )
         ).scalar_one_or_none()
-        if owner:
-            owner.status = "ожидает"
+
+        if field == "name":
+            svc.name = text
+            if owner:
+                owner.draft_name = text
+        elif field == "address":
+            svc.address = text
+            if owner:
+                owner.draft_address = text
+        elif field == "phone":
+            svc.phone = text
+            if owner:
+                owner.draft_phone = text
+        elif field == "telegram":
+            svc.telegram_handle = text
+            if owner:
+                owner.draft_telegram = f"@{text.lstrip('@')}"
+        elif field == "hours":
+            parts = text.split("-")
+            svc.open_time = parts[0].strip()
+            svc.close_time = parts[1].strip()
+            if owner:
+                owner.draft_open_time = parts[0].strip()
+                owner.draft_close_time = parts[1].strip()
+        elif field == "diagnostics":
+            svc.diagnostics_price = float(text)
+            if owner:
+                owner.draft_diagnostics_price = float(text)
+        elif field == "metro":
+            svc.nearest_metro = text
+            if owner:
+                owner.draft_metro = text
+        elif field == "hydro_price":
+            svc.hydroisolation_price = text
+            if owner:
+                owner.draft_hydro_price = text
+        elif field == "bank_account":
+            if owner:
+                owner.draft_bank_account = text
+        elif field == "bank_name":
+            if owner:
+                owner.draft_bank_name = text
+        elif field == "bik":
+            if owner:
+                owner.draft_bik = text
+        elif field == "corr_account":
+            if owner:
+                owner.draft_corr_account = text
+        elif field == "org_name":
+            if owner:
+                owner.draft_org_name = text
+        elif field == "inn":
+            if owner:
+                owner.draft_inn = text
+
+        if needs_remod:
+            svc.is_available = False
+            if owner:
+                owner.status = "ожидает"
         await session.commit()
 
     # Write back to Sheets
@@ -187,22 +307,47 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
 
     await state.clear()
     logger.info(
-        "partner %s updated field '%s' for service %s — sent for re-moderation",
+        "partner %s updated field '%s' for service %s (remod=%s)",
         message.from_user.id,
         field,
         service_id,
+        needs_remod,
     )
 
     uname = message.from_user.username or ""
     is_admin = uname.lower() in ADMIN_USERNAMES
+    if needs_remod:
+        await message.answer(
+            "Поле обновлено. Ваш сервис деактивирован и отправлен "
+            "на повторную модерацию. Ожидайте одобрения.",
+            reply_markup=partner_pending_menu_kb(has_draft=False, is_admin=is_admin),
+        )
+    else:
+        await message.answer(
+            "Поле обновлено.",
+            reply_markup=partner_main_menu_kb(is_admin=is_admin),
+        )
+
+
+# ── Quick status toggle (text menu button) ────────────────────
+
+
+@router.message(F.text == "Открыт / Закрыт")
+async def status_toggle_menu(message: types.Message, state: FSMContext) -> None:
+    current = await state.get_state()
+    if current is not None:
+        await state.clear()
+        await message.answer("Процедура прервана.")
+    owner, svc = await _require_active(message)
+    if not svc:
+        return
     await message.answer(
-        "Поле обновлено. Ваш сервис деактивирован и отправлен "
-        "на повторную модерацию. Ожидайте одобрения.",
-        reply_markup=partner_pending_menu_kb(has_draft=False, is_admin=is_admin),
+        f"Текущий статус: {'Открыт' if svc.is_available else 'Закрыт'}",
+        reply_markup=quick_status_kb(),
     )
 
 
-# ── Quick status toggle ───────────────────────────────────────
+# ── Quick status toggle (inline fallback) ─────────────────────
 
 
 @router.callback_query(F.data == "pedit:status")

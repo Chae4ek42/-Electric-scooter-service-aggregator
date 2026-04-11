@@ -27,8 +27,10 @@ class OrderFSM(StatesGroup):
 class RegistrationFSM(StatesGroup):
     reg_name = State()
     reg_service_type = State()
+    reg_category = State()
     reg_upgrade_categories = State()
     reg_hydroisolation = State()
+    reg_hydro_price = State()
     reg_address = State()
     reg_metro_search = State()
     reg_metro_confirm = State()
@@ -50,4 +52,15 @@ class PartnerProfileFSM(StatesGroup):
 
 
 class PartnerOrderFSM(StatesGroup):
+    set_total_cost = State()
     reject_reason = State()
+    client_refused_reason = State()
+    estimate_cost = State()
+    estimate_items = State()
+    estimate_deadline = State()
+    estimate_description = State()
+    estimate_confirm = State()
+
+
+class ClientOrderFSM(StatesGroup):
+    dispute_reason = State()

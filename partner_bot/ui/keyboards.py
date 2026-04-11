@@ -29,7 +29,7 @@ def partner_pending_menu_kb(
     if has_draft:
         rows.append([KeyboardButton(text="Продолжить заполнение")])
     rows.append([KeyboardButton(text="Изменить анкету")])
-    rows.append([KeyboardButton(text="Техподдержка")])
+    rows.append([KeyboardButton(text="Поддержка")])
     if is_admin:
         rows.append([KeyboardButton(text="Панель администратора")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -46,10 +46,22 @@ def partner_main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
             KeyboardButton(text="Настройки уведомлений"),
             KeyboardButton(text="Мой статус"),
         ],
-        [KeyboardButton(text="Техподдержка")],
+        [
+            KeyboardButton(text="Открыт / Закрыт"),
+            KeyboardButton(text="Поддержка"),
+        ],
     ]
     if is_admin:
         rows.append([KeyboardButton(text="Панель администратора")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def admin_only_menu_kb() -> ReplyKeyboardMarkup:
+    """Keyboard for admins who are not active partners — only admin panel + support."""
+    rows = [
+        [KeyboardButton(text="Панель администратора")],
+        [KeyboardButton(text="Поддержка")],
+    ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -76,6 +88,18 @@ def reg_service_type_kb() -> InlineKeyboardMarkup:
             [BACK_BTN],
         ]
     )
+
+
+_REPAIR_CATS = ["Электроника", "Механика", "Комплекс"]
+
+
+def reg_category_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=cat, callback_data=f"reg_cat:{cat}")]
+        for cat in _REPAIR_CATS
+    ]
+    rows.append([BACK_BTN])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def reg_upgrade_categories_kb(selected: set[str]) -> InlineKeyboardMarkup:
@@ -221,8 +245,10 @@ def draft_edit_kb() -> InlineKeyboardMarkup:
     fields = [
         ("Название", "edit_draft:name"),
         ("Тип услуг", "edit_draft:service_type"),
+        ("Категория ремонта", "edit_draft:category"),
         ("Категории апгрейда", "edit_draft:upgrade_cats"),
         ("Гидроизоляция", "edit_draft:hydro"),
+        ("Цена гидроизоляции", "edit_draft:hydro_price"),
         ("Адрес", "edit_draft:address"),
         ("Метро", "edit_draft:metro"),
         ("Телефон", "edit_draft:phone"),
@@ -270,11 +296,27 @@ def partner_order_actions_kb(order_id: int, status: str) -> InlineKeyboardMarkup
                 )
             ]
         )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Указать итоговую стоимость",
+                    callback_data=f"pord:set_cost:{order_id}",
+                )
+            ]
+        )
     elif status == "in_progress":
         rows.append(
             [
                 InlineKeyboardButton(
                     text="Завершен", callback_data=f"pord:complete:{order_id}"
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Указать итоговую стоимость",
+                    callback_data=f"pord:set_cost:{order_id}",
                 )
             ]
         )
@@ -338,8 +380,24 @@ def partner_order_detail_kb(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="Устройство принято",
-                    callback_data=f"pord:in_progress:{order_id}",
+                    text="Принять в работу",
+                    callback_data=f"pord:start_work:{order_id}",
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Клиент отказался",
+                    callback_data=f"pord:client_refused:{order_id}",
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Указать итоговую стоимость",
+                    callback_data=f"pord:set_cost:{order_id}",
                 )
             ]
         )
@@ -347,10 +405,21 @@ def partner_order_detail_kb(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="Завершен", callback_data=f"pord:complete:{order_id}"
+                    text="Готов к выдаче",
+                    callback_data=f"pord:ready:{order_id}",
                 )
             ]
         )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Указать итоговую стоимость",
+                    callback_data=f"pord:set_cost:{order_id}",
+                )
+            ]
+        )
+    elif status == "ready_for_pickup":
+        pass  # Ожидаем действия клиента
     if client_username:
         rows.append(
             [
@@ -375,6 +444,16 @@ def orders_filter_kb() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="В работе", callback_data="pord:filter:in_progress"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Готовы к выдаче", callback_data="pord:filter:ready_for_pickup"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="Выполненные", callback_data="pord:filter:completed"
                 )
             ],
@@ -394,11 +473,18 @@ def profile_edit_fields_kb() -> InlineKeyboardMarkup:
     fields = [
         ("Название", "pedit:name"),
         ("Адрес", "pedit:address"),
+        ("Метро", "pedit:metro"),
         ("Телефон", "pedit:phone"),
         ("Telegram", "pedit:telegram"),
         ("Время работы", "pedit:hours"),
         ("Диагностика", "pedit:diagnostics"),
-        ("Открыт / Закрыт", "pedit:status"),
+        ("Цена гидроизоляции", "pedit:hydro_price"),
+        ("Расч. счёт", "pedit:bank_account"),
+        ("Банк", "pedit:bank_name"),
+        ("БИК", "pedit:bik"),
+        ("Корр. счёт", "pedit:corr_account"),
+        ("Организация", "pedit:org_name"),
+        ("ИНН", "pedit:inn"),
     ]
     rows = [
         [InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in fields
@@ -469,10 +555,10 @@ def padm_partners_kb(
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     _STATUS_SHORT = {
-        "ожидает": "ожид.",
-        "активный": "актив.",
-        "отклонён": "откл.",
-        "приостановлен": "приост.",
+        "ожидает": "Ожидает",
+        "активный": "Активен",
+        "отклонён": "Отклонён",
+        "приостановлен": "Приостановлен",
     }
     for o in owners:
         label = (

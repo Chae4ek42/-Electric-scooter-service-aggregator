@@ -15,6 +15,7 @@ from bot.core.middlewares import (
     ErrorMiddleware,
     ThrottlingMiddleware,
 )
+from bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
 from bot.services.seed import init_db
 from bot.services.sheets_sync import run_full_sync
 
@@ -76,7 +77,7 @@ async def main() -> None:
     await init_db()
 
     logger.info("Sheets sync ...")
-    await run_full_sync()
+    await run_full_sync(first_run=True)
 
     bot = Bot(
         token=PARTNER_BOT_TOKEN,
@@ -90,6 +91,7 @@ async def main() -> None:
         event_type.middleware(ErrorMiddleware())
         event_type.middleware(ThrottlingMiddleware())
         event_type.middleware(ActionLoggerMiddleware())
+        event_type.middleware(FSMActivityMiddleware("partner"))
 
     dp.include_router(admin_router)
     dp.include_router(common_router)
@@ -102,6 +104,7 @@ async def main() -> None:
     try:
         await asyncio.gather(
             _sheets_sync_loop(SHEETS_SYNC_INTERVAL),
+            fsm_reminder_loop(bot, "partner"),
             dp.start_polling(bot),
         )
     finally:

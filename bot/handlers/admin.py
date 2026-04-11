@@ -65,9 +65,14 @@ _STATUS_RU: dict[str, str] = {
     "new": "Новая",
     "awaiting_payment": "Ожидает оплаты",
     "accepted": "Принята",
+    "in_progress": "В работе",
+    "ready_for_pickup": "Готов к выдаче",
     "interrupted": "Прервана",
     "completed": "Завершена",
     "cancelled": "Отменена",
+    "client_refused": "Клиент отказался",
+    "disputed": "Оспорена",
+    "rejected_by_partner": "Отклонена",
 }
 
 
@@ -140,10 +145,32 @@ def _fmt_order(order: Order) -> str:
             else " (оплачивается отдельно)"
         )
         lines.append(f"*Диагностика:* {order.diagnostics_price:.0f} ₽{incl}")
+    if order.total_cost is not None:
+        lines.append(f"*Итоговая стоимость:* {order.total_cost:.0f} ₽")
+    if order.estimate_cost is not None:
+        lines.append(f"*Смета:* {order.estimate_cost:.0f} ₽")
+    if order.estimate_items:
+        lines.append(f"*Работы:* {e(order.estimate_items)}")
+    if order.estimate_deadline:
+        lines.append(f"*Срок:* {e(order.estimate_deadline)}")
+    if order.estimate_description:
+        lines.append(f"*Описание сметы:* {e(order.estimate_description)}")
     if order.payment_id:
         lines.append(f"*ID платежа:* `{order.payment_id}`")
     if order.problem_description:
         lines.append(f"*Описание проблемы:* {e(order.problem_description)}")
+    if order.reject_reason:
+        lines.append(f"*Причина отказа:* {e(order.reject_reason)}")
+    if order.refusal_reason:
+        lines.append(f"*Причина отказа клиента:* {e(order.refusal_reason)}")
+    if order.dispute_reason:
+        lines.append(f"*Причина оспаривания:* {e(order.dispute_reason)}")
+    if order.partner_comment:
+        lines.append(f"*Комментарий партнёра:* {e(order.partner_comment)}")
+    if order.client_visited is not None:
+        lines.append(
+            f"*Клиент был в сервисе:* {'Да' if order.client_visited else 'Нет'}"
+        )
     return "\n".join(lines)
 
 
