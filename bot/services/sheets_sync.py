@@ -160,7 +160,7 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
         logger.debug("Sheets sync пропущен (GOOGLE_SHEET_ID не задан)")
         return 0
 
-    from bot.core.config import GOOGLE_SHEET_ID, SHEETS_COLUMNS
+    from bot.core.config import GOOGLE_SHEET_ID, SHEETS_COLUMNS, SHEETS_TAB_SERVICES
 
     if first_run:
         logger.info(
@@ -171,7 +171,7 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
 
     # Ошибка сети / HTTP — логируем с типом и пробрасываем (бот не стартует)
     try:
-        rows = await _fetch_csv(GOOGLE_SHEET_ID, "Сервисы")
+        rows = await _fetch_csv(GOOGLE_SHEET_ID, SHEETS_TAB_SERVICES)
     except Exception as exc:
         logger.error(
             "SYNC_FETCH_ERR | error_type=%s | error=%s",
@@ -362,4 +362,12 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
 
 
 async def run_full_sync(*, first_run: bool = False) -> None:
+    import asyncio
+    from bot.services.sheets_writer import (
+        sync_all_clients_to_sheet,
+        sync_all_orders_to_sheet,
+    )
+
     await sync_services_from_sheet(first_run=first_run)
+    await asyncio.to_thread(sync_all_orders_to_sheet)
+    await asyncio.to_thread(sync_all_clients_to_sheet)

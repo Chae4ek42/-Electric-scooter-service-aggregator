@@ -12,23 +12,35 @@ BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 PARTNER_BOT_TOKEN: str = os.environ.get("PARTNER_BOT_TOKEN", "")
 SUPPORT_USER: str = os.environ.get("SUPPORT_USER", "@i_jusp")
 COOPERATION_USER: str = os.environ.get("COOPERATION_USER", "@i_jusp")
-PARTNER_BOT_NAME: str = os.environ.get("PARTNER_BOT_NAME", "ESAS Partner")
 GOOGLE_SHEET_ID: str = os.environ.get("GOOGLE_SHEET_ID", "")
 GOOGLE_SA_PATH: str = os.environ.get("GOOGLE_SA_PATH", "")
 SHEETS_SYNC_INTERVAL: int = int(os.environ.get("SHEETS_SYNC_INTERVAL", "300"))
 
 # Порядок столбцов Google Sheets (лист «Сервисы»).
-# Значение по умолчанию совпадает с текущей таблицей.
-_DEFAULT_COLUMNS = (
-    "Название,Рейтинг Я.Карты,Телефон,Telegram,Адрес,Метро ближ.,"
-    "Специализация,Основной бренд самокатов,Статус,Доступен,Категория,"
-    "Открытие,Закрытие,Гидроизоляция,Диагностика,Входит в стоимость"
-)
 SHEETS_COLUMNS: list[str] = [
-    c.strip()
-    for c in os.environ.get("SHEETS_COLUMNS", _DEFAULT_COLUMNS).split(",")
-    if c.strip()
+    "Название",
+    "Рейтинг Я.Карты",
+    "Телефон",
+    "Telegram",
+    "Адрес",
+    "Метро ближ.",
+    "Специализация",
+    "Основной бренд самокатов",
+    "Статус",
+    "Доступен",
+    "Категория",
+    "Открытие",
+    "Закрытие",
+    "Гидроизоляция",
+    "Цена гидроизоляции",
+    "Диагностика",
+    "Входит в стоимость",
 ]
+
+# Названия листов Google Sheets
+SHEETS_TAB_SERVICES: str = "Сервисы"
+SHEETS_TAB_ORDERS: str = "Заявки"
+SHEETS_TAB_CLIENTS: str = "Клиенты"
 _admin_raw: str = os.environ.get("ADMIN_USERNAMES", "")
 ADMIN_USERNAMES: set[str] = {
     x.strip().lstrip("@").lower()

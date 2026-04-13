@@ -506,6 +506,7 @@ def admin_partner_detail_kb(owner_id: int, status: str) -> InlineKeyboardMarkup:
 def admin_filter_kb() -> InlineKeyboardMarkup:
     statuses = [
         ("awaiting_payment", "Ожид. оплаты"),
+        ("paid", "Оплачено"),
         ("accepted", "Приняты"),
         ("in_progress", "В работе"),
         ("ready_for_pickup", "Готовы к выдаче"),
@@ -533,6 +534,7 @@ def admin_orders_kb(
     _STATUS_LABELS = {
         "new": "Новая",
         "awaiting_payment": "Ожидает",
+        "paid": "Оплачено",
         "accepted": "Принята",
         "in_progress": "В работе",
         "ready_for_pickup": "К выдаче",

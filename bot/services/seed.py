@@ -501,7 +501,11 @@ async def _run_migrations(conn: Any) -> None:
 async def init_db() -> None:
     """Create all tables, run migrations, seed initial data."""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.run_sync(Base.metadata.create_all)
+        except Exception as exc:
+            if "already exists" not in str(exc):
+                raise
         # Inline migrations — запускаем через raw aiosqlite connection
         raw = await conn.get_raw_connection()
         raw_conn = raw.driver_connection

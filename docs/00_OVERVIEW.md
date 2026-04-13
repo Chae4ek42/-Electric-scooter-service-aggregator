@@ -83,11 +83,9 @@ tests/
 | `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @). Получают уведомления о новых заявках на партнёрство. |
 | `SUPPORT_USER` | `@i_jusp` | Контакт техподдержки |
 | `COOPERATION_USER` | `@i_jusp` | Контакт для вопросов по сотрудничеству |
-| `PARTNER_BOT_NAME` | `ESAS Partner` | Отображаемое имя партнёрского бота |
 | `GOOGLE_SHEET_ID` | `""` | ID Google Таблицы |
 | `GOOGLE_SA_PATH` | `""` | Путь к JSON-ключу Service Account |
 | `SHEETS_SYNC_INTERVAL` | `300` | Интервал синхронизации, сек |
-| `SHEETS_COLUMNS` | *(17 столбцов)* | Порядок столбцов листа «Сервисы» (через запятую) |
 | `REDIS_URL` | `redis://localhost:6379/0` | URL Redis для FSM storage и throttling |
 | `THROTTLE_RATE` | `0.2` | Мин. интервал между запросами, сек |
 | `CALENDAR_DAYS` | `14` | Дней вперёд в календаре |
@@ -161,6 +159,16 @@ reg_name → reg_service_type → reg_category (если ремонт)
 При изменении типа услуг несовместимые поля (draft_category / draft_upgrade_categories) очищаются автоматически.
 
 Состояния `specific_problem` и `payment` удалены из потока. Сервис-центр подбирается автоматически после выбора времени (перед экраном подтверждения). Оплата вызывается заглушкой сразу после создания заявки.
+
+Константы (не из .env):
+- `SHEETS_COLUMNS` — порядок столбцов листа «Сервисы» (hardcoded в config.py)
+- `SHEETS_TAB_SERVICES` / `SHEETS_TAB_ORDERS` / `SHEETS_TAB_CLIENTS` — названия листов Google Sheets
+
+**Auto-payment:** При создании заявки и при финальной оплате платёж автоматически подтверждается через 10 секунд (mock-режим).
+
+**Тестовые данные:** При первом запуске `seed_test_data()` создаёт 6 тестовых сервисов, 3 клиентов и 4 заявки с префиксом `test_`. Пропускается, если тестовые данные уже есть.
+
+**Google Sheets:** Три листа — Сервисы (чтение + запись), Заявки (write-only debug), Клиенты (write-only debug). Листы создаются автоматически при первой записи.
 
 ### `bot/services/ranking.py`
 Ранжирование сервис-центров под запрос пользователя. Принимает `RankingContext` (тип работы, категория, метро пользователя) и возвращает `list[ServiceMatch]`, отсортированный по убыванию скора. Фильтрыет только `is_available=True`. Стратегия близости — `MetroProximityStrategy` (через `metro_graph.py`, BFS).

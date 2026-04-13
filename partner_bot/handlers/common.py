@@ -9,14 +9,30 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 
-from bot.core.config import ADMIN_USERNAMES, PARTNER_BOT_NAME
+from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
 from bot.domain.models import Service, ServiceOwner, User
+from bot.domain.states import (
+    PartnerOrderFSM,
+    PartnerProfileFSM,
+    RegistrationFSM,
+)
 from partner_bot.ui.keyboards import (
     admin_only_menu_kb,
     partner_main_menu_kb,
     partner_pending_menu_kb,
+    profile_edit_fields_kb,
+    reg_category_kb,
+    reg_confirm_kb,
+    reg_diag_included_kb,
+    reg_legal_form_kb,
+    reg_service_type_kb,
+    reg_skip_kb,
     reg_start_kb,
+    reg_tax_system_kb,
+    reg_upgrade_categories_kb,
+    reg_working_days_kb,
+    reg_yes_no_kb,
 )
 
 _TYPE_RU = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
@@ -155,14 +171,14 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
     # Администраторы видят только панель администратора (не партнёрский интерфейс)
     if is_admin and (owner is None or owner.status != "активный"):
         await message.answer(
-            f"{PARTNER_BOT_NAME}\n\nВы авторизованы как администратор.",
+            "Service Map\n\nВы авторизованы как администратор.",
             reply_markup=admin_only_menu_kb(),
         )
         return
 
     if owner is None:
         await message.answer(
-            f"Добро пожаловать в *{_md_escape(PARTNER_BOT_NAME)}*!\n\n"
+            "Добро пожаловать в *Service Map*!\n\n"
             "🗺 *Service Map для партнёров*\n\n"
             "Мы — платформа, которая помогает клиентам находить "
             "ближайшие сервисные центры по ремонту и апгрейду электросамокатов.\n\n"
@@ -215,7 +231,7 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
             ).scalar_one_or_none()
             svc_name = svc.name if svc else ""
 
-    greeting = f"{_md_escape(PARTNER_BOT_NAME)} \u2014 {_md_escape(svc_name)}"
+    greeting = f"Service Map \u2014 {_md_escape(svc_name)}"
     await message.answer(
         f"{greeting}\n\nВыберите действие:",
         reply_markup=partner_main_menu_kb(is_admin=is_admin),
@@ -321,7 +337,7 @@ async def cmd_client_mode(message: types.Message, state: FSMContext) -> None:
                     )
                 ).scalar_one_or_none()
                 svc_name = svc.name if svc else ""
-        greeting = f"{_md_escape(PARTNER_BOT_NAME)} \u2014 {_md_escape(svc_name)}"
+        greeting = f"Service Map \u2014 {_md_escape(svc_name)}"
         await message.answer(
             f"{greeting}\n\nВыберите действие:",
             reply_markup=partner_main_menu_kb(is_admin=is_admin),
@@ -343,6 +359,184 @@ async def cmd_client_mode(message: types.Message, state: FSMContext) -> None:
             )
     else:
         await message.answer(
-            f"Добро пожаловать в {_md_escape(PARTNER_BOT_NAME)}!",
+            "Добро пожаловать в Service Map!",
             reply_markup=reg_start_kb(),
+        )
+
+
+# ── FSM reminder handlers ────────────────────────────────────
+
+
+@router.callback_query(F.data == "fsm_remind:cancel")
+async def fsm_remind_cancel(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    try:
+        await callback.message.edit_text("Заполнение формы отменено.")
+    except Exception:
+        await callback.message.answer("Заполнение формы отменено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "fsm_remind:continue")
+async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Re-send the message for the current FSM step."""
+    current = await state.get_state()
+    data = await state.get_data()
+
+    if not current:
+        try:
+            await callback.message.edit_text("Нет активной формы.")
+        except Exception:
+            pass
+        await callback.answer()
+        return
+
+    await callback.answer("Продолжаем…")
+
+    # ── RegistrationFSM ──
+    if current == RegistrationFSM.reg_name.state:
+        await callback.message.answer("Введите название сервиса:")
+    elif current == RegistrationFSM.reg_service_type.state:
+        await callback.message.answer(
+            "Выберите тип услуг:", reply_markup=reg_service_type_kb()
+        )
+    elif current == RegistrationFSM.reg_category.state:
+        await callback.message.answer(
+            "Выберите категорию ремонта:", reply_markup=reg_category_kb()
+        )
+    elif current == RegistrationFSM.reg_upgrade_categories.state:
+        selected = set(data.get("upgrade_categories", []))
+        await callback.message.answer(
+            "Выберите категории апгрейда:",
+            reply_markup=reg_upgrade_categories_kb(selected),
+        )
+    elif current == RegistrationFSM.reg_hydroisolation.state:
+        await callback.message.answer(
+            "Делаете ли вы гидроизоляцию?",
+            reply_markup=reg_yes_no_kb("reg_hydro"),
+        )
+    elif current == RegistrationFSM.reg_hydro_price.state:
+        await callback.message.answer(
+            "Введите стоимость гидроизоляции (число или диапазон, напр. 1000 или 1000-2000):"
+        )
+    elif current == RegistrationFSM.reg_address.state:
+        await callback.message.answer("Введите адрес сервиса:")
+    elif current == RegistrationFSM.reg_metro_search.state:
+        await callback.message.answer("Введите название ближайшего метро:")
+    elif current == RegistrationFSM.reg_metro_confirm.state:
+        metro = data.get("metro_name", "")
+        if metro:
+            from partner_bot.ui.keyboards import metro_confirm_kb
+
+            await callback.message.answer(
+                f"Ваша станция — {metro}?",
+                reply_markup=metro_confirm_kb(metro),
+            )
+        else:
+            await callback.message.answer("Введите название ближайшего метро:")
+    elif current == RegistrationFSM.reg_phone.state:
+        await callback.message.answer(
+            "Введите номер телефона:", reply_markup=reg_skip_kb()
+        )
+    elif current == RegistrationFSM.reg_telegram.state:
+        await callback.message.answer(
+            "Введите Telegram (например @username):",
+            reply_markup=reg_skip_kb(),
+        )
+    elif current == RegistrationFSM.reg_working_days.state:
+        selected = set(data.get("working_days", []))
+        await callback.message.answer(
+            "Выберите рабочие дни:",
+            reply_markup=reg_working_days_kb(selected),
+        )
+    elif current == RegistrationFSM.reg_hours.state:
+        await callback.message.answer("Введите время работы (ЧЧ:ММ-ЧЧ:ММ):")
+    elif current == RegistrationFSM.reg_diagnostics.state:
+        await callback.message.answer("Введите стоимость диагностики (0 — бесплатно):")
+    elif current == RegistrationFSM.reg_diag_included.state:
+        await callback.message.answer(
+            "Диагностика входит в стоимость ремонта?",
+            reply_markup=reg_diag_included_kb(),
+        )
+    elif current == RegistrationFSM.reg_legal_form.state:
+        await callback.message.answer(
+            "Выберите организационно-правовую форму:",
+            reply_markup=reg_legal_form_kb(),
+        )
+    elif current == RegistrationFSM.reg_tax_system.state:
+        await callback.message.answer(
+            "Выберите систему налогообложения:",
+            reply_markup=reg_tax_system_kb(),
+        )
+    elif current == RegistrationFSM.reg_bank_details.state:
+        await callback.message.answer("Введите расчётный счёт (20 цифр):")
+    elif current == RegistrationFSM.reg_confirm.state:
+        owner = await _get_owner(callback.from_user.id)
+        if owner:
+            from partner_bot.handlers.common import _format_draft
+
+            await callback.message.answer(
+                _format_draft(owner), reply_markup=reg_confirm_kb()
+            )
+        else:
+            await callback.message.answer(
+                "Нажмите кнопку подтверждения:", reply_markup=reg_confirm_kb()
+            )
+
+    # ── PartnerProfileFSM ──
+    elif current == PartnerProfileFSM.edit_field_select.state:
+        await callback.message.answer(
+            "Выберите поле для редактирования:",
+            reply_markup=profile_edit_fields_kb(),
+        )
+    elif current == PartnerProfileFSM.edit_field_value.state:
+        field = data.get("edit_field", "")
+        _FIELD_LABELS = {
+            "name": "Название",
+            "address": "Адрес",
+            "phone": "Телефон",
+            "telegram": "Telegram",
+            "hours": "Время работы (ЧЧ:ММ-ЧЧ:ММ)",
+            "diagnostics": "Стоимость диагностики (руб.)",
+            "metro": "Ближайшее метро",
+            "hydro_price": "Цена гидроизоляции",
+            "bank_account": "Расчётный счёт (20 цифр)",
+            "bank_name": "Банк",
+            "bik": "БИК",
+            "corr_account": "Корр. счёт",
+            "org_name": "Организация",
+            "inn": "ИНН",
+        }
+        label = _FIELD_LABELS.get(field, field)
+        await callback.message.answer(f"Введите новое значение для поля '{label}':")
+
+    # ── PartnerOrderFSM ──
+    elif current == PartnerOrderFSM.set_total_cost.state:
+        await callback.message.answer(
+            "Введите итоговую стоимость ремонта (число, руб.):"
+        )
+    elif current == PartnerOrderFSM.reject_reason.state:
+        await callback.message.answer("Укажите причину отклонения:")
+    elif current == PartnerOrderFSM.client_refused_reason.state:
+        await callback.message.answer("Укажите причину отказа клиента:")
+    elif current == PartnerOrderFSM.estimate_cost.state:
+        await callback.message.answer("Введите стоимость ремонта (число, руб.):")
+    elif current == PartnerOrderFSM.estimate_items.state:
+        await callback.message.answer(
+            "Укажите позиции ремонта (что будет чиниться):\n"
+            "Например: Замена колеса, ремонт контроллера"
+        )
+    elif current == PartnerOrderFSM.estimate_deadline.state:
+        await callback.message.answer(
+            "Укажите ожидаемое время завершения:\n" "Например: 2 дня или 15.04.2026"
+        )
+    elif current == PartnerOrderFSM.estimate_description.state:
+        await callback.message.answer("Добавьте описание (опционально):")
+    elif current == PartnerOrderFSM.estimate_confirm.state:
+        await callback.message.answer(
+            "Нажмите кнопку подтверждения сметы или вернитесь назад."
+        )
+    else:
+        await callback.message.answer(
+            "Продолжите ввод данных или нажмите /start для отмены."
         )

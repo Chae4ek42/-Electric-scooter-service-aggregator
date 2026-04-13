@@ -65,6 +65,8 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
             FSInputFile(_WELCOME_VIDEO),
             caption=_WELCOME_TEXT,
             reply_markup=kb,
+            width=720,
+            height=1280,
         )
     else:
         await message.answer(_WELCOME_TEXT, reply_markup=kb)

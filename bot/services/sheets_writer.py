@@ -9,7 +9,14 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from bot.core.config import GOOGLE_SA_PATH, GOOGLE_SHEET_ID, SHEETS_COLUMNS
+from bot.core.config import (
+    GOOGLE_SA_PATH,
+    GOOGLE_SHEET_ID,
+    SHEETS_COLUMNS,
+    SHEETS_TAB_CLIENTS,
+    SHEETS_TAB_ORDERS,
+    SHEETS_TAB_SERVICES,
+)
 from bot.domain.models import Service
 
 logger = logging.getLogger(__name__)
@@ -68,6 +75,17 @@ def _service_to_row(svc: Service) -> list[str]:
     return row
 
 
+def _ensure_worksheet(sh, name: str, headers: list[str]):
+    """Return existing worksheet or create a new one with headers."""
+    try:
+        return sh.worksheet(name)
+    except Exception:
+        ws = sh.add_worksheet(title=name, rows=100, cols=len(headers))
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+        logger.info("SHEETS | created worksheet '%s'", name)
+        return ws
+
+
 def add_service_row(svc: Service) -> bool:
     if not _is_enabled():
         logger.debug("Sheets write disabled")
@@ -75,7 +93,7 @@ def add_service_row(svc: Service) -> bool:
     try:
         gc = _get_client()
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
-        ws = sh.worksheet("Сервисы")
+        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
         ws.append_row(_service_to_row(svc), value_input_option="USER_ENTERED")
         logger.info(
             "SHEETS_WRITE | op=add | service=%s | columns=%d",
@@ -94,7 +112,7 @@ def update_service_row(svc: Service) -> bool:
     try:
         gc = _get_client()
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
-        ws = sh.worksheet("Сервисы")
+        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
         cell = ws.find(svc.name, in_column=1)
         if cell is None:
             return add_service_row(svc)
@@ -120,7 +138,7 @@ def set_service_available(service_name: str, available: bool) -> bool:
     try:
         gc = _get_client()
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
-        ws = sh.worksheet("Сервисы")
+        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
         cell = ws.find(service_name, in_column=1)
         if cell is None:
             logger.warning("Sheets: row not found for %s", service_name)
@@ -138,4 +156,184 @@ def set_service_available(service_name: str, available: bool) -> bool:
         return True
     except Exception:
         logger.exception("Sheets write failed (available) for %s", service_name)
+        return False
+
+
+# ── Orders & Clients sheets (write-only, for debugging) ──────
+
+_ORDER_HEADERS = [
+    "ID",
+    "Клиент",
+    "Клиент TG",
+    "Сервис",
+    "Бренд",
+    "Модель",
+    "Категория",
+    "Статус",
+    "Создано",
+    "Обновлено",
+]
+
+_CLIENT_HEADERS = [
+    "TG ID",
+    "Username",
+    "Имя",
+    "Заявок",
+    "Первый заказ",
+    "Последний заказ",
+]
+
+
+def sync_all_orders_to_sheet() -> bool:
+    """Перезаписывает лист «Заявки» всеми заказами из БД (синхронный)."""
+    if not _is_enabled():
+        return False
+    try:
+        from sqlalchemy import select as sa_select
+        from bot.core.database import sync_engine
+        from sqlalchemy.orm import Session, joinedload
+        from bot.domain.models import Brand, Model as ModelModel, Order, User
+
+        gc = _get_client()
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        ws = _ensure_worksheet(sh, SHEETS_TAB_ORDERS, _ORDER_HEADERS)
+
+        ws.clear()
+        ws.append_row(_ORDER_HEADERS, value_input_option="USER_ENTERED")
+
+        _STATUS_RU = {
+            "awaiting_payment": "Ожидает оплаты",
+            "paid": "Оплачено",
+            "accepted": "Принята",
+            "in_progress": "В работе",
+            "ready_for_pickup": "Готов к выдаче",
+            "completed": "Завершена",
+            "cancelled": "Отменена",
+            "rejected_by_partner": "Отклонена",
+            "interrupted": "Прервана",
+            "client_refused": "Клиент отказался",
+            "disputed": "Оспорена",
+        }
+        with Session(sync_engine) as session:
+            orders = (
+                session.execute(
+                    sa_select(Order).options(
+                        joinedload(Order.model).joinedload(ModelModel.brand),
+                        joinedload(Order.service),
+                    )
+                )
+                .unique()
+                .scalars()
+                .all()
+            )
+            rows = []
+            for o in orders:
+                user = session.get(User, o.user_id)
+                svc = o.service
+                if o.brand_custom_name:
+                    brand_str = o.brand_custom_name
+                    model_str = o.model_custom_name or ""
+                elif o.model:
+                    brand_str = o.model.brand.name if o.model.brand else ""
+                    model_str = o.model_custom_name or o.model.name
+                else:
+                    brand_str = ""
+                    model_str = o.model_custom_name or ""
+                category_str = (
+                    o.upgrade_category
+                    or (svc.category_rel.name if svc and svc.category_rel else "")
+                    if svc
+                    else (o.upgrade_category or "")
+                )
+                rows.append(
+                    [
+                        o.id,
+                        user.full_name if user else "",
+                        (
+                            f"@{user.username}"
+                            if user and user.username
+                            else str(o.user_id)
+                        ),
+                        svc.name if svc else "",
+                        brand_str,
+                        model_str,
+                        category_str,
+                        _STATUS_RU.get(o.status, o.status) if o.status else "",
+                        str(
+                            o.created_at.strftime("%d.%m.%Y %H:%M")
+                            if o.created_at
+                            else ""
+                        ),
+                        str(
+                            o.completed_at.strftime("%d.%m.%Y %H:%M")
+                            if o.completed_at
+                            else ""
+                        ),
+                    ]
+                )
+        if rows:
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+        logger.info("SHEETS_WRITE | op=sync_orders | count=%d", len(rows))
+        return True
+    except Exception:
+        logger.exception("SHEETS_WRITE_ERR | op=sync_orders")
+        return False
+
+
+def sync_all_clients_to_sheet() -> bool:
+    """Перезаписывает лист «Клиенты» всеми пользователями из БД."""
+    if not _is_enabled():
+        return False
+    try:
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+        from bot.core.database import sync_engine
+        from sqlalchemy.orm import Session
+        from bot.domain.models import Order, User
+
+        gc = _get_client()
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        ws = _ensure_worksheet(sh, SHEETS_TAB_CLIENTS, _CLIENT_HEADERS)
+
+        ws.clear()
+        ws.append_row(_CLIENT_HEADERS, value_input_option="USER_ENTERED")
+
+        with Session(sync_engine) as session:
+            users = session.execute(sa_select(User)).scalars().all()
+            rows = []
+            for u in users:
+                order_count = (
+                    session.scalar(
+                        sa_select(sa_func.count())
+                        .select_from(Order)
+                        .where(Order.user_id == u.id)
+                    )
+                    or 0
+                )
+                first = session.scalar(
+                    sa_select(sa_func.min(Order.created_at)).where(
+                        Order.user_id == u.id
+                    )
+                )
+                last = session.scalar(
+                    sa_select(sa_func.max(Order.created_at)).where(
+                        Order.user_id == u.id
+                    )
+                )
+                rows.append(
+                    [
+                        u.id,
+                        f"@{u.username}" if u.username else "",
+                        u.full_name or "",
+                        order_count,
+                        first.strftime("%d.%m.%Y %H:%M") if first else "",
+                        last.strftime("%d.%m.%Y %H:%M") if last else "",
+                    ]
+                )
+        if rows:
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+        logger.info("SHEETS_WRITE | op=sync_clients | count=%d", len(rows))
+        return True
+    except Exception:
+        logger.exception("SHEETS_WRITE_ERR | op=sync_clients")
         return False

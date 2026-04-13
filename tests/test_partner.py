@@ -729,6 +729,190 @@ class TestHydroPriceField:
         assert "draft_hydro_price" in t.columns.keys()
 
 
+# ── Config cleanup (PARTNER_BOT_NAME removed, SHEETS_COLUMNS hardcoded) ──
+
+
+class TestConfigCleanup:
+    def test_no_partner_bot_name_in_config(self):
+        import bot.core.config as cfg
+
+        assert not hasattr(
+            cfg, "PARTNER_BOT_NAME"
+        ), "PARTNER_BOT_NAME should be removed"
+
+    def test_sheets_columns_is_hardcoded_list(self):
+        from bot.core.config import SHEETS_COLUMNS
+
+        assert isinstance(SHEETS_COLUMNS, list)
+        assert len(SHEETS_COLUMNS) >= 15
+        lower = [c.lower() for c in SHEETS_COLUMNS]
+        assert "название" in lower
+        assert "рейтинг я.карты" in lower
+        assert "цена гидроизоляции" in lower
+
+    def test_sheets_tab_constants(self):
+        from bot.core.config import (
+            SHEETS_TAB_SERVICES,
+            SHEETS_TAB_ORDERS,
+            SHEETS_TAB_CLIENTS,
+        )
+
+        assert SHEETS_TAB_SERVICES == "Сервисы"
+        assert SHEETS_TAB_ORDERS == "Заявки"
+        assert SHEETS_TAB_CLIENTS == "Клиенты"
+
+
+# ── Partner common no PARTNER_BOT_NAME ─────────────────────────
+
+
+class TestPartnerCommonNoBotName:
+    def test_import_no_partner_bot_name(self):
+        import partner_bot.handlers.common as pmod
+
+        # Should not import PARTNER_BOT_NAME
+        src = open(pmod.__file__, encoding="utf-8").read()
+        assert "PARTNER_BOT_NAME" not in src
+
+
+# ── Sheets writer new functions ────────────────────────────────
+
+
+class TestSheetsWriterNewFunctions:
+    def test_sync_orders_function_exists(self):
+        from bot.services.sheets_writer import sync_all_orders_to_sheet
+
+        assert callable(sync_all_orders_to_sheet)
+
+    def test_sync_clients_function_exists(self):
+        from bot.services.sheets_writer import sync_all_clients_to_sheet
+
+        assert callable(sync_all_clients_to_sheet)
+
+    def test_ensure_worksheet_function_exists(self):
+        from bot.services.sheets_writer import _ensure_worksheet
+
+        assert callable(_ensure_worksheet)
+
+    def test_order_headers_defined(self):
+        from bot.services.sheets_writer import _ORDER_HEADERS
+
+        assert isinstance(_ORDER_HEADERS, list)
+        assert "ID" in _ORDER_HEADERS
+
+    def test_client_headers_defined(self):
+        from bot.services.sheets_writer import _CLIENT_HEADERS
+
+        assert isinstance(_CLIENT_HEADERS, list)
+        assert "TG ID" in _CLIENT_HEADERS
+
+
+# ── Database sync_engine ───────────────────────────────────────
+
+
+class TestSyncEngine:
+    def test_sync_engine_exists(self):
+        from bot.core.database import sync_engine
+
+        assert sync_engine is not None
+
+    def test_sync_engine_url_no_aiosqlite(self):
+        from bot.core.database import sync_engine
+
+        assert "aiosqlite" not in str(sync_engine.url)
+
+
+# ── Seed test data ─────────────────────────────────────────────
+
+
+# ── Admin TelegramBadRequest fix ───────────────────────────────
+
+
+class TestAdminBadRequestFix:
+    def test_admin_imports_telegram_bad_request(self):
+        import partner_bot.handlers.admin as amod
+
+        src = open(amod.__file__, encoding="utf-8").read()
+        assert "TelegramBadRequest" in src
+
+
+# ── Video width/height ─────────────────────────────────────────
+
+
+class TestVideoFix:
+    def test_welcome_video_has_dimensions(self):
+        import bot.handlers.common as cmod
+
+        src = open(cmod.__file__, encoding="utf-8").read()
+        assert "width=" in src
+        assert "height=" in src
+
+
+# ── Auto-payment ───────────────────────────────────────────────
+
+
+class TestAutoPayment:
+    def test_order_handler_has_asyncio(self):
+        import bot.handlers.order as omod
+
+        src = open(omod.__file__, encoding="utf-8").read()
+        assert "import asyncio" in src
+        assert "asyncio.sleep(10)" in src
+
+    def test_auto_pay_diagnostics_task(self):
+        import bot.handlers.order as omod
+
+        src = open(omod.__file__, encoding="utf-8").read()
+        assert "_auto_pay_diagnostics" in src
+
+    def test_auto_pay_final_task(self):
+        import bot.handlers.order as omod
+
+        src = open(omod.__file__, encoding="utf-8").read()
+        assert "_auto_pay_final" in src
+
+    def test_no_payment_stub_text(self):
+        import bot.handlers.order as omod
+
+        src = open(omod.__file__, encoding="utf-8").read()
+        assert "Система оплаты находится в разработке" not in src
+        assert "Система предоплаты находится в разработке" not in src
+
+
+# ── Diagnostics text ───────────────────────────────────────────
+
+
+class TestDiagnosticsText:
+    def test_diagnostics_included_text(self):
+        import bot.handlers.order as omod
+
+        src = open(omod.__file__, encoding="utf-8").read()
+        assert "диагностика бесплатная" in src
+
+    def test_diagnostics_not_included_text(self):
+        import bot.handlers.order as omod
+
+        src = open(omod.__file__, encoding="utf-8").read()
+        assert "диагностика не входит" in src
+
+    def test_refund_policy_text(self):
+        import bot.handlers.order as omod
+
+        src = open(omod.__file__, encoding="utf-8").read()
+        assert "вернем ваши деньги" in src
+
+
+# ── yandex_rating in confirm screen ───────────────────────────
+
+
+class TestYandexRatingDisplay:
+    def test_rating_shown_in_confirm(self):
+        import bot.handlers.order as omod
+
+        src = open(omod.__file__, encoding="utf-8").read()
+        assert "svc_rating" in src
+        assert "рейтинг" in src
+
+
 class TestPartnerOrderFSMStates:
     def test_has_set_total_cost(self):
         from bot.domain.states import PartnerOrderFSM

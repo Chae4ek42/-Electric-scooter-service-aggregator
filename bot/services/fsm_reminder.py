@@ -9,7 +9,13 @@ from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware, Bot
 from aiogram.fsm.context import FSMContext
-from aiogram.types import TelegramObject, Message, CallbackQuery
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    TelegramObject,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +26,17 @@ CHECK_INTERVAL = 60  # check every minute
 _activity: Dict[tuple, float] = {}
 # Track already-reminded users to avoid spam
 _reminded: set[tuple] = set()
+
+_REMINDER_KB = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="Продолжить", callback_data="fsm_remind:continue"
+            ),
+            InlineKeyboardButton(text="Отменить", callback_data="fsm_remind:cancel"),
+        ]
+    ]
+)
 
 
 class FSMActivityMiddleware(BaseMiddleware):
@@ -72,8 +89,8 @@ async def fsm_reminder_loop(bot: Bot, bot_key: str) -> None:
             try:
                 await bot.send_message(
                     user_id,
-                    "Вы не завершили заполнение формы. "
-                    "Продолжите или нажмите кнопку меню для отмены.",
+                    "Вы не завершили заполнение формы. " "Продолжите или отмените.",
+                    reply_markup=_REMINDER_KB,
                 )
                 _reminded.add(key)
                 logger.info("Sent inactivity reminder to user %s", user_id)

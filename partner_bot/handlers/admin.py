@@ -8,6 +8,7 @@ import math
 from typing import Union
 
 from aiogram import F, Router, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import func, select
@@ -215,7 +216,12 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
         )
     total_pages = max(1, math.ceil(total / PARTNER_PAGE_SIZE))
     if not owners:
-        await cb.message.edit_text("Нет заявок партнёров.", reply_markup=padm_main_kb())
+        try:
+            await cb.message.edit_text(
+                "Нет заявок партнёров.", reply_markup=padm_main_kb()
+            )
+        except TelegramBadRequest:
+            pass
         await cb.answer()
         return
     header = (

@@ -64,6 +64,7 @@ class AdminFSM(StatesGroup):
 _STATUS_RU: dict[str, str] = {
     "new": "Новая",
     "awaiting_payment": "Ожидает оплаты",
+    "paid": "Оплачено",
     "accepted": "Принята",
     "in_progress": "В работе",
     "ready_for_pickup": "Готов к выдаче",
@@ -88,6 +89,7 @@ def _md_escape(text: str) -> str:
 
 def _fmt_order(order: Order) -> str:
     """Форматирует полную карточку заявки в Markdown."""
+    _TYPE_RU = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
     e = _md_escape
     # Модель
     if order.brand_custom_name:
@@ -128,7 +130,7 @@ def _fmt_order(order: Order) -> str:
         "",
         f"*Модель:* {model_str}",
         f"*Сервис:* {svc_str}",
-        f"*Тип:* {svc.service_type if svc else '—'}",
+        f"*Тип:* {_TYPE_RU.get(svc.service_type, svc.service_type) if svc else '—'}",
         "",
         f"*Метро:* {e(order.metro_station) if order.metro_station else '—'}",
         f"*Дата записи:* {order.scheduled_date or '—'}",

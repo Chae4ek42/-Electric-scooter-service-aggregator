@@ -44,6 +44,7 @@ def _model_name(order: Order) -> str:
 
 _STATUS_RU = {
     "awaiting_payment": "Ожидает оплаты",
+    "paid": "Оплачено",
     "accepted": "Принята",
     "in_progress": "В работе",
     "ready_for_pickup": "Готов к выдаче",

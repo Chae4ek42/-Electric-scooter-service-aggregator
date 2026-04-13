@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import datetime
 import logging
 
 from aiogram import F, Router, types
@@ -444,6 +446,8 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
     diagnostics_price: float | None = None
     diagnostics_included: bool = False
     hydroisolation_price: str | None = None
+    svc_name: str = ""
+    svc_rating: float | None = None
     model = None
 
     async with async_session() as session:
@@ -502,6 +506,8 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
             diagnostics_price = best.service.diagnostics_price
             diagnostics_included = best.service.diagnostics_included
             hydroisolation_price = best.service.hydroisolation_price
+            svc_name = best.service.name or ""
+            svc_rating = best.service.yandex_rating
 
     if service_id is None:
         logger.warning(
@@ -550,15 +556,32 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
             f"\nПредоплата: 500 руб."
         )
     elif diagnostics_price:
-        incl = (
-            " (входит в стоимость)"
-            if data.get("diagnostics_included")
-            else " (оплачивается отдельно)"
-        )
-        price_line = f"\nСтоимость диагностики: {diagnostics_price:.0f} руб.{incl}"
+        if data.get("diagnostics_included"):
+            price_line = (
+                f"\nСтоимость диагностики: {diagnostics_price:.0f} руб.\n\n"
+                "В этом сервисе, диагностика бесплатная, "
+                "и входит в стоимость ремонта, "
+                "если вы оставляете свой самокат на обслуживание 🎉\n"
+                "Если выполнена только диагностика, без ремонта "
+                "- деньги не возвращаются.\n"
+                "Если вы передумали до приезда в сервис "
+                "- вернем ваши деньги 🤝"
+            )
+        else:
+            price_line = (
+                f"\nСтоимость диагностики: {diagnostics_price:.0f} руб.\n\n"
+                "В этом сервисе, диагностика не входит "
+                "в стоимость ремонта.\n"
+                "Если выполнена только диагностика, без ремонта "
+                "- деньги не возвращаются.\n"
+                "Если вы передумали до приезда в сервис "
+                "- вернем ваши деньги 🤝"
+            )
 
+    rating_line = f" (рейтинг {svc_rating})" if svc_rating else ""
     summary = (
         "*Подтвердите заявку:*\n\n"
+        f"Сервис: {svc_name}{rating_line}\n"
         f"Модель: {model_display}\n"
         f"Метро: {data.get('metro_station', '')}\n"
         f"Дата: {data.get('scheduled_date', '')}\n"
@@ -633,12 +656,27 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
     if is_hydro and hp:
         price_text = f"\n\nСтоимость гидроизоляции: {hp} руб." f"\nПредоплата: 500 руб."
     elif dp:
-        incl = (
-            " (входит в стоимость)"
-            if data.get("diagnostics_included")
-            else " (оплачивается отдельно)"
-        )
-        price_text = f"\n\nСтоимость диагностики: {dp:.0f} руб.{incl}"
+        if data.get("diagnostics_included"):
+            price_text = (
+                f"\n\nСтоимость диагностики: {dp:.0f} руб.\n\n"
+                "В этом сервисе, диагностика бесплатная, "
+                "и входит в стоимость ремонта, "
+                "если вы оставляете свой самокат на обслуживание 🎉\n"
+                "Если выполнена только диагностика, без ремонта "
+                "- деньги не возвращаются.\n"
+                "Если вы передумали до приезда в сервис "
+                "- вернем ваши деньги 🤝"
+            )
+        else:
+            price_text = (
+                f"\n\nСтоимость диагностики: {dp:.0f} руб.\n\n"
+                "В этом сервисе, диагностика не входит "
+                "в стоимость ремонта.\n"
+                "Если выполнена только диагностика, без ремонта "
+                "- деньги не возвращаются.\n"
+                "Если вы передумали до приезда в сервис "
+                "- вернем ваши деньги 🤝"
+            )
 
     logger.info(
         "user=%s order #%s created (service_id=%s)",
@@ -649,10 +687,34 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
 
     await _safe_edit_or_answer(
         callback,
-        f"*Заявка №{order_id} создана!*{price_text}\n\n"
-        "Система предоплаты находится в разработке.\n"
-        "Мы свяжемся с вами для подтверждения записи.",
+        f"*Заявка №{order_id} создана!*{price_text}\n\n" "⏳ Обработка оплаты...",
     )
+
+    # Auto-complete payment after 10 seconds (mock)
+    import asyncio
+
+    async def _auto_pay_diagnostics():
+        await asyncio.sleep(10)
+        async with async_session() as s:
+            o = (
+                await s.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+            if o and o.status == "awaiting_payment":
+                o.status = "paid"
+                o.payment_id = f"AUTO-DIAG-{order_id}"
+                await s.commit()
+                logger.info("auto-payment completed for order #%s", order_id)
+        try:
+            await callback.message.answer(
+                f"✅ Оплата заявки №{order_id} прошла успешно!\n"
+                "Ожидайте подтверждения от сервиса.",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send auto-payment message for order #%s", order_id
+            )
+
+    asyncio.create_task(_auto_pay_diagnostics())
     await callback.message.answer(
         "Главное меню:",
         reply_markup=main_menu_kb(is_admin=_is_admin(callback.from_user.username)),
@@ -671,12 +733,34 @@ async def cancel_order(callback: types.CallbackQuery, state: FSMContext) -> None
 
 @router.callback_query(F.data.startswith("pay:proceed:"))
 async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> None:
+    parts = callback.data.split(":")
+    order_id = int(parts[2])
     await state.clear()
-    await _safe_edit_or_answer(
-        callback,
-        "Система оплаты находится в разработке.\n"
-        "Мы свяжемся с вами для подтверждения записи.",
-    )
+
+    await _safe_edit_or_answer(callback, "⏳ Обработка оплаты...")
+
+    import asyncio
+
+    async def _auto_pay():
+        await asyncio.sleep(10)
+        async with async_session() as s:
+            o = (
+                await s.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+            if o and o.status == "awaiting_payment":
+                o.status = "paid"
+                o.payment_id = f"AUTO-PAY-{order_id}"
+                await s.commit()
+                logger.info("auto-payment completed for order #%s", order_id)
+        try:
+            await callback.message.answer(
+                f"✅ Оплата заявки №{order_id} прошла успешно!\n"
+                "Ожидайте подтверждения от сервиса.",
+            )
+        except Exception:
+            logger.exception("Failed to send auto-payment message")
+
+    asyncio.create_task(_auto_pay())
 
 
 @router.callback_query(F.data.startswith("pay:cancel:"))
@@ -1260,8 +1344,6 @@ async def pay_final(callback: types.CallbackQuery) -> None:
 async def pay_confirm(callback: types.CallbackQuery) -> None:
     order_id = int(callback.data.split(":")[2])
 
-    import datetime
-
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
@@ -1272,43 +1354,57 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
         if order.status != "ready_for_pickup":
             await callback.answer("Невозможно.", show_alert=True)
             return
-        order.status = "completed"
-        order.completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
-        order.payment_id = f"STUB-FINAL-{order_id}"
-        await session.commit()
-        svc_name = order.service.name if order.service else ""
-        total = order.total_cost or order.estimate_cost or 0
-        model_str = _client_model_name(order)
-
-    logger.info("client %s paid final for order #%s", callback.from_user.id, order_id)
 
     try:
-        await callback.message.edit_text(
-            f"✅ Заявка #{order_id} завершена!\n\n"
-            f"Оплата произведена.\n"
-            f"Спасибо за обращение в {svc_name}!",
-        )
+        await callback.message.edit_text("⏳ Обработка оплаты...")
     except Exception:
-        await callback.message.answer(
-            f"✅ Заявка #{order_id} завершена!\n\n"
-            f"Оплата произведена.\n"
-            f"Спасибо за обращение в {svc_name}!",
-        )
-    await callback.answer("Оплата произведена")
+        await callback.message.answer("⏳ Обработка оплаты...")
+    await callback.answer()
 
-    # Notify partner
-    async with async_session() as session:
-        order = (
-            await session.execute(select(Order).where(Order.id == order_id))
-        ).scalar_one_or_none()
-    if order:
-        _notify_partner(
-            order,
-            f"✅ Заявка #{order_id} завершена\n\n"
-            f"Клиент оплатил и забрал устройство.\n"
-            f"Устройство: {model_str}\n"
-            f"Итого: {total:.0f} руб.",
-        )
+    import asyncio
+
+    async def _auto_pay_final():
+        await asyncio.sleep(10)
+        async with async_session() as s:
+            o = (
+                await s.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+            if not o or o.status != "ready_for_pickup":
+                return
+            o.status = "completed"
+            o.completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
+            o.payment_id = f"AUTO-FINAL-{order_id}"
+            await s.commit()
+            svc_name = o.service.name if o.service else ""
+            total = o.total_cost or o.estimate_cost or 0
+            model_str = _client_model_name(o)
+
+        logger.info("auto final payment for order #%s", order_id)
+
+        try:
+            await callback.message.answer(
+                f"✅ Заявка #{order_id} завершена!\n\n"
+                f"Оплата произведена.\n"
+                f"Спасибо за обращение в {svc_name}!",
+            )
+        except Exception:
+            logger.exception("Failed to send final payment message")
+
+        # Notify partner
+        async with async_session() as s:
+            o = (
+                await s.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+        if o:
+            _notify_partner(
+                o,
+                f"✅ Заявка #{order_id} завершена\n\n"
+                f"Клиент оплатил и забрал устройство.\n"
+                f"Устройство: {model_str}\n"
+                f"Итого: {total:.0f} руб.",
+            )
+
+    asyncio.create_task(_auto_pay_final())
 
 
 @router.callback_query(F.data.startswith("cord:pay_cancel:"))
@@ -1460,6 +1556,117 @@ def _client_model_name(order: Order) -> str:
             else order.model.name
         )
     return "—"
+
+
+# ══════════════════════════════════════════════════════════════
+# FSM reminder: continue / cancel
+# ══════════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data == "fsm_remind:cancel")
+async def fsm_remind_cancel(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    try:
+        await callback.message.edit_text("Заполнение формы отменено.")
+    except Exception:
+        await callback.message.answer("Заполнение формы отменено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "fsm_remind:continue")
+async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Re-send the message for the current FSM step."""
+    current = await state.get_state()
+    data = await state.get_data()
+
+    if not current:
+        try:
+            await callback.message.edit_text("Нет активной формы.")
+        except Exception:
+            pass
+        await callback.answer()
+        return
+
+    await callback.answer("Продолжаем…")
+
+    # Map state → message + keyboard
+    if current == OrderFSM.service_type.state:
+        await callback.message.answer(
+            "Выберите тип услуги:", reply_markup=service_type_kb()
+        )
+    elif current == OrderFSM.brand.state:
+        async with async_session() as session:
+            brands = (
+                (await session.execute(select(Brand).order_by(Brand.name)))
+                .scalars()
+                .all()
+            )
+        await callback.message.answer(
+            "Выберите бренд самоката:", reply_markup=brands_kb(brands)
+        )
+    elif current == OrderFSM.brand_custom.state:
+        await callback.message.answer("Введите название бренда самоката:")
+    elif current == OrderFSM.model.state:
+        brand_id = data.get("brand_id")
+        if brand_id:
+            async with async_session() as session:
+                mods = (
+                    (
+                        await session.execute(
+                            select(Model)
+                            .where(Model.brand_id == brand_id)
+                            .order_by(Model.name)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            await callback.message.answer(
+                "Выберите модель:", reply_markup=models_kb(mods)
+            )
+        else:
+            await callback.message.answer("Введите название модели самоката:")
+    elif current == OrderFSM.model_custom.state:
+        await callback.message.answer("Введите название модели самоката:")
+    elif current == OrderFSM.malfunction_type.state:
+        await callback.message.answer(
+            "Выберите категорию неисправности:", reply_markup=malfunction_type_kb()
+        )
+    elif current == OrderFSM.upgrade_category.state:
+        await callback.message.answer(
+            "Выберите категорию апгрейда:", reply_markup=upgrade_category_kb()
+        )
+    elif current == OrderFSM.problem_description.state:
+        stype = data.get("service_type", "repair")
+        if stype == "repair":
+            await callback.message.answer("Опишите проблему:")
+        else:
+            await callback.message.answer("Опишите, что вы хотите сделать:")
+    elif current == OrderFSM.location_method.state:
+        await callback.message.answer(
+            "Выберете ближайшее к вам метро "
+            "(Подберем самый ближайший сервис, под вашу проблему)",
+            reply_markup=location_method_kb(),
+        )
+    elif current == OrderFSM.metro_search.state:
+        await callback.message.answer("Введите название станции метро (или его часть):")
+    elif current == OrderFSM.calendar_date.state:
+        await callback.message.answer("Выберите дату:", reply_markup=calendar_kb())
+    elif current == OrderFSM.calendar_time.state:
+        date_str = data.get("scheduled_date", "")
+        await callback.message.answer(
+            f"Выберите время на {date_str}:", reply_markup=time_slots_kb(date_str)
+        )
+    elif current == OrderFSM.confirm.state:
+        await callback.message.answer(
+            "Нажмите кнопку подтверждения:", reply_markup=confirm_kb()
+        )
+    elif current == ClientOrderFSM.dispute_reason.state:
+        await callback.message.answer("Опишите возникшую проблему:")
+    else:
+        await callback.message.answer(
+            "Продолжите ввод данных или нажмите /start для отмены."
+        )
 
 
 # CATCH-ALL

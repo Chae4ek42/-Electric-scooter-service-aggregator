@@ -910,11 +910,19 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
                 )
             for admin_user in admins:
                 try:
+                    _type_ru = {
+                        "repair": "Ремонт",
+                        "upgrade": "Апгрейд",
+                        "complex": "Комплекс",
+                    }
+                    _stype_label = _type_ru.get(
+                        owner.draft_service_type or "", owner.draft_service_type or ""
+                    )
                     await callback.bot.send_message(
                         admin_user.id,
                         f"📋 Новая заявка на партнёрство!\n"
                         f"Сервис: {owner.draft_name}\n"
-                        f"Тип: {owner.draft_service_type}\n"
+                        f"Тип: {_stype_label}\n"
                         f"Откройте /start → Панель администратора для проверки.",
                     )
                 except Exception:
