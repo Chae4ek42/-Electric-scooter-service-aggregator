@@ -1,12 +1,23 @@
+# Secrets — never commit
 .env
-*.db
-__pycache__/
-.pytest_cache/
-logs/
-tests/
-
 *.json
 !pyproject.toml
-credentials.json
-service_account.json
-token.json
+
+# Database
+*.db
+*.sqlite3
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Tools
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+logs/

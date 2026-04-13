@@ -1,0 +1,44 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  client-bot:
+    build: .
+    command: python -m bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=sqlite+aiosqlite:///data/esas.db
+    volumes:
+      - ./data:/app/data
+      - ./service-account-key.json:/app/service-account-key.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  partner-bot:
+    build: .
+    command: python -m partner_bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=sqlite+aiosqlite:///data/esas.db
+    volumes:
+      - ./data:/app/data
+      - ./service-account-key.json:/app/service-account-key.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:

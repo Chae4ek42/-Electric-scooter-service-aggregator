@@ -36,7 +36,7 @@ ADMIN_USERNAMES: set[str] = {
     if x.strip().lstrip("@")
 }
 
-DATABASE_URL: str = "sqlite+aiosqlite:///esas.db"
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///esas.db")
 REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 THROTTLE_RATE: float = 0.2
 CALENDAR_DAYS: int = 14
