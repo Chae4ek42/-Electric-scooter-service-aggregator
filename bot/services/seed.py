@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from bot.core.database import async_session, engine
 from bot.domain.models import Base, Brand, MetroStation, Model, ServiceCategory
@@ -436,31 +436,53 @@ async def seed_database() -> None:
     """Populate tables if empty."""
     async with async_session() as session:
         # Brands & Models (including «Другое» per brand)
-        existing = (await session.execute(select(Brand))).scalars().all()
+        existing = (
+            await session.execute(select(func.count()).select_from(Brand))
+        ).scalar()
         if not existing:
-            for brand_name, model_names in BRANDS_MODELS.items():
-                brand = Brand(name=brand_name)
-                session.add(brand)
-                await session.flush()
-                for mn in model_names:
-                    session.add(Model(brand_id=brand.id, name=mn))
-                # Кнопка «Другое» — всегда последняя
-                session.add(Model(brand_id=brand.id, name="Другое"))
-            logger.info("Seeded brands & models")
+            try:
+                for brand_name, model_names in BRANDS_MODELS.items():
+                    brand = Brand(name=brand_name)
+                    session.add(brand)
+                    await session.flush()
+                    for mn in model_names:
+                        session.add(Model(brand_id=brand.id, name=mn))
+                    # Кнопка «Другое» — всегда последняя
+                    session.add(Model(brand_id=brand.id, name="Другое"))
+                logger.info("Seeded brands & models")
+            except Exception:
+                await session.rollback()
+                logger.info("Seed brands skipped — already inserted by another process")
 
         # Сервисные категории (справочник: Механика / Электрика)
-        existing_cat = (await session.execute(select(ServiceCategory))).scalars().all()
+        existing_cat = (
+            await session.execute(select(func.count()).select_from(ServiceCategory))
+        ).scalar()
         if not existing_cat:
-            for cat_name in ("Механика", "Электрика"):
-                session.add(ServiceCategory(name=cat_name))
-            logger.info("Seeded service categories")
+            try:
+                for cat_name in ("Механика", "Электрика"):
+                    session.add(ServiceCategory(name=cat_name))
+                await session.flush()
+                logger.info("Seeded service categories")
+            except Exception:
+                await session.rollback()
+                logger.info(
+                    "Seed categories skipped — already inserted by another process"
+                )
 
         # Станции метро
-        existing_metro = (await session.execute(select(MetroStation))).scalars().all()
+        existing_metro = (
+            await session.execute(select(func.count()).select_from(MetroStation))
+        ).scalar()
         if not existing_metro:
-            for station_name, line_name in MOSCOW_METRO:
-                session.add(MetroStation(name=station_name, line=line_name))
-            logger.info("Seeded %d Moscow metro stations", len(MOSCOW_METRO))
+            try:
+                for station_name, line_name in MOSCOW_METRO:
+                    session.add(MetroStation(name=station_name, line=line_name))
+                await session.flush()
+                logger.info("Seeded %d Moscow metro stations", len(MOSCOW_METRO))
+            except Exception:
+                await session.rollback()
+                logger.info("Seed metro skipped — already inserted by another process")
 
         await session.commit()
 
