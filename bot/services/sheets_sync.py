@@ -246,7 +246,22 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
             if phone and phone.startswith("#"):
                 phone = None  # filter Sheets formula errors (#ERROR!, #REF!, etc.)
             telegram_handle = _col(row, "Telegram") or None
-            partnership_status = _col(row, "Статус") or None
+            raw_status = (_col(row, "Статус") or "").strip().lower()
+            _PARTNER_STATUS_MAP: dict[str, str] = {
+                "partner": "активный",
+                "партнёр": "активный",
+                "партнер": "активный",
+                "активный": "активный",
+                "active": "активный",
+                "приостановлен": "приостановлен",
+                "suspended": "приостановлен",
+                "отклонён": "отклонён",
+                "отклонен": "отклонён",
+                "rejected": "отклонён",
+                "ожидает": "ожидает",
+                "pending": "ожидает",
+            }
+            partnership_status = _PARTNER_STATUS_MAP.get(raw_status, raw_status) or None
             main_brand_scooter = _col(row, "Основной бренд самокатов") or None
 
             open_time = _col(row, "Открытие") or None

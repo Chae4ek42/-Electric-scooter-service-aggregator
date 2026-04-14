@@ -559,13 +559,7 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
         if data.get("diagnostics_included"):
             price_line = (
                 f"\nСтоимость диагностики: {diagnostics_price:.0f} руб.\n\n"
-                "В этом сервисе, диагностика бесплатная, "
-                "и входит в стоимость ремонта, "
-                "если вы оставляете свой самокат на обслуживание 🎉\n"
-                "Если выполнена только диагностика, без ремонта "
-                "- деньги не возвращаются.\n"
-                "Если вы передумали до приезда в сервис "
-                "- вернем ваши деньги 🤝"
+                "Диагностика входит в стоимость ремонта 🎉"
             )
         else:
             price_line = (
@@ -659,13 +653,7 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
         if data.get("diagnostics_included"):
             price_text = (
                 f"\n\nСтоимость диагностики: {dp:.0f} руб.\n\n"
-                "В этом сервисе, диагностика бесплатная, "
-                "и входит в стоимость ремонта, "
-                "если вы оставляете свой самокат на обслуживание 🎉\n"
-                "Если выполнена только диагностика, без ремонта "
-                "- деньги не возвращаются.\n"
-                "Если вы передумали до приезда в сервис "
-                "- вернем ваши деньги 🤝"
+                "Диагностика входит в стоимость ремонта 🎉"
             )
         else:
             price_text = (
@@ -1142,11 +1130,11 @@ def _notify_partner(order: Order, text: str) -> None:
     import asyncio
 
     async def _send():
-        try:
-            from bot.core.config import PARTNER_BOT_TOKEN
-            from aiogram import Bot
+        from bot.core.config import PARTNER_BOT_TOKEN
+        from aiogram import Bot
 
-            partner_bot = Bot(token=PARTNER_BOT_TOKEN)
+        partner_bot = Bot(token=PARTNER_BOT_TOKEN)
+        try:
             # Find partner telegram_id
             async with async_session() as session:
                 from bot.domain.models import ServiceOwner
@@ -1158,11 +1146,27 @@ def _notify_partner(order: Order, text: str) -> None:
                         )
                     )
                 ).scalar_one_or_none()
-                if owner:
-                    await partner_bot.send_message(owner.telegram_id, text)
-            await partner_bot.session.close()
+                if not owner:
+                    logger.error(
+                        "PARTNER_NOTIFY_ERR | order=%s | service=%s | reason=owner_not_found",
+                        order.id,
+                        order.service_id,
+                    )
+                    return
+                await partner_bot.send_message(owner.telegram_id, text)
+                logger.info(
+                    "PARTNER_NOTIFY | order=%s | partner=%s",
+                    order.id,
+                    owner.telegram_id,
+                )
         except Exception:
-            logger.exception("Failed to notify partner")
+            logger.exception(
+                "PARTNER_NOTIFY_ERR | order=%s | service=%s",
+                order.id,
+                order.service_id,
+            )
+        finally:
+            await partner_bot.session.close()
 
     asyncio.create_task(_send())
 

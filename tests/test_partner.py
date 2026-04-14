@@ -886,7 +886,7 @@ class TestDiagnosticsText:
         import bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
-        assert "диагностика бесплатная" in src
+        assert "Диагностика входит в стоимость ремонта" in src
 
     def test_diagnostics_not_included_text(self):
         import bot.handlers.order as omod
