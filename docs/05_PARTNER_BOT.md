@@ -46,10 +46,10 @@ Partner-bot — Telegram-бот для владельцев / операторо
             ▼
         reg_name              ← «Введите название вашего сервисного центра»
             ▼
-        reg_service_type      ← inline: [Ремонт / Апгрейд]  (без «Комплексный»)
+        reg_service_type      ← inline: [Ремонт / Апгрейд / Комплекс]
             ▼
-       (если Ремонт)
-        reg_category          ← inline: [Электроника / Механика / Комплекс]
+       (если Ремонт или Комплекс)
+        reg_category          ← inline: [Электрика / Механика]
             ▼
        (если Апгрейд)
         reg_upgrade_categories ← multi-select inline: [Окраска / Прошивка /

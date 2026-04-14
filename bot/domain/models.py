@@ -123,7 +123,9 @@ class Order(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False)
+    service_id: Mapped[int | None] = mapped_column(
+        ForeignKey("services.id"), nullable=True
+    )
     model_id: Mapped[int | None] = mapped_column(ForeignKey("models.id"), nullable=True)
     metro_station: Mapped[str | None] = mapped_column(String(200), nullable=True)
     scheduled_date: Mapped[str | None] = mapped_column(String(10), nullable=True)

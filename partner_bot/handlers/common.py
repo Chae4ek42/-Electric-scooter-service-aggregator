@@ -92,7 +92,13 @@ def _md_escape(text: str) -> str:
 
 
 def _format_draft(owner: ServiceOwner) -> str:
-    type_map = {"repair": "Ремонт", "upgrade": "Апгрейд"}
+    type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
+    _status_ru = {
+        "ожидает": "Ожидает модерации",
+        "активный": "Активный",
+        "отклонён": "Отклонён",
+        "приостановлен": "Приостановлен",
+    }
     type_label = type_map.get(
         owner.draft_service_type or "", owner.draft_service_type or "(не заполнено)"
     )
@@ -108,7 +114,7 @@ def _format_draft(owner: ServiceOwner) -> str:
             ",", ", "
         ) or "(не выбрано)"
         lines.append(f"Категории апгрейда: {e(cats)}")
-    if owner.draft_service_type == "repair":
+    if owner.draft_service_type in ("repair", "complex"):
         lines.append(f"Категория ремонта: {e(owner.draft_category or '(не выбрано)')}")
     lines.append(f"Гидроизоляция: {'Да' if owner.draft_hydroisolation else 'Нет'}")
     if owner.draft_hydroisolation:
@@ -126,7 +132,7 @@ def _format_draft(owner: ServiceOwner) -> str:
     if owner.draft_diagnostics_price is not None and owner.draft_diagnostics_price > 0:
         lines.append(f"Диагностика: {int(owner.draft_diagnostics_price)} руб.")
     else:
-        lines.append("Диагностика: бесплатно")
+        lines.append("Диагностика: бесплатно (0 руб.)")
     lines.append(f"Входит в стоимость: {'Да' if owner.draft_diag_included else 'Нет'}")
     lines += [
         f"Форма: {e(owner.draft_legal_form or '(не заполнено)')}",
@@ -140,7 +146,7 @@ def _format_draft(owner: ServiceOwner) -> str:
         f"  Организация: {e(owner.draft_org_name or '—')}",
         f"  ИНН: {e(owner.draft_inn or '—')}",
         "",
-        f"Статус: {owner.status}",
+        f"Статус: {_status_ru.get(owner.status, owner.status)}",
     ]
     return "\n".join(lines)
 

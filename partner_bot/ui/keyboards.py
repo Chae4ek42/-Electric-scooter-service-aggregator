@@ -85,12 +85,13 @@ def reg_service_type_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Ремонт", callback_data="reg_stype:repair")],
             [InlineKeyboardButton(text="Апгрейд", callback_data="reg_stype:upgrade")],
+            [InlineKeyboardButton(text="Комплекс", callback_data="reg_stype:complex")],
             [BACK_BTN],
         ]
     )
 
 
-_REPAIR_CATS = ["Электроника", "Механика", "Комплекс"]
+_REPAIR_CATS = ["Электрика", "Механика"]
 
 
 def reg_category_kb() -> InlineKeyboardMarkup:

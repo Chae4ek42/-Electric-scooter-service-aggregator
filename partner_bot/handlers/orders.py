@@ -54,6 +54,7 @@ _STATUS_RU = {
     "interrupted": "Не пришел",
     "client_refused": "Клиент отказался",
     "disputed": "Оспорена",
+    "no_center": "Не найден центр",
 }
 
 
@@ -72,13 +73,13 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
     else:
         model_str = "—"
 
-    stype = order.service.service_type if order.service else "—"
+    stype = order.service.service_type if order.service else None
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплексный"}
 
     lines = [
         f"Заявка #{order.id}",
         f"Устройство: {model_str}",
-        f"Тип: {type_map.get(stype, stype)}",
+        f"Тип: {type_map.get(stype, stype) if stype else '—'}",
     ]
     if order.upgrade_category:
         lines.append(f"Категория: {order.upgrade_category}")

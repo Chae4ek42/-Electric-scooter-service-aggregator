@@ -76,6 +76,7 @@ _STATUS_RU: dict[str, str] = {
     "client_refused": "Клиент отказался",
     "disputed": "Оспорена",
     "rejected_by_partner": "Отклонена",
+    "no_center": "Не найден центр",
 }
 
 
@@ -109,10 +110,12 @@ def _fmt_order(order: Order) -> str:
 
     # Услуга — скрываем до оплаты
     svc = order.service
-    if order.status == "awaiting_payment":
-        svc_str = f"_{e(svc.name)}_ (скрыт от клиента)" if svc else "—"
+    if svc is None:
+        svc_str = "—"
+    elif order.status == "awaiting_payment":
+        svc_str = f"_{e(svc.name)}_ (скрыт от клиента)"
     else:
-        svc_str = e(svc.name) if svc else "—"
+        svc_str = e(svc.name)
     if svc and svc.category_rel:
         svc_str += f" ({e(svc.category_rel.name)})"
 
@@ -182,7 +185,11 @@ async def _get_orders(
     page: int,
     status_filter: str | None = None,
 ) -> tuple[list[Order], int, int]:
-    """Возвращает (заявки на странице, total_pages, total_count)."""
+    """Возвращает (заявки на странице, total_pages, total_count).
+
+    Без фильтра скрываем черновики (awaiting_payment) — они ещё
+    не подтверждены оплатой и не считаются оформленными.
+    """
     offset = page * ADMIN_PAGE_SIZE
     async with async_session() as session:
         query = select(Order)
@@ -190,6 +197,9 @@ async def _get_orders(
         if status_filter:
             query = query.where(Order.status == status_filter)
             count_q = count_q.where(Order.status == status_filter)
+        else:
+            query = query.where(Order.status != "awaiting_payment")
+            count_q = count_q.where(Order.status != "awaiting_payment")
         total: int = (await session.execute(count_q)).scalar_one()
         orders = (
             (

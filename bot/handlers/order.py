@@ -519,10 +519,48 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
             data.get("metro_station"),
             time_str,
         )
+        # Сохраняем заявку со статусом «не найден центр»
+        async with async_session() as session:
+            user = (
+                await session.execute(
+                    select(User).where(User.id == callback.from_user.id)
+                )
+            ).scalar_one_or_none()
+            if user is None:
+                user = User(
+                    id=callback.from_user.id,
+                    username=callback.from_user.username or "",
+                    full_name=callback.from_user.full_name or "Unknown",
+                )
+                session.add(user)
+                await session.flush()
+
+            order = Order(
+                user_id=callback.from_user.id,
+                service_id=None,
+                model_id=data.get("model_id"),
+                model_custom_name=data.get("model_custom_name"),
+                brand_custom_name=data.get("brand_custom_name"),
+                metro_station=data.get("metro_station"),
+                scheduled_date=data.get("scheduled_date"),
+                scheduled_time=data.get("scheduled_time"),
+                problem_description=data.get("problem_description"),
+                upgrade_category=data.get("upgrade_category"),
+                diagnostics_price=None,
+                status="no_center",
+            )
+            session.add(order)
+            await session.commit()
+            order_id = order.id
+        logger.info(
+            "user=%s order #%s created with no_center", callback.from_user.id, order_id
+        )
         await state.clear()
         await _safe_edit_or_answer(
             callback,
-            "К сожалению, подходящих сервис-центров не найдено. Попробуйте позже.",
+            f"Заявка №{order_id} создана.\n"
+            "К сожалению, подходящих сервис-центров не найдено.\n"
+            "Мы уведомим вас, когда появится подходящий сервис.",
         )
         return
 

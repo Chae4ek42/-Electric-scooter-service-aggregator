@@ -46,7 +46,7 @@ _FIELD_GETTERS: dict[str, Callable[[Service], str]] = {
     "гидроизоляция": lambda s: "Да" if s.has_hydroisolation else "Нет",
     "цена гидроизоляции": lambda s: s.hydroisolation_price or "",
     "диагностика": lambda s: (
-        str(int(s.diagnostics_price)) if s.diagnostics_price else ""
+        str(int(s.diagnostics_price)) if s.diagnostics_price is not None else ""
     ),
     "входит в стоимость": lambda s: "Да" if s.diagnostics_included else "Нет",
     "категории апгрейда": lambda s: s.upgrade_categories or "",
@@ -76,9 +76,16 @@ def _service_to_row(svc: Service) -> list[str]:
 
 
 def _ensure_worksheet(sh, name: str, headers: list[str]):
-    """Return existing worksheet or create a new one with headers."""
+    """Return existing worksheet with validated headers, or create new one."""
     try:
-        return sh.worksheet(name)
+        ws = sh.worksheet(name)
+        # Verify the first row has correct headers (not duplicated)
+        existing = ws.row_values(1)
+        if existing and existing == ws.row_values(2):
+            # Duplicated header row — remove second copy
+            ws.delete_rows(2)
+            logger.warning("SHEETS | removed duplicate header row in '%s'", name)
+        return ws
     except Exception:
         ws = sh.add_worksheet(title=name, rows=100, cols=len(headers))
         ws.append_row(headers, value_input_option="USER_ENTERED")
@@ -210,6 +217,7 @@ def sync_all_orders_to_sheet() -> bool:
             "interrupted": "Прервана",
             "client_refused": "Клиент отказался",
             "disputed": "Оспорена",
+            "no_center": "Не найден центр",
         }
         with Session(sync_engine) as session:
             orders = (

@@ -229,6 +229,7 @@ result = await rank_services(ctx, session, limit=1)
 | Статус DB | Отображение |
 |---|---|
 | `awaiting_payment` | Ожидает оплаты (сервис-центр скрыт) |
+| `paid` | Оплачено |
 | `accepted` | Принята |
 | `in_progress` | В работе |
 | `ready_for_pickup` | Готов к выдаче |
@@ -238,6 +239,9 @@ result = await rank_services(ctx, session, limit=1)
 | `rejected_by_partner` | Отклонена партнёром |
 | `client_refused` | Клиент отказался |
 | `disputed` | Оспорена |
+| `no_center` | Не найден центр (service\_id = NULL) |
+
+> **Черновики:** заявки в `awaiting_payment` скрыты в списке заявок админки по умолчанию (доступны через фильтр «Ожид. оплаты»).
 
 ---
 

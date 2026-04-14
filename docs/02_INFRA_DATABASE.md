@@ -23,7 +23,7 @@
 | Таблица | Ключевые поля |
 |---|---|
 | `users` | `id` (TG BigInteger), `username`, `full_name`, `created_at` |
-| `orders` | `id`, `user_id` (FK), `service_id` (FK), `model_id` (FK, **nullable**), `model_custom_name`, `brand_custom_name`, `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `total_cost`, `partner_comment`, `reject_reason`, `estimate_cost`, `estimate_items`, `estimate_deadline`, `estimate_description`, `client_visited`, `client_confirmed_estimate`, `dispute_reason`, `refusal_reason`, `accepted_at`, `completed_at`, `status`, `created_at` |
+| `orders` | `id`, `user_id` (FK), `service_id` (FK, **nullable**), `model_id` (FK, **nullable**), `model_custom_name`, `brand_custom_name`, `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `total_cost`, `partner_comment`, `reject_reason`, `estimate_cost`, `estimate_items`, `estimate_deadline`, `estimate_description`, `client_visited`, `client_confirmed_estimate`, `dispute_reason`, `refusal_reason`, `accepted_at`, `completed_at`, `status`, `created_at` |
 | `service_owners` | `id`, `telegram_id` (BigInteger, unique), `service_id` (FK, nullable), `status`, `registered_at`, `approved_at`, `approved_by`, `draft_*` (22 поля анкеты: name, service_type, category, address, metro, phone, telegram, open_time, close_time, hydroisolation, diagnostics_price, diag_included, upgrade_categories, working_days, legal_form, tax_system, bank_account, bank_name, bik, corr_account, org_name, inn) |
 | `service_owner_settings` | `owner_id` (PK, FK), `notif_new_order`, `notif_cancel` |
 | `sheets_retry_queue` | `id`, `service_id` (FK), `operation`, `payload_json`, `attempts`, `last_attempt_at`, `created_at` |
@@ -31,13 +31,18 @@
 **Статусы заявки:**
 
 ```
-awaiting_payment → accepted → in_progress → ready_for_pickup → completed
-                 → rejected_by_partner
-                 → cancelled
-                 → interrupted
-                 → client_refused  (клиент отказался, причина в refusal_reason)
-                 → disputed        (клиент оспорил, причина в dispute_reason)
+awaiting_payment → paid → accepted → in_progress → ready_for_pickup → completed
+                        → rejected_by_partner
+                        → cancelled
+                        → interrupted
+                        → client_refused  (клиент отказался, причина в refusal_reason)
+                        → disputed        (клиент оспорил, причина в dispute_reason)
+no_center  (сервис-центр не найден, service_id = NULL)
 ```
+
+**Черновики:** заявки в статусе `awaiting_payment` скрыты в списке заявок админ-панели по умолчанию (можно увидеть через фильтр «Ожид. оплаты»).
+
+**`service_id`** nullable — если подходящий сервис-центр не найден, заявка создаётся со статусом `no_center` и `service_id = NULL`.
 
 **Поля жизненного цикла:**
 - `estimate_cost` (Float) — стоимость в смете партнёра

@@ -119,14 +119,14 @@ _STYPE_TEXT = (
     "*Ремонт* — устранение неисправностей: "
     "замена деталей, ремонт электроники, механики.\n\n"
     "*Апгрейд* — модернизация и улучшение самоката: "
-    "гидроизоляция, окраска, прошивка, доп. оснащение."
+    "гидроизоляция, окраска, прошивка, доп. оснащение.\n\n"
+    "*Комплекс* — и ремонт, и апгрейд."
 )
 
 _CATEGORY_TEXT = (
     "⚙️ *Выберите категорию ремонта:*\n\n"
     "⚒️ *Механика* — замена колёс, тормозов, подвески, рулевой.\n\n"
-    "⚡️ *Электрика* — контроллер, батарея, проводка, дисплей.\n\n"
-    "💪 *Комплекс* — и механика, и электрика."
+    "⚡️ *Электрика* — контроллер, батарея, проводка, дисплей."
 )
 
 
@@ -166,6 +166,8 @@ def _next_empty_state(owner: ServiceOwner) -> str | None:
         return RegistrationFSM.reg_service_type.state
     if owner.draft_service_type == "upgrade" and not owner.draft_upgrade_categories:
         return RegistrationFSM.reg_upgrade_categories.state
+    if owner.draft_service_type in ("repair", "complex") and not owner.draft_category:
+        return RegistrationFSM.reg_category.state
     more = [
         ("draft_address", RegistrationFSM.reg_address.state),
         ("draft_metro", RegistrationFSM.reg_metro_search.state),
@@ -400,10 +402,10 @@ async def reg_service_type(callback: types.CallbackQuery, state: FSMContext) -> 
 
     # Clear incompatible fields when type changes
     clear_kwargs: dict = {"draft_service_type": stype}
-    if stype == "repair":
-        clear_kwargs["draft_upgrade_categories"] = None
-    else:
+    if stype == "upgrade":
         clear_kwargs["draft_category"] = None
+    else:
+        clear_kwargs["draft_upgrade_categories"] = None
     await _update_draft(callback.from_user.id, **clear_kwargs)
 
     # When editing from draft, do NOT call _after_edit here —
@@ -419,7 +421,7 @@ async def reg_service_type(callback: types.CallbackQuery, state: FSMContext) -> 
             callback, "Выберите категории апгрейда:", reg_upgrade_categories_kb(set())
         )
     else:
-        # repair → ask category (Электроника / Механика / Комплекс)
+        # repair / complex → ask category (Электрика / Механика)
         await state.set_state(RegistrationFSM.reg_category)
         await _safe_edit_or_answer(callback, _CATEGORY_TEXT, reg_category_kb())
 

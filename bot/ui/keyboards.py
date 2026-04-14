@@ -479,6 +479,7 @@ def admin_filter_kb() -> InlineKeyboardMarkup:
         ("completed", "Завершены"),
         ("client_refused", "Клиент отказался"),
         ("disputed", "Оспорены"),
+        ("no_center", "Не найден центр"),
     ]
     rows = [
         [InlineKeyboardButton(text=label, callback_data=f"adm:orders:0:status:{key}")]
@@ -510,6 +511,7 @@ def admin_orders_kb(
         "client_refused": "Отказ",
         "disputed": "Оспорена",
         "rejected_by_partner": "Отклонена",
+        "no_center": "Нет центра",
     }
 
     def _fmt_date(d: str | None) -> str:
