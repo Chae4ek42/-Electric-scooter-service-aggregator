@@ -464,12 +464,8 @@ def admin_main_kb() -> InlineKeyboardMarkup:
 
 def admin_partner_detail_kb(owner_id: int, status: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    rows.append(
-        [InlineKeyboardButton(text="К списку", callback_data="adm:partners:0")]
-    )
-    rows.append(
-        [InlineKeyboardButton(text="В главное меню", callback_data="adm:main")]
-    )
+    rows.append([InlineKeyboardButton(text="К списку", callback_data="adm:partners:0")])
+    rows.append([InlineKeyboardButton(text="В главное меню", callback_data="adm:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -103,7 +103,19 @@ def _fetch_via_sa(sheet_id: str, sheet_name: str) -> list[dict[str, Any]] | None
         )
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(sheet_id)
-        ws = sh.worksheet(sheet_name)
+        try:
+            ws = sh.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            from bot.core.config import SHEETS_COLUMNS
+
+            logger.warning(
+                "SYNC_SHEET_MISSING | sheet=%s | action=creating with %d columns",
+                sheet_name,
+                len(SHEETS_COLUMNS),
+            )
+            ws = sh.add_worksheet(title=sheet_name, rows=100, cols=len(SHEETS_COLUMNS))
+            ws.append_row(SHEETS_COLUMNS, value_input_option="USER_ENTERED")
+            return []
         # get_all_values() устойчив к дублирующимся заголовкам в таблице
         all_values = ws.get_all_values()
         if not all_values:
@@ -383,6 +395,23 @@ async def run_full_sync(*, first_run: bool = False) -> None:
         sync_all_orders_to_sheet,
     )
 
-    await sync_services_from_sheet(first_run=first_run)
-    await asyncio.to_thread(sync_all_orders_to_sheet)
-    await asyncio.to_thread(sync_all_clients_to_sheet)
+    try:
+        await sync_services_from_sheet(first_run=first_run)
+    except Exception as exc:
+        if first_run:
+            logger.warning(
+                "SYNC_SKIP | reason=sheet unavailable on first run | error=%s", exc
+            )
+        else:
+            logger.error("SYNC_ERR | error=%s", exc)
+        return
+
+    try:
+        await asyncio.to_thread(sync_all_orders_to_sheet)
+    except Exception as exc:
+        logger.warning("SYNC_ORDERS_ERR | error=%s", exc)
+
+    try:
+        await asyncio.to_thread(sync_all_clients_to_sheet)
+    except Exception as exc:
+        logger.warning("SYNC_CLIENTS_ERR | error=%s", exc)

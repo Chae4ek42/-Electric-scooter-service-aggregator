@@ -480,9 +480,7 @@ async def adm_partners_list(cb: types.CallbackQuery) -> None:
     total_pages = max(1, math.ceil(total / ADMIN_PAGE_SIZE))
     if not owners:
         try:
-            await cb.message.edit_text(
-                "Нет партнёров.", reply_markup=admin_main_kb()
-            )
+            await cb.message.edit_text("Нет партнёров.", reply_markup=admin_main_kb())
         except TelegramBadRequest:
             pass
         await cb.answer()
@@ -500,19 +498,27 @@ async def adm_partners_list(cb: types.CallbackQuery) -> None:
     for o in owners:
         label = f"#{o.id} | {o.draft_name or '?'} | {_SHORT.get(o.status, o.status)}"
         rows.append(
-            [InlineKeyboardButton(text=label, callback_data=f"adm:partner_detail:{o.id}")]
+            [
+                InlineKeyboardButton(
+                    text=label, callback_data=f"adm:partner_detail:{o.id}"
+                )
+            ]
         )
     nav: list[InlineKeyboardButton] = []
     if page > 0:
         nav.append(
-            InlineKeyboardButton(text="◄ Назад", callback_data=f"adm:partners:{page - 1}")
+            InlineKeyboardButton(
+                text="◄ Назад", callback_data=f"adm:partners:{page - 1}"
+            )
         )
     nav.append(
         InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="adm:noop")
     )
     if page < total_pages - 1:
         nav.append(
-            InlineKeyboardButton(text="Вперёд ►", callback_data=f"adm:partners:{page + 1}")
+            InlineKeyboardButton(
+                text="Вперёд ►", callback_data=f"adm:partners:{page + 1}"
+            )
         )
     if nav:
         rows.append(nav)
