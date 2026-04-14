@@ -198,9 +198,6 @@ def sync_all_orders_to_sheet() -> bool:
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
         ws = _ensure_worksheet(sh, SHEETS_TAB_ORDERS, _ORDER_HEADERS)
 
-        ws.clear()
-        ws.append_row(_ORDER_HEADERS, value_input_option="USER_ENTERED")
-
         _STATUS_RU = {
             "awaiting_payment": "Ожидает оплаты",
             "paid": "Оплачено",
@@ -271,8 +268,9 @@ def sync_all_orders_to_sheet() -> bool:
                         ),
                     ]
                 )
-        if rows:
-            ws.append_rows(rows, value_input_option="USER_ENTERED")
+        all_data = [_ORDER_HEADERS] + rows
+        ws.clear()
+        ws.update(range_name="A1", values=all_data, value_input_option="USER_ENTERED")
         logger.info("SHEETS_WRITE | op=sync_orders | count=%d", len(rows))
         return True
     except Exception:
@@ -294,9 +292,6 @@ def sync_all_clients_to_sheet() -> bool:
         gc = _get_client()
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
         ws = _ensure_worksheet(sh, SHEETS_TAB_CLIENTS, _CLIENT_HEADERS)
-
-        ws.clear()
-        ws.append_row(_CLIENT_HEADERS, value_input_option="USER_ENTERED")
 
         with Session(sync_engine) as session:
             users = session.execute(sa_select(User)).scalars().all()
@@ -330,8 +325,9 @@ def sync_all_clients_to_sheet() -> bool:
                         last.strftime("%d.%m.%Y %H:%M") if last else "",
                     ]
                 )
-        if rows:
-            ws.append_rows(rows, value_input_option="USER_ENTERED")
+        all_data = [_CLIENT_HEADERS] + rows
+        ws.clear()
+        ws.update(range_name="A1", values=all_data, value_input_option="USER_ENTERED")
         logger.info("SHEETS_WRITE | op=sync_clients | count=%d", len(rows))
         return True
     except Exception:
