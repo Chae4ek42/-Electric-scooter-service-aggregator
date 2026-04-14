@@ -632,22 +632,22 @@ class TestAdminPartnerKeyboards:
 
         kb = admin_partner_detail_kb(1, "pending")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        assert "Одобрить" in texts
-        assert "Отклонить" in texts
+        assert "К списку" in texts
+        assert "В главное меню" in texts
 
     def test_admin_partner_detail_active(self):
         from bot.ui.keyboards import admin_partner_detail_kb
 
         kb = admin_partner_detail_kb(1, "active")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        assert "Приостановить" in texts
+        assert "К списку" in texts
 
     def test_admin_partner_detail_suspended(self):
         from bot.ui.keyboards import admin_partner_detail_kb
 
         kb = admin_partner_detail_kb(1, "suspended")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        assert "Восстановить" in texts
+        assert "К списку" in texts
 
 
 # ── Handler imports ────────────────────────────────────────────

@@ -463,42 +463,12 @@ def admin_main_kb() -> InlineKeyboardMarkup:
 
 
 def admin_partner_detail_kb(owner_id: int, status: str) -> InlineKeyboardMarkup:
-    _STATUS_MAP = {
-        "pending": "ожидает",
-        "active": "активный",
-        "suspended": "приостановлен",
-    }
-    ru_status = _STATUS_MAP.get(status, status)
     rows: list[list[InlineKeyboardButton]] = []
-    if ru_status == "ожидает":
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Одобрить", callback_data=f"padm:approve:{owner_id}"
-                ),
-                InlineKeyboardButton(
-                    text="Отклонить", callback_data=f"padm:reject_partner:{owner_id}"
-                ),
-            ]
-        )
-    elif ru_status == "активный":
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Приостановить", callback_data=f"padm:suspend:{owner_id}"
-                )
-            ]
-        )
-    elif ru_status == "приостановлен":
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Восстановить", callback_data=f"padm:unsuspend:{owner_id}"
-                )
-            ]
-        )
     rows.append(
-        [InlineKeyboardButton(text="К списку", callback_data="padm:partners:0")]
+        [InlineKeyboardButton(text="К списку", callback_data="adm:partners:0")]
+    )
+    rows.append(
+        [InlineKeyboardButton(text="В главное меню", callback_data="adm:main")]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

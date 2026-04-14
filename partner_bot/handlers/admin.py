@@ -230,7 +230,7 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
         else f"Статус: {_STATUS_RU.get(status_filter, status_filter)}"
     )
     await cb.message.edit_text(
-        f"*{header}* (стр. {page + 1}/{total_pages})",
+        f"*{header}:* {total} (стр. {page + 1}/{total_pages})",
         reply_markup=padm_partners_kb(list(owners), page, total_pages, status_filter),
     )
     await cb.answer()
@@ -344,7 +344,7 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
             working_days=owner.draft_working_days,
             is_available=True,
             yandex_rating=0.0,
-            partnership_status="partner",
+            partnership_status="активный",
         )
         session.add(svc)
         await session.flush()

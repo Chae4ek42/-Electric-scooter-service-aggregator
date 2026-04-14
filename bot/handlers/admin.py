@@ -7,6 +7,7 @@ import math
 from typing import Union
 
 from aiogram import F, Router, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -20,6 +21,7 @@ from bot.ui.keyboards import (
     admin_main_kb,
     admin_order_detail_kb,
     admin_orders_kb,
+    admin_partner_detail_kb,
     main_menu_kb,
 )
 from bot.domain.models import (
@@ -179,8 +181,8 @@ def _fmt_order(order: Order) -> str:
 async def _get_orders(
     page: int,
     status_filter: str | None = None,
-) -> tuple[list[Order], int]:
-    """Возвращает (заявки на странице, total_pages)."""
+) -> tuple[list[Order], int, int]:
+    """Возвращает (заявки на странице, total_pages, total_count)."""
     offset = page * ADMIN_PAGE_SIZE
     async with async_session() as session:
         query = select(Order)
@@ -201,7 +203,7 @@ async def _get_orders(
             .all()
         )
     total_pages = max(1, math.ceil(total / ADMIN_PAGE_SIZE))
-    return list(orders), total_pages
+    return list(orders), total_pages, total
 
 
 async def _send_or_edit(
@@ -299,7 +301,7 @@ async def adm_orders_list(cb: types.CallbackQuery, state: FSMContext) -> None:
     page = int(parts[2])
     status_filter = parts[4] if len(parts) >= 5 and parts[3] == "status" else None
 
-    orders, total_pages = await _get_orders(page, status_filter)
+    orders, total_pages, total_count = await _get_orders(page, status_filter)
     await state.update_data(orders_page=page, orders_status_filter=status_filter)
     await state.set_state(AdminFSM.orders_list)
 
@@ -317,7 +319,7 @@ async def adm_orders_list(cb: types.CallbackQuery, state: FSMContext) -> None:
         else f"Статус: {_STATUS_RU.get(status_filter, status_filter)}"
     )
     await cb.message.edit_text(
-        f"*{header}* (стр. {page + 1}/{total_pages})",
+        f"*{header}:* {total_count} (стр. {page + 1}/{total_pages})",
         reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
     )
     await cb.answer()
@@ -396,7 +398,7 @@ async def adm_back_to_list(cb: types.CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     page = data.get("orders_page", 0)
     status_filter = data.get("orders_status_filter")
-    orders, total_pages = await _get_orders(page, status_filter)
+    orders, total_pages, total_count = await _get_orders(page, status_filter)
 
     if not orders:
         await cb.message.edit_text("Заявки не найдены.", reply_markup=admin_main_kb())
@@ -409,7 +411,7 @@ async def adm_back_to_list(cb: types.CallbackQuery, state: FSMContext) -> None:
         else f"Статус: {_STATUS_RU.get(status_filter, status_filter)}"
     )
     await cb.message.edit_text(
-        f"*{header}* (стр. {page + 1}/{total_pages})",
+        f"*{header}:* {total_count} (стр. {page + 1}/{total_pages})",
         reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
     )
     await cb.answer()
@@ -422,4 +424,121 @@ async def adm_back_to_list(cb: types.CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "adm:noop")
 async def adm_noop(cb: types.CallbackQuery) -> None:
+    await cb.answer()
+
+
+# ══════════════════════════════════════════════════════════════
+# Список партнёров (ServiceOwner) в клиентском боте
+# ══════════════════════════════════════════════════════════════
+
+
+_PARTNER_STATUS_RU: dict[str, str] = {
+    "ожидает": "Ожидает модерации",
+    "активный": "Активный",
+    "отклонён": "Отклонён",
+    "приостановлен": "Приостановлен",
+}
+
+
+def _fmt_partner_short(owner: ServiceOwner) -> str:
+    e = _md_escape
+    type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
+    lines = [
+        f"*Партнёр #*`{owner.id}`",
+        f"*TG ID:* `{owner.telegram_id}`",
+        f"*Статус:* {_PARTNER_STATUS_RU.get(owner.status, owner.status)}",
+        f"*Название:* {e(owner.draft_name or '—')}",
+        f"*Тип:* {type_map.get(owner.draft_service_type or '', owner.draft_service_type or '—')}",
+        f"*Адрес:* {e(owner.draft_address or '—')}",
+        f"*Метро:* {e(owner.draft_metro or '—')}",
+        f"*Телефон:* {e(owner.draft_phone or '—')}",
+    ]
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("adm:partners:"))
+async def adm_partners_list(cb: types.CallbackQuery) -> None:
+    parts = cb.data.split(":")
+    page = int(parts[2])
+
+    async with async_session() as session:
+        total = (
+            await session.execute(select(func.count()).select_from(ServiceOwner))
+        ).scalar_one()
+        owners = (
+            (
+                await session.execute(
+                    select(ServiceOwner)
+                    .order_by(ServiceOwner.registered_at.desc())
+                    .offset(page * ADMIN_PAGE_SIZE)
+                    .limit(ADMIN_PAGE_SIZE)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    total_pages = max(1, math.ceil(total / ADMIN_PAGE_SIZE))
+    if not owners:
+        try:
+            await cb.message.edit_text(
+                "Нет партнёров.", reply_markup=admin_main_kb()
+            )
+        except TelegramBadRequest:
+            pass
+        await cb.answer()
+        return
+
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    _SHORT = {
+        "ожидает": "Ожид.",
+        "активный": "Активен",
+        "отклонён": "Откл.",
+        "приостановлен": "Приост.",
+    }
+    rows: list[list[InlineKeyboardButton]] = []
+    for o in owners:
+        label = f"#{o.id} | {o.draft_name or '?'} | {_SHORT.get(o.status, o.status)}"
+        rows.append(
+            [InlineKeyboardButton(text=label, callback_data=f"adm:partner_detail:{o.id}")]
+        )
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(text="◄ Назад", callback_data=f"adm:partners:{page - 1}")
+        )
+    nav.append(
+        InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="adm:noop")
+    )
+    if page < total_pages - 1:
+        nav.append(
+            InlineKeyboardButton(text="Вперёд ►", callback_data=f"adm:partners:{page + 1}")
+        )
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="В главное меню", callback_data="adm:main")])
+
+    await cb.message.edit_text(
+        f"*Заявки партнёров:* {total} (стр. {page + 1}/{total_pages})",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:partner_detail:"))
+async def adm_partner_detail(cb: types.CallbackQuery) -> None:
+    owner_id = int(cb.data.split(":")[2])
+    async with async_session() as session:
+        owner = (
+            await session.execute(
+                select(ServiceOwner).where(ServiceOwner.id == owner_id)
+            )
+        ).scalar_one_or_none()
+    if not owner:
+        await cb.answer("Партнёр не найден.", show_alert=True)
+        return
+    await cb.message.edit_text(
+        _fmt_partner_short(owner),
+        reply_markup=admin_partner_detail_kb(owner.id, owner.status),
+    )
     await cb.answer()

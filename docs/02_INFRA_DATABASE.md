@@ -104,6 +104,32 @@ awaiting_payment → accepted → in_progress → ready_for_pickup → completed
 
 ---
 
+## Управление БД на сервере
+
+### Полное удаление и пересоздание БД
+
+БД хранится в bind-mount `./data/esas.db`. `docker compose down` **не удаляет** файл.
+Для полного сброса:
+
+```bash
+docker compose down
+rm data/esas.db
+docker compose up -d --build
+```
+
+При следующем запуске `init_db()` пересоздаст таблицы и `seed_database()` наполнит справочники.
+Затем `run_full_sync()` импортирует сервисы из Google Sheets.
+
+### Обновление кода без сброса БД
+
+```bash
+docker compose up -d --build
+```
+
+Достаточно для пересборки образа и перезапуска контейнеров. БД сохраняется.
+
+---
+
 ## Google Sheets интеграция
 
 ### Чтение (`bot/services/sheets_sync.py`)
