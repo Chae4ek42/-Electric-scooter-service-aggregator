@@ -79,15 +79,12 @@ tests/
 
 #### Секреты (`.env`)
 
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `BOT_TOKEN` | **обязательно** | Токен клиентского бота |
-| `PARTNER_BOT_TOKEN` | `""` | Токен партнёрского бота |
-| `DATABASE_URL` | `sqlite+aiosqlite:///esas.db` | URL подключения к БД |
-| `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @) |
-| `GOOGLE_SHEET_ID` | `""` | ID Google Таблицы |
-| `GOOGLE_SA_PATH` | `""` | Путь к JSON-ключу Service Account |
-| `REDIS_URL` | `redis://localhost:6379/0` | URL Redis для FSM storage и throttling |
+| Переменная | Описание |
+|---|---|
+| `BOT_TOKEN` | Токен клиентского бота (**обязательно**) |
+| `PARTNER_BOT_TOKEN` | Токен партнёрского бота |
+| `GOOGLE_SHEET_ID` | ID Google Таблицы |
+| `REDIS_URL` | URL Redis для FSM storage и throttling (default: `redis://localhost:6379/0`) |
 
 #### Настройки (`config.yaml`)
 
@@ -95,6 +92,9 @@ tests/
 |---|---|---|---|
 | — | `support_user` | `@i_jusp` | Контакт техподдержки |
 | — | `cooperation_user` | `@i_jusp` | Контакт для сотрудничества |
+| — | `admin_usernames` | `[]` | Список username админов (без @) |
+| — | `database_url` | `sqlite+aiosqlite:///esas.db` | URL подключения к БД |
+| — | `google_sa_path` | `service-account-key.json` | Путь к JSON-ключу Service Account |
 | `sheets` | `sync_interval` | `300` | Интервал синхронизации Google Sheets (сек) |
 | `sheets` | `tab_services` | `Сервисы` | Название листа сервисов |
 | `sheets` | `tab_orders` | `Заявки` | Название листа заявок |

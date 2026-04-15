@@ -328,10 +328,14 @@ async def adm_orders_list(cb: types.CallbackQuery, state: FSMContext) -> None:
         if not status_filter
         else f"Статус: {_STATUS_RU.get(status_filter, status_filter)}"
     )
-    await cb.message.edit_text(
-        f"*{header}:* {total_count} (стр. {page + 1}/{total_pages})",
-        reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
-    )
+    try:
+        await cb.message.edit_text(
+            f"*{header}:* {total_count} (стр. {page + 1}/{total_pages})",
+            reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
+        )
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            raise
     await cb.answer()
 
 
@@ -420,10 +424,14 @@ async def adm_back_to_list(cb: types.CallbackQuery, state: FSMContext) -> None:
         if not status_filter
         else f"Статус: {_STATUS_RU.get(status_filter, status_filter)}"
     )
-    await cb.message.edit_text(
-        f"*{header}:* {total_count} (стр. {page + 1}/{total_pages})",
-        reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
-    )
+    try:
+        await cb.message.edit_text(
+            f"*{header}:* {total_count} (стр. {page + 1}/{total_pages})",
+            reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
+        )
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            raise
     await cb.answer()
 
 

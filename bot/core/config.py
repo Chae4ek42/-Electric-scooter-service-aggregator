@@ -64,6 +64,9 @@ class FSMReminderConfig(BaseModel):
 class AppConfig(BaseModel):
     support_user: str = "@i_jusp"
     cooperation_user: str = "@i_jusp"
+    admin_usernames: List[str] = []
+    database_url: str = "sqlite+aiosqlite:///esas.db"
+    google_sa_path: str = "service-account-key.json"
     sheets: SheetsConfig = SheetsConfig()
     calendar: CalendarConfig = CalendarConfig()
     throttle_rate: float = Field(0.2, ge=0.0, le=10.0)
@@ -87,14 +90,6 @@ app_config = _load_app_config()
 BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 PARTNER_BOT_TOKEN: str = os.environ.get("PARTNER_BOT_TOKEN", "")
 GOOGLE_SHEET_ID: str = os.environ.get("GOOGLE_SHEET_ID", "")
-GOOGLE_SA_PATH: str = os.environ.get("GOOGLE_SA_PATH", "")
-_admin_raw: str = os.environ.get("ADMIN_USERNAMES", "")
-ADMIN_USERNAMES: set[str] = {
-    x.strip().lstrip("@").lower()
-    for x in _admin_raw.split(",")
-    if x.strip().lstrip("@")
-}
-DATABASE_URL: str = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///esas.db")
 REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 
@@ -102,6 +97,11 @@ REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 SUPPORT_USER: str = app_config.support_user
 COOPERATION_USER: str = app_config.cooperation_user
+ADMIN_USERNAMES: set[str] = {
+    x.strip().lstrip("@").lower() for x in app_config.admin_usernames if x.strip()
+}
+DATABASE_URL: str = app_config.database_url
+GOOGLE_SA_PATH: str = app_config.google_sa_path
 SHEETS_SYNC_INTERVAL: int = app_config.sheets.sync_interval
 SHEETS_COLUMNS: list[str] = app_config.sheets.columns
 SHEETS_TAB_SERVICES: str = app_config.sheets.tab_services

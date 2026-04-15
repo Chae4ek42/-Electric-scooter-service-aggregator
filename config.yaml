@@ -4,6 +4,18 @@
 support_user: "@i_jusp"
 cooperation_user: "@sergzvezdilin"
 
+# Администраторы (без @)
+admin_usernames:
+    - "i_jusp"
+    - "chae4ek42"
+    - "sergzvezdilin"
+
+# База данных
+database_url: "sqlite+aiosqlite:///esas.db"
+
+# Google Sheets — путь к JSON-ключу Service Account
+google_sa_path: "service-account-key.json"
+
 # Google Sheets
 sheets:
     sync_interval: 300 # секунды между синхронизациями
