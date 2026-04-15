@@ -115,7 +115,9 @@ async def main() -> None:
         event_type.middleware(ErrorMiddleware())
         event_type.middleware(ThrottlingMiddleware())
         event_type.middleware(ActionLoggerMiddleware())
-        event_type.middleware(FSMActivityMiddleware("client"))
+        event_type.middleware(
+            FSMActivityMiddleware("client", form_state_prefixes=["OrderFSM:"])
+        )
 
     # Register routers (common first — so menu-interrupts are caught)
     dp.include_router(common_router)

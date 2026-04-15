@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any, Awaitable, Callable, Dict, Sequence
 
 from aiogram import BaseMiddleware, Bot
 from aiogram.fsm.context import FSMContext
@@ -17,10 +17,12 @@ from aiogram.types import (
     TelegramObject,
 )
 
+from bot.core.config import app_config
+
 logger = logging.getLogger(__name__)
 
-REMINDER_SECONDS = 30 * 60  # 30 minutes
-CHECK_INTERVAL = 60  # check every minute
+REMINDER_SECONDS: int = app_config.fsm_reminder.timeout
+CHECK_INTERVAL: int = app_config.fsm_reminder.check_interval
 
 # {(bot_token_hash, user_id): last_activity_timestamp}
 _activity: Dict[tuple, float] = {}
@@ -40,10 +42,16 @@ _REMINDER_KB = InlineKeyboardMarkup(
 
 
 class FSMActivityMiddleware(BaseMiddleware):
-    """Records last-activity timestamp for users with active FSM state."""
+    """Records last-activity timestamp only for users in form-filling FSM states."""
 
-    def __init__(self, bot_key: str) -> None:
+    def __init__(self, bot_key: str, form_state_prefixes: Sequence[str] = ()) -> None:
         self._bot_key = bot_key
+        self._prefixes = tuple(form_state_prefixes)
+
+    def _is_form_state(self, state: str) -> bool:
+        if not self._prefixes:
+            return True  # fallback: track all states
+        return any(state.startswith(p) for p in self._prefixes)
 
     async def __call__(
         self,
@@ -61,7 +69,7 @@ class FSMActivityMiddleware(BaseMiddleware):
         if user and state:
             current = await state.get_state()
             key = (self._bot_key, user.id)
-            if current:
+            if current and self._is_form_state(current):
                 _activity[key] = time.monotonic()
                 _reminded.discard(key)
             else:

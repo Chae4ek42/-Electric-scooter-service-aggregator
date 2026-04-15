@@ -140,7 +140,6 @@ class ActionLoggerMiddleware(BaseMiddleware):
             capture = _ResponseCapture(bot)
             capture.install()
 
-        start_ts = time.monotonic()
         status = "success"
         error_context = None
         try:
@@ -152,17 +151,14 @@ class ActionLoggerMiddleware(BaseMiddleware):
         finally:
             if capture:
                 capture.uninstall()
-            elapsed_ms = (time.monotonic() - start_ts) * 1000
             bot_response = capture.text if capture else None
             bot_response_type = capture.response_type if capture else None
             log_parts = [
-                f"{user_id}",
                 f"@{username}" if username else "",
                 f"action={action_type}",
                 f"state={state_str or 'none'}",
                 f"payload={payload[:80]}" if payload else "",
                 f"status={status}",
-                f"elapsed={elapsed_ms:.0f}ms",
                 f"response_type={bot_response_type}" if bot_response_type else "",
             ]
             log_msg = " | ".join(p for p in log_parts if p)

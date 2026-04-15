@@ -91,7 +91,9 @@ async def main() -> None:
         event_type.middleware(ErrorMiddleware())
         event_type.middleware(ThrottlingMiddleware())
         event_type.middleware(ActionLoggerMiddleware())
-        event_type.middleware(FSMActivityMiddleware("partner"))
+        event_type.middleware(
+            FSMActivityMiddleware("partner", form_state_prefixes=["RegistrationFSM:"])
+        )
 
     dp.include_router(admin_router)
     dp.include_router(common_router)

@@ -594,10 +594,12 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
             f"\nПредоплата: 500 руб."
         )
     elif diagnostics_price:
-        if data.get("diagnostics_included"):
+        if diagnostics_included:
             price_line = (
                 f"\nСтоимость диагностики: {diagnostics_price:.0f} руб.\n\n"
-                "Диагностика входит в стоимость ремонта 🎉"
+                "Диагностика входит в стоимость ремонта.\n"
+                "Если вы передумали до приезда в сервис "
+                "- вернем ваши деньги 🤝"
             )
         else:
             price_line = (
@@ -610,10 +612,8 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
                 "- вернем ваши деньги 🤝"
             )
 
-    rating_line = f" (рейтинг {svc_rating})" if svc_rating else ""
     summary = (
         "*Подтвердите заявку:*\n\n"
-        f"Сервис: {svc_name}{rating_line}\n"
         f"Модель: {model_display}\n"
         f"Метро: {data.get('metro_station', '')}\n"
         f"Дата: {data.get('scheduled_date', '')}\n"
@@ -681,29 +681,6 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
 
     await state.clear()
 
-    price_text = ""
-    is_hydro = data.get("upgrade_category") == "Гидроизоляция"
-    hp = data.get("hydroisolation_price")
-    dp = data.get("diagnostics_price")
-    if is_hydro and hp:
-        price_text = f"\n\nСтоимость гидроизоляции: {hp} руб." f"\nПредоплата: 500 руб."
-    elif dp:
-        if data.get("diagnostics_included"):
-            price_text = (
-                f"\n\nСтоимость диагностики: {dp:.0f} руб.\n\n"
-                "Диагностика входит в стоимость ремонта 🎉"
-            )
-        else:
-            price_text = (
-                f"\n\nСтоимость диагностики: {dp:.0f} руб.\n\n"
-                "В этом сервисе, диагностика не входит "
-                "в стоимость ремонта.\n"
-                "Если выполнена только диагностика, без ремонта "
-                "- деньги не возвращаются.\n"
-                "Если вы передумали до приезда в сервис "
-                "- вернем ваши деньги 🤝"
-            )
-
     logger.info(
         "user=%s order #%s created (service_id=%s)",
         callback.from_user.id,
@@ -713,7 +690,7 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
 
     await _safe_edit_or_answer(
         callback,
-        f"*Заявка №{order_id} создана!*{price_text}\n\n" "⏳ Обработка оплаты...",
+        f"*Заявка №{order_id} создана!*\n\n⏳ Обработка оплаты...",
     )
 
     # Auto-complete payment after 10 seconds (mock)
@@ -730,15 +707,46 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
                 o.payment_id = f"AUTO-DIAG-{order_id}"
                 await s.commit()
                 logger.info("auto-payment completed for order #%s", order_id)
-        try:
-            await callback.message.answer(
-                f"✅ Оплата заявки №{order_id} прошла успешно!\n"
-                "Ожидайте подтверждения от сервиса.",
-            )
-        except Exception:
-            logger.exception(
-                "Failed to send auto-payment message for order #%s", order_id
-            )
+
+                # Build full order info for client
+                svc = o.service
+                svc_name = svc.name if svc else ""
+                svc_address = svc.address if svc else ""
+                svc_phone = svc.phone if svc else ""
+                model_str = _client_model_name(o)
+
+                info_lines = [
+                    f"✅ Оплата заявки №{order_id} прошла успешно!\n",
+                    f"Сервис-центр: {svc_name}",
+                ]
+                if svc_address:
+                    info_lines.append(f"Адрес: {svc_address}")
+                if svc_phone:
+                    info_lines.append(f"Телефон: {svc_phone}")
+                info_lines.append(f"Модель: {model_str}")
+                if o.metro_station:
+                    info_lines.append(f"Метро: {o.metro_station}")
+                info_lines.append(
+                    f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}"
+                )
+
+                try:
+                    await callback.message.answer("\n".join(info_lines))
+                except Exception:
+                    logger.exception(
+                        "Failed to send auto-payment message for order #%s",
+                        order_id,
+                    )
+
+                # Notify partner
+                _notify_partner(
+                    o,
+                    f"🆕 Новая заявка #{order_id}\n\n"
+                    f"Устройство: {model_str}\n"
+                    f"Метро: {o.metro_station or ''}\n"
+                    f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}\n"
+                    f"Описание: {o.problem_description or '—'}",
+                )
 
     asyncio.create_task(_auto_pay_diagnostics())
     await callback.message.answer(
@@ -778,13 +786,43 @@ async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> N
                 o.payment_id = f"AUTO-PAY-{order_id}"
                 await s.commit()
                 logger.info("auto-payment completed for order #%s", order_id)
-        try:
-            await callback.message.answer(
-                f"✅ Оплата заявки №{order_id} прошла успешно!\n"
-                "Ожидайте подтверждения от сервиса.",
-            )
-        except Exception:
-            logger.exception("Failed to send auto-payment message")
+
+                # Build full order info for client
+                svc = o.service
+                svc_name = svc.name if svc else ""
+                svc_address = svc.address if svc else ""
+                svc_phone = svc.phone if svc else ""
+                model_str = _client_model_name(o)
+
+                info_lines = [
+                    f"✅ Оплата заявки №{order_id} прошла успешно!\n",
+                    f"Сервис-центр: {svc_name}",
+                ]
+                if svc_address:
+                    info_lines.append(f"Адрес: {svc_address}")
+                if svc_phone:
+                    info_lines.append(f"Телефон: {svc_phone}")
+                info_lines.append(f"Модель: {model_str}")
+                if o.metro_station:
+                    info_lines.append(f"Метро: {o.metro_station}")
+                info_lines.append(
+                    f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}"
+                )
+
+                try:
+                    await callback.message.answer("\n".join(info_lines))
+                except Exception:
+                    logger.exception("Failed to send auto-payment message")
+
+                # Notify partner
+                _notify_partner(
+                    o,
+                    f"🆕 Новая заявка #{order_id}\n\n"
+                    f"Устройство: {model_str}\n"
+                    f"Метро: {o.metro_station or ''}\n"
+                    f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}\n"
+                    f"Описание: {o.problem_description or '—'}",
+                )
 
     asyncio.create_task(_auto_pay())
 
@@ -1692,6 +1730,19 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
         )
     elif current == OrderFSM.metro_search.state:
         await callback.message.answer("Введите название станции метро (или его часть):")
+    elif current == OrderFSM.metro_confirm.state:
+        metro = data.get("metro_station", "")
+        if metro:
+            await callback.message.answer(
+                f"Найдена станция: *{metro}*\n\nВсё верно?",
+                reply_markup=metro_confirm_kb(metro),
+                parse_mode="Markdown",
+            )
+        else:
+            await callback.message.answer(
+                "Введите название станции метро (или его часть):"
+            )
+            await state.set_state(OrderFSM.metro_search)
     elif current == OrderFSM.calendar_date.state:
         await callback.message.answer("Выберите дату:", reply_markup=calendar_kb())
     elif current == OrderFSM.calendar_time.state:
@@ -1703,12 +1754,9 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
         await callback.message.answer(
             "Нажмите кнопку подтверждения:", reply_markup=confirm_kb()
         )
-    elif current == ClientOrderFSM.dispute_reason.state:
-        await callback.message.answer("Опишите возникшую проблему:")
     else:
-        await callback.message.answer(
-            "Продолжите ввод данных или нажмите /start для отмены."
-        )
+        # Unknown state — should not happen since reminder only fires for OrderFSM
+        await callback.message.answer("Нет активной формы.")
 
 
 # CATCH-ALL

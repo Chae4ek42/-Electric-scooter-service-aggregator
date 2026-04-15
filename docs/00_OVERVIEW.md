@@ -35,7 +35,7 @@ bot/
 ├── __main__.py          # Точка входа: init_db → sheets sync → polling
 │
 ├── core/                # Инфраструктурный слой
-│   ├── config.py        # Переменные окружения (.env)
+│   ├── config.py        # .env (секреты) + config.yaml (настройки, Pydantic-валидация)
 │   ├── database.py      # async engine + sessionmaker
 │   └── middlewares.py   # ActionLogger, Throttling, ErrorMiddleware
 │
@@ -73,25 +73,42 @@ tests/
 ## Ключевые модули
 
 ### `bot/core/config.py`
-Все настройки — из `os.environ` (через `.env`). Нет pydantic-settings.
+Конфигурация разделена на два уровня:
+- **`.env`** — секреты (токены, ключи, админы, URL БД/Redis)
+- **`config.yaml`** (корень проекта) — операционные настройки с Pydantic-валидацией (модель `AppConfig`)
+
+#### Секреты (`.env`)
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `BOT_TOKEN` | **обязательно** | Токен клиентского бота |
 | `PARTNER_BOT_TOKEN` | `""` | Токен партнёрского бота |
 | `DATABASE_URL` | `sqlite+aiosqlite:///esas.db` | URL подключения к БД |
-| `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @). Получают уведомления о новых заявках на партнёрство. |
-| `SUPPORT_USER` | `@i_jusp` | Контакт техподдержки |
-| `COOPERATION_USER` | `@i_jusp` | Контакт для вопросов по сотрудничеству |
+| `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @) |
 | `GOOGLE_SHEET_ID` | `""` | ID Google Таблицы |
 | `GOOGLE_SA_PATH` | `""` | Путь к JSON-ключу Service Account |
-| `SHEETS_SYNC_INTERVAL` | `300` | Интервал синхронизации, сек |
 | `REDIS_URL` | `redis://localhost:6379/0` | URL Redis для FSM storage и throttling |
-| `THROTTLE_RATE` | `0.2` | Мин. интервал между запросами, сек |
-| `CALENDAR_DAYS` | `14` | Дней вперёд в календаре |
-| `WORK_HOUR_START` | `8` | Начало рабочего дня (час, моск. время) |
-| `WORK_HOUR_END` | `22` | Конец рабочего дня (час, моск. время) |
-| `TIME_SLOT_MINUTES` | `60` | Шаг тайм-слота, мин |
+
+#### Настройки (`config.yaml`)
+
+| Раздел | Параметр | По умолчанию | Описание |
+|---|---|---|---|
+| — | `support_user` | `@i_jusp` | Контакт техподдержки |
+| — | `cooperation_user` | `@i_jusp` | Контакт для сотрудничества |
+| `sheets` | `sync_interval` | `300` | Интервал синхронизации Google Sheets (сек) |
+| `sheets` | `tab_services` | `Сервисы` | Название листа сервисов |
+| `sheets` | `tab_orders` | `Заявки` | Название листа заявок |
+| `sheets` | `tab_clients` | `Клиенты` | Название листа клиентов |
+| `sheets` | `columns` | 17 колонок | Порядок столбцов листа «Сервисы» |
+| `calendar` | `days` | `14` | Дней вперёд в календаре |
+| `calendar` | `work_hour_start` | `8` | Начало рабочего дня (час, МСК) |
+| `calendar` | `work_hour_end` | `22` | Конец рабочего дня (час, МСК) |
+| `calendar` | `time_slot_minutes` | `60` | Шаг тайм-слота (мин) |
+| — | `throttle_rate` | `0.2` | Мин. интервал между запросами (сек) |
+| `fsm_reminder` | `timeout` | `1800` | Секунды до напоминания |
+| `fsm_reminder` | `check_interval` | `60` | Интервал проверки (сек) |
+
+> Если `config.yaml` отсутствует, используются значения по умолчанию. При невалидном YAML бот не стартует (Pydantic `ValidationError`).
 
 ### `bot/domain/models.py`
 ORM-модели. Текущий набор полей `Service`:
@@ -267,7 +284,7 @@ Middlewares применяются к `dp.message` и `dp.callback_query`:
 - `ActionLogger` — все действия пользователя в `user_actions`
 - Throttling (0.2 сек/запрос), ErrorMiddleware- Гидроизоляция: цена (фиксированная/диапазон) из профиля → отображается клиенту, предоплата 500 руб.
 - Итоговая стоимость: партнёр вводит через кнопку «Указать итоговую стоимость», клиент получает уведомление с остатком к оплате
-- 30-минутный напоминатель о незавершённой форме (FSMActivityMiddleware + background loop)
+- 30-минутный напоминатель о незавершённой форме (FSMActivityMiddleware + background loop). Срабатывает только для состояний анкет: `OrderFSM` (клиентский бот), `RegistrationFSM` (партнёрский бот). Прочие FSM-состояния (диспуты, редактирование профиля, действия с заявками) **не** вызывают напоминаний. При нажатии «Продолжить» пользователю повторно отправляется сообщение того этапа, на котором он остановился.
 - Отмена FSM по нажатию кнопок меню (оба бота)
 - Полное редактирование профиля (14 полей), поля без ре-модерации (метро, реквизиты)
 - Переключение Открыт/Закрыт через текстовое меню без ре-модерации
@@ -322,7 +339,7 @@ bot/
 ├── __main__.py          # Точка входа: init_db → sheets sync → polling
 │
 ├── core/                # Инфраструктурный слой
-│   ├── config.py        # Переменные окружения (.env)
+│   ├── config.py        # .env (секреты) + config.yaml (настройки, Pydantic-валидация)
 │   ├── database.py      # async engine + sessionmaker
 │   └── middlewares.py   # ActionLogger, Throttling, ErrorMiddleware
 │

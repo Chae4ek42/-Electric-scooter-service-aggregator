@@ -13,15 +13,12 @@ from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
 from bot.domain.models import Service, ServiceOwner, User
 from bot.domain.states import (
-    PartnerOrderFSM,
-    PartnerProfileFSM,
     RegistrationFSM,
 )
 from partner_bot.ui.keyboards import (
     admin_only_menu_kb,
     partner_main_menu_kb,
     partner_pending_menu_kb,
-    profile_edit_fields_kb,
     reg_category_kb,
     reg_confirm_kb,
     reg_diag_included_kb,
@@ -488,61 +485,6 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
             await callback.message.answer(
                 "Нажмите кнопку подтверждения:", reply_markup=reg_confirm_kb()
             )
-
-    # ── PartnerProfileFSM ──
-    elif current == PartnerProfileFSM.edit_field_select.state:
-        await callback.message.answer(
-            "Выберите поле для редактирования:",
-            reply_markup=profile_edit_fields_kb(),
-        )
-    elif current == PartnerProfileFSM.edit_field_value.state:
-        field = data.get("edit_field", "")
-        _FIELD_LABELS = {
-            "name": "Название",
-            "address": "Адрес",
-            "phone": "Телефон",
-            "telegram": "Telegram",
-            "hours": "Время работы (ЧЧ:ММ-ЧЧ:ММ)",
-            "diagnostics": "Стоимость диагностики (руб.)",
-            "metro": "Ближайшее метро",
-            "hydro_price": "Цена гидроизоляции",
-            "bank_account": "Расчётный счёт (20 цифр)",
-            "bank_name": "Банк",
-            "bik": "БИК",
-            "corr_account": "Корр. счёт",
-            "org_name": "Организация",
-            "inn": "ИНН",
-        }
-        label = _FIELD_LABELS.get(field, field)
-        await callback.message.answer(f"Введите новое значение для поля '{label}':")
-
-    # ── PartnerOrderFSM ──
-    elif current == PartnerOrderFSM.set_total_cost.state:
-        await callback.message.answer(
-            "Введите итоговую стоимость ремонта (число, руб.):"
-        )
-    elif current == PartnerOrderFSM.reject_reason.state:
-        await callback.message.answer("Укажите причину отклонения:")
-    elif current == PartnerOrderFSM.client_refused_reason.state:
-        await callback.message.answer("Укажите причину отказа клиента:")
-    elif current == PartnerOrderFSM.estimate_cost.state:
-        await callback.message.answer("Введите стоимость ремонта (число, руб.):")
-    elif current == PartnerOrderFSM.estimate_items.state:
-        await callback.message.answer(
-            "Укажите позиции ремонта (что будет чиниться):\n"
-            "Например: Замена колеса, ремонт контроллера"
-        )
-    elif current == PartnerOrderFSM.estimate_deadline.state:
-        await callback.message.answer(
-            "Укажите ожидаемое время завершения:\n" "Например: 2 дня или 15.04.2026"
-        )
-    elif current == PartnerOrderFSM.estimate_description.state:
-        await callback.message.answer("Добавьте описание (опционально):")
-    elif current == PartnerOrderFSM.estimate_confirm.state:
-        await callback.message.answer(
-            "Нажмите кнопку подтверждения сметы или вернитесь назад."
-        )
     else:
-        await callback.message.answer(
-            "Продолжите ввод данных или нажмите /start для отмены."
-        )
+        # Unknown state — should not happen since reminder only fires for RegistrationFSM
+        await callback.message.answer("Нет активной формы.")

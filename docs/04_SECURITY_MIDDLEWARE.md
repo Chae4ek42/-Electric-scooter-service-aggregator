@@ -30,7 +30,7 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 
 **Перехват ответов бота:** `_ResponseCapture` временно оборачивает `Bot.send_message` и `Bot.edit_message_text` через `unittest.mock.patch.object`. Обёртки устанавливаются перед вызовом хендлера и снимаются в `finally`.
 
-**Реализовано:** ✅ Middleware перехватывает `Message` и `CallbackQuery`. В лог выводится подробная строка: `user_id`, `@username`, `action`, `state`, `payload`, `status`, `elapsed_ms`, `response_type`.
+**Реализовано:** ✅ Middleware перехватывает `Message` и `CallbackQuery`. В лог выводится: `@username`, `action`, `state`, `payload`, `status`, `response_type`. User ID и elapsed time **не логируются** (конфиденциальность и лаконичность).
 
 ---
 
@@ -41,7 +41,7 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 **Реализация:**
 
 - Время последнего запроса каждого пользователя хранится в **Redis** (ключ `throttle:{user_id}`, TTL = 1 с).
-- Минимальный интервал: `THROTTLE_RATE = 0.2` сек.
+- Минимальный интервал: `throttle_rate` из `config.yaml` (по умолчанию 0.2 сек).
 - При перезапуске бота throttle-данные сохраняются.
 - При нарушении:
   1. Запрос игнорируется.
