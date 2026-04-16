@@ -67,7 +67,8 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 
 ## Безопасность данных
 
-- **Markdown-экранирование**: все пользовательские данные (имя, адрес, банковские реквизиты и т.д.) в форматированных Markdown-сообщениях экранируются через `_md_escape()` (символы `\`, `*`, `_`, `` ` ``, `[`). Это предотвращает `TelegramBadRequest: can't parse entities`.
+- **HTML-экранирование**: все пользовательские данные (имя, адрес, банковские реквизиты и т.д.) в форматированных сообщениях экранируются через `e()` из `bot/core/formatting.py` — обёртка над `html.escape()`. Это полностью устраняет `TelegramBadRequest: can't parse entities`. Оба бота используют `DefaultBotProperties(parse_mode=ParseMode.HTML)` — режим HTML надёжнее Markdown, так как только `<`, `>`, `&` требуют экранирования (крайне редки в русских названиях и адресах).
+- **Единый модуль форматирования**: `bot/core/formatting.py` заменяет дублированные per-file `_md_escape()` функции. Импортируется как `from bot.core.formatting import e`.
 - **Админ-доступ**: проверяется через `username.lower() in ADMIN_USERNAMES` — `set[str]` без `@`, загружаемый из env.
 - **Токен**: жёстко разрешающаяся переменная `os.environ["BOT_TOKEN"]`.
 - **Sheets sync**: приватная таблица через Service Account (JSON-ключ в `GOOGLE_SA_PATH`); ключ исключён через `.gitignore` (`*.json`).

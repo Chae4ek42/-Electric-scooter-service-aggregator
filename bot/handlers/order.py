@@ -1,4 +1,4 @@
-﻿"""Order creation FSM handlers -- full flow."""
+"""Order creation FSM handlers -- full flow."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from bot.core.config import ADMIN_USERNAMES, SUPPORT_USER, COOPERATION_USER
+from bot.core.formatting import e
 from bot.core.database import async_session
 from bot.ui.keyboards import (
     brands_kb,
@@ -48,6 +49,7 @@ from bot.domain.states import ClientOrderFSM, OrderFSM
 
 logger = logging.getLogger(__name__)
 router = Router(name="order")
+
 
 _MENU_TEXTS = ("Оставить заявку", "Мои заявки", "Поддержка")
 
@@ -347,9 +349,8 @@ async def handle_metro_text(message: types.Message, state: FSMContext) -> None:
             matches[0][1],
         )
         await message.answer(
-            f"Найдена станция: *{station.name}* ({station.line})\n\nВсё верно?",
+            f"Найдена станция: <b>{e(station.name)}</b> ({e(station.line)})\n\nВсё верно?",
             reply_markup=metro_confirm_kb(station.name),
-            parse_mode="Markdown",
         )
     else:
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -494,8 +495,8 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
             )
             await _safe_edit_or_answer(
                 callback,
-                f"К сожалению, в {time_str} подходящие сервисы не работают.\n"
-                f"Ближайшее доступное время: *{result.suggested_time}*",
+                f"К сожалению, в {e(time_str)} подходящие сервисы не работают.\n"
+                f"Ближайшее доступное время: <b>{e(result.suggested_time)}</b>",
                 kb,
             )
             return
@@ -612,12 +613,17 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
                 "- вернем ваши деньги 🤝"
             )
 
+    rating_line = ""
+    if svc_rating is not None:
+        rating_line = f"\nРейтинг сервиса: {svc_rating}"
+
     summary = (
-        "*Подтвердите заявку:*\n\n"
-        f"Модель: {model_display}\n"
-        f"Метро: {data.get('metro_station', '')}\n"
+        "<b>Подтвердите заявку:</b>\n\n"
+        f"Модель: {e(model_display)}\n"
+        f"Метро: {e(data.get('metro_station', ''))}\n"
         f"Дата: {data.get('scheduled_date', '')}\n"
-        f"Время: {time_str}"
+        f"Время: {e(time_str)}"
+        f"{rating_line}"
         f"{price_line}"
     )
 
@@ -690,7 +696,7 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
 
     await _safe_edit_or_answer(
         callback,
-        f"*Заявка №{order_id} создана!*\n\n⏳ Обработка оплаты...",
+        f"<b>Заявка №{order_id} создана!</b>\n\n⏳ Обработка оплаты...",
     )
 
     # Auto-complete payment after 10 seconds (mock)
@@ -1039,6 +1045,7 @@ async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None
         "rejected_by_partner": "Отклонена",
         "pending": "Ожидает",
         "paid": "Оплачено",
+        "no_center": "Сервис не найден",
     }
 
     async with async_session() as session:
@@ -1089,17 +1096,17 @@ async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None
                 svc_display = service.name if service else ""
 
             lines.append(
-                f"*Заявка №{o.id}*  --  {status_text}\n"
-                f"  Модель: {model_name}\n"
-                f"  Сервис-центр: {svc_display}\n"
+                f"<b>Заявка №{o.id}</b>  --  {status_text}\n"
+                f"  Модель: {e(model_name)}\n"
+                f"  Сервис-центр: {e(svc_display)}\n"
                 f"  Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}\n"
-                f"  Метро: {o.metro_station or ''}"
+                f"  Метро: {e(o.metro_station or '')}"
             )
 
         has_active = any(o.status == "awaiting_payment" for o in orders)
         markup = orders_list_action_kb() if has_active else None
 
-    await message.answer("\n\n".join(lines), reply_markup=markup, parse_mode="Markdown")
+    await message.answer("\n\n".join(lines), reply_markup=markup)
 
 
 # ORDERS ACTION CALLBACKS
@@ -1734,9 +1741,8 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
         metro = data.get("metro_station", "")
         if metro:
             await callback.message.answer(
-                f"Найдена станция: *{metro}*\n\nВсё верно?",
+                f"Найдена станция: <b>{e(metro)}</b>\n\nВсё верно?",
                 reply_markup=metro_confirm_kb(metro),
-                parse_mode="Markdown",
             )
         else:
             await callback.message.answer(

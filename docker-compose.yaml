@@ -16,6 +16,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      - TZ=Europe/Moscow
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=sqlite+aiosqlite:///data/esas.db
     volumes:
@@ -36,6 +37,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      - TZ=Europe/Moscow
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=sqlite+aiosqlite:///data/esas.db
     volumes:

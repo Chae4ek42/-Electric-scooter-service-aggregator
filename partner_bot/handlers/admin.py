@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
+from bot.core.formatting import e
 from bot.domain.models import Service, ServiceCategory, ServiceOwner
 from bot.services.sheets_writer import add_service_row
 from partner_bot.ui.keyboards import (
@@ -53,55 +54,49 @@ _STATUS_RU = {
 }
 
 
-def _md_escape(text: str) -> str:
-    """Escape Markdown V1 special characters in user-supplied text."""
-    for ch in ("\\", "*", "_", "`", "["):
-        text = text.replace(ch, f"\\{ch}")
-    return text
-
-
 def _fmt_partner(owner: ServiceOwner) -> str:
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд"}
     type_label = type_map.get(
         owner.draft_service_type or "", owner.draft_service_type or "—"
     )
-    e = _md_escape
     lines = [
-        f"*Партнёр #*`{owner.id}`",
-        f"*Telegram ID:* `{owner.telegram_id}`",
-        f"*Статус:* {_STATUS_RU.get(owner.status, owner.status)}",
+        f"<b>Партнёр #</b><code>{owner.id}</code>",
+        f"<b>Telegram ID:</b> <code>{owner.telegram_id}</code>",
+        f"<b>Статус:</b> {_STATUS_RU.get(owner.status, owner.status)}",
         "",
-        f"*Название:* {e(owner.draft_name or '—')}",
-        f"*Тип:* {type_label}",
+        f"<b>Название:</b> {e(owner.draft_name or '—')}",
+        f"<b>Тип:</b> {type_label}",
     ]
     if owner.draft_service_type == "upgrade":
         cats = (owner.draft_upgrade_categories or "").replace(",", ", ") or "—"
-        lines.append(f"*Категории апгрейда:* {e(cats)}")
+        lines.append(f"<b>Категории апгрейда:</b> {e(cats)}")
     if owner.draft_service_type == "repair":
-        lines.append(f"*Категория ремонта:* {e(owner.draft_category or '—')}")
-    lines.append(f"*Гидроизоляция:* {'Да' if owner.draft_hydroisolation else 'Нет'}")
+        lines.append(f"<b>Категория ремонта:</b> {e(owner.draft_category or '—')}")
+    lines.append(
+        f"<b>Гидроизоляция:</b> {'Да' if owner.draft_hydroisolation else 'Нет'}"
+    )
     if owner.draft_hydroisolation:
-        lines.append(f"*Цена гидроизоляции:* {e(owner.draft_hydro_price or '—')}")
+        lines.append(f"<b>Цена гидроизоляции:</b> {e(owner.draft_hydro_price or '—')}")
     lines += [
-        f"*Адрес:* {e(owner.draft_address or '—')}",
-        f"*Метро:* {e(owner.draft_metro or '—')}",
-        f"*Телефон:* {e(owner.draft_phone or '—')}",
-        f"*Telegram:* {e(owner.draft_telegram or '—')}",
-        f"*Рабочие дни:* {e((owner.draft_working_days or '').replace(',', ', ') or '—')}",
-        f"*Часы:* {owner.draft_open_time or '?'}—{owner.draft_close_time or '?'}",
+        f"<b>Адрес:</b> {e(owner.draft_address or '—')}",
+        f"<b>Метро:</b> {e(owner.draft_metro or '—')}",
+        f"<b>Телефон:</b> {e(owner.draft_phone or '—')}",
+        f"<b>Telegram:</b> {e(owner.draft_telegram or '—')}",
+        f"<b>Рабочие дни:</b> {e((owner.draft_working_days or '').replace(',', ', ') or '—')}",
+        f"<b>Часы:</b> {owner.draft_open_time or '?'}—{owner.draft_close_time or '?'}",
     ]
     if owner.draft_diagnostics_price is not None and owner.draft_diagnostics_price > 0:
-        lines.append(f"*Диагностика:* {int(owner.draft_diagnostics_price)} ₽")
+        lines.append(f"<b>Диагностика:</b> {int(owner.draft_diagnostics_price)} ₽")
     else:
-        lines.append("*Диагностика:* бесплатно")
+        lines.append("<b>Диагностика:</b> бесплатно")
     lines.append(
-        f"*Входит в стоимость:* {'Да' if owner.draft_diag_included else 'Нет'}"
+        f"<b>Входит в стоимость:</b> {'Да' if owner.draft_diag_included else 'Нет'}"
     )
     lines += [
-        f"*Форма:* {e(owner.draft_legal_form or '—')}",
-        f"*Налогообложение:* {e(owner.draft_tax_system or '—')}",
+        f"<b>Форма:</b> {e(owner.draft_legal_form or '—')}",
+        f"<b>Налогообложение:</b> {e(owner.draft_tax_system or '—')}",
         "",
-        "*Банковские реквизиты:*",
+        "<b>Банковские реквизиты:</b>",
         f"  Р/с: {e(owner.draft_bank_account or '—')}",
         f"  Банк: {e(owner.draft_bank_name or '—')}",
         f"  БИК: {e(owner.draft_bik or '—')}",
@@ -141,7 +136,7 @@ async def padm_enter(message: types.Message, state: FSMContext) -> None:
                 ServiceOwner.status
             )
         )
-    stat_lines = [f"*Партнёры:* {total}", ""]
+    stat_lines = [f"<b>Партнёры:</b> {total}", ""]
     for status, cnt in stats_rows:
         stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
     await message.answer("\n".join(stat_lines), reply_markup=padm_main_kb())
@@ -164,7 +159,7 @@ async def padm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
                 ServiceOwner.status
             )
         )
-    stat_lines = [f"*Партнёры:* {total}", ""]
+    stat_lines = [f"<b>Партнёры:</b> {total}", ""]
     for status, cnt in stats_rows:
         stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
     await cb.message.edit_text("\n".join(stat_lines), reply_markup=padm_main_kb())

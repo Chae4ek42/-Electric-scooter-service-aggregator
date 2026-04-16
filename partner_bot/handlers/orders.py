@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from bot.core.database import async_session
+from bot.core.formatting import e
 from bot.domain.models import Order, Service, ServiceOwner
 from bot.domain.schemas import RejectReasonInput
 from bot.domain.states import PartnerOrderFSM
@@ -61,11 +62,13 @@ _STATUS_RU = {
 def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
     # Model name
     if order.brand_custom_name:
-        model_str = f"{order.brand_custom_name} {order.model_custom_name or ''}".strip()
+        model_str = e(
+            f"{order.brand_custom_name} {order.model_custom_name or ''}".strip()
+        )
     elif order.model_custom_name:
-        model_str = order.model_custom_name
+        model_str = e(order.model_custom_name)
     elif order.model:
-        model_str = (
+        model_str = e(
             f"{order.model.brand.name} {order.model.name}"
             if order.model.brand
             else order.model.name
@@ -82,15 +85,15 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
         f"Тип: {type_map.get(stype, stype) if stype else '—'}",
     ]
     if order.upgrade_category:
-        lines.append(f"Категория: {order.upgrade_category}")
+        lines.append(f"Категория: {e(order.upgrade_category)}")
     if order.problem_description:
-        lines.append(f"Проблема: {order.problem_description}")
+        lines.append(f"Проблема: {e(order.problem_description)}")
     lines.append(f"Дата: {order.scheduled_date or '—'} {order.scheduled_time or ''}")
     lines.append(f"Статус: {_STATUS_RU.get(order.status, order.status)}")
 
     if show_client and order.user:
         u = order.user
-        client_info = f"@{u.username}" if u.username else u.full_name
+        client_info = e(f"@{u.username}" if u.username else u.full_name)
         lines.append(f"Клиент: {client_info}")
 
     if order.total_cost is not None:
@@ -98,19 +101,19 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
     if order.estimate_cost is not None:
         lines.append(f"Смета: {order.estimate_cost:.0f} руб.")
     if order.estimate_items:
-        lines.append(f"Работы: {order.estimate_items}")
+        lines.append(f"Работы: {e(order.estimate_items)}")
     if order.estimate_deadline:
-        lines.append(f"Срок: {order.estimate_deadline}")
+        lines.append(f"Срок: {e(order.estimate_deadline)}")
     if order.estimate_description:
-        lines.append(f"Описание: {order.estimate_description}")
+        lines.append(f"Описание: {e(order.estimate_description)}")
     if order.partner_comment:
-        lines.append(f"Комментарий: {order.partner_comment}")
+        lines.append(f"Комментарий: {e(order.partner_comment)}")
     if order.reject_reason:
-        lines.append(f"Причина отказа: {order.reject_reason}")
+        lines.append(f"Причина отказа: {e(order.reject_reason)}")
     if order.refusal_reason:
-        lines.append(f"Причина отказа клиента: {order.refusal_reason}")
+        lines.append(f"Причина отказа клиента: {e(order.refusal_reason)}")
     if order.dispute_reason:
-        lines.append(f"Причина оспаривания: {order.dispute_reason}")
+        lines.append(f"Причина оспаривания: {e(order.dispute_reason)}")
     if order.client_visited is not None:
         lines.append(f"Клиент был в сервисе: {'Да' if order.client_visited else 'Нет'}")
 

@@ -910,7 +910,7 @@ class TestYandexRatingDisplay:
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "svc_rating" in src
-        assert "рейтинг" in src
+        assert "Рейтинг" in src
 
 
 class TestPartnerOrderFSMStates:
@@ -1043,7 +1043,7 @@ class TestWelcomeText:
     def test_welcome_video_path(self):
         from bot.handlers.common import _WELCOME_VIDEO
 
-        assert _WELCOME_VIDEO.name == "IMG_4105.MOV"
+        assert _WELCOME_VIDEO.name == "client_start.mp4"
 
 
 class TestPartnerStatusLabels:

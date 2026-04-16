@@ -32,6 +32,11 @@ from partner_bot.ui.keyboards import (
     reg_yes_no_kb,
 )
 
+from bot.core.formatting import e
+
+# Keep _md_escape as alias so profile.py imports keep working
+_md_escape = e
+
 _TYPE_RU = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
 _DAY_ORDER = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -81,13 +86,6 @@ def _draft_complete(owner: ServiceOwner) -> bool:
     return all(required)
 
 
-def _md_escape(text: str) -> str:
-    """Escape Markdown V1 special characters in user-supplied text."""
-    for ch in ("\\", "*", "_", "`", "["):
-        text = text.replace(ch, f"\\{ch}")
-    return text
-
-
 def _format_draft(owner: ServiceOwner) -> str:
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
     _status_ru = {
@@ -99,7 +97,6 @@ def _format_draft(owner: ServiceOwner) -> str:
     type_label = type_map.get(
         owner.draft_service_type or "", owner.draft_service_type or "(не заполнено)"
     )
-    e = _md_escape
     lines = [
         "Анкета сервисного центра:",
         "",
@@ -181,13 +178,13 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
 
     if owner is None:
         await message.answer(
-            "Добро пожаловать в *Service Map*!\n\n"
-            "🗺 *Service Map для партнёров*\n\n"
+            "Добро пожаловать в <b>Service Map</b>!\n\n"
+            "🗺 <b>Service Map для партнёров</b>\n\n"
             "Мы — платформа, которая помогает клиентам находить "
             "ближайшие сервисные центры по ремонту и апгрейду электросамокатов.\n\n"
             "Зарегистрируйте свой сервис — и получайте заявки "
             "от клиентов автоматически.\n\n"
-            "📋 *Как это работает:*\n"
+            "📋 <b>Как это работает:</b>\n"
             "1. Заполните анкету\n"
             "2. Пройдите модерацию\n"
             "3. Получайте заявки и управляйте ими прямо в боте\n\n"
@@ -234,7 +231,7 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
             ).scalar_one_or_none()
             svc_name = svc.name if svc else ""
 
-    greeting = f"Service Map \u2014 {_md_escape(svc_name)}"
+    greeting = f"Service Map \u2014 {e(svc_name)}"
     await message.answer(
         f"{greeting}\n\nВыберите действие:",
         reply_markup=partner_main_menu_kb(is_admin=is_admin),
@@ -270,7 +267,6 @@ async def show_status(message: types.Message) -> None:
         await message.answer("Сервис не найден.")
         return
 
-    e = _md_escape
     wd = _sort_days(svc.working_days)
     lines = [
         f"Название: {e(svc.name)}",
@@ -340,7 +336,7 @@ async def cmd_client_mode(message: types.Message, state: FSMContext) -> None:
                     )
                 ).scalar_one_or_none()
                 svc_name = svc.name if svc else ""
-        greeting = f"Service Map \u2014 {_md_escape(svc_name)}"
+        greeting = f"Service Map \u2014 {e(svc_name)}"
         await message.answer(
             f"{greeting}\n\nВыберите действие:",
             reply_markup=partner_main_menu_kb(is_admin=is_admin),

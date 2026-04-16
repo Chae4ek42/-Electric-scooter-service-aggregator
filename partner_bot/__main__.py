@@ -9,6 +9,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 from bot.core.config import PARTNER_BOT_TOKEN, REDIS_URL, SHEETS_SYNC_INTERVAL
 from bot.core.middlewares import (
     ActionLoggerMiddleware,
@@ -81,7 +82,7 @@ async def main() -> None:
 
     bot = Bot(
         token=PARTNER_BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
     storage = await _make_storage(logger)
@@ -103,6 +104,13 @@ async def main() -> None:
     dp.include_router(notif_router)
 
     logger.info("Partner bot is starting ...")
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Главное меню"),
+            BotCommand(command="admin", description="Панель администратора"),
+            BotCommand(command="client", description="Режим партнёра"),
+        ]
+    )
     try:
         await asyncio.gather(
             _sheets_sync_loop(SHEETS_SYNC_INTERVAL),

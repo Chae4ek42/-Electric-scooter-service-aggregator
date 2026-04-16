@@ -9,6 +9,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 import datetime
 
 from bot.core.config import BOT_TOKEN, REDIS_URL, SHEETS_SYNC_INTERVAL
@@ -104,7 +105,7 @@ async def main() -> None:
 
     bot = Bot(
         token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
     storage = await _make_storage(logger)
@@ -125,6 +126,13 @@ async def main() -> None:
     dp.include_router(admin_router)
 
     logger.info("Bot is starting …")
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Главное меню"),
+            BotCommand(command="admin", description="Панель администратора"),
+            BotCommand(command="client", description="Вернуться в главное меню"),
+        ]
+    )
     try:
         # Стартуем фоновую синхронизацию и polling параллельно
         await asyncio.gather(

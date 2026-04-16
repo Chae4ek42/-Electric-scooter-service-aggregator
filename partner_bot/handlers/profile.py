@@ -27,7 +27,8 @@ from bot.domain.schemas import (
 )
 from bot.domain.states import PartnerProfileFSM
 from bot.services.sheets_writer import set_service_available, update_service_row
-from partner_bot.handlers.common import _get_owner, _md_escape, _sort_days, _TYPE_RU
+from bot.core.formatting import e
+from partner_bot.handlers.common import _get_owner, _sort_days, _TYPE_RU
 from partner_bot.ui.keyboards import (
     partner_main_menu_kb,
     partner_pending_menu_kb,
@@ -101,7 +102,7 @@ async def _require_active(event) -> tuple[ServiceOwner | None, Service | None]:
 
 
 def _format_profile(svc: Service) -> str:
-    e = _md_escape
+    # e is imported from bot.core.formatting
     wd = _sort_days(svc.working_days)
     lines = [
         "Профиль сервисного центра:",

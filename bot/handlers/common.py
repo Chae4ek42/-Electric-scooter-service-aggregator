@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from aiogram import F, Router, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import FSInputFile
 
@@ -23,18 +23,18 @@ _WELCOME_VIDEO = (
 
 _WELCOME_TEXT = (
     "Добро пожаловать в \n"
-    "*Service Map*📍\n\n"
-    "*Кто мы?*\n"
+    "<b>Service Map</b>📍\n\n"
+    "<b>Кто мы?</b>\n"
     "Сервис подбора и контроля ремонта электросамокатов. \n"
     "Ремонт без риска - только проверенные сервисы с гарантией.🔗\n\n"
-    "*Что мы делаем?*\n"
+    "<b>Что мы делаем?</b>\n"
     "Подберем проверенный сервис для ремонта электросамоката "
     "за 10 минут с гарантией результата по лучшей цене. "
     "Проконтролируем ремонт за вас🤝"
     "Мы решаем вашу проблему  под ключ. "
     "Вы оставляете заявку, мы подбираем сервис по вашему запросу "
     "и проблеме, контролируем весь процесс, даем гарантию. \n\n"
-    "_Оставляй заявку прямо сейчас!_"
+    "<i>Оставляй заявку прямо сейчас!</i>"
 )
 
 
@@ -80,4 +80,25 @@ async def cmd_support(message: types.Message, state: FSMContext) -> None:
     await message.answer(
         "Выберите тему обращения:",
         reply_markup=support_kb(SUPPORT_USER, COOPERATION_USER),
+    )
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: types.Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.username):
+        await message.answer("Недоступно.")
+        return
+    await state.clear()
+    await message.answer(
+        "Панель администратора.",
+        reply_markup=main_menu_kb(is_admin=True),
+    )
+
+
+@router.message(Command("client"))
+async def cmd_client(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Главное меню.",
+        reply_markup=main_menu_kb(is_admin=_is_admin(message.from_user.username)),
     )

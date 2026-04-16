@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
+from bot.core.formatting import e
 from bot.ui.keyboards import (
     ADMIN_PAGE_SIZE,
     admin_filter_kb,
@@ -83,26 +84,18 @@ _STATUS_RU: dict[str, str] = {
 # ── Helpers ───────────────────────────────────────────────────
 
 
-def _md_escape(text: str) -> str:
-    """Escape Markdown V1 special characters in user-supplied text."""
-    for ch in ("\\", "*", "_", "`", "["):
-        text = text.replace(ch, f"\\{ch}")
-    return text
-
-
 def _fmt_order(order: Order) -> str:
-    """Форматирует полную карточку заявки в Markdown."""
+    """Format full order card in HTML."""
     _TYPE_RU = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
-    e = _md_escape
     # Модель
     if order.brand_custom_name:
-        model_str = f"{e(order.brand_custom_name)}"
+        model_str = e(order.brand_custom_name)
         if order.model_custom_name:
             model_str += f" / {e(order.model_custom_name)}"
-        model_str += " *(вручную)*"
+        model_str += " <i>(вручную)</i>"
     elif order.model_custom_name:
         brand_name = order.model.brand.name if order.model else "—"
-        model_str = f"{e(brand_name)} / {e(order.model_custom_name)} *(вручную)*"
+        model_str = f"{e(brand_name)} / {e(order.model_custom_name)} <i>(вручную)</i>"
     elif order.model:
         model_str = f"{e(order.model.brand.name)} {e(order.model.name)}"
     else:
@@ -113,7 +106,7 @@ def _fmt_order(order: Order) -> str:
     if svc is None:
         svc_str = "—"
     elif order.status == "awaiting_payment":
-        svc_str = f"_{e(svc.name)}_ (скрыт от клиента)"
+        svc_str = f"<i>{e(svc.name)}</i> (скрыт от клиента)"
     else:
         svc_str = e(svc.name)
     if svc and svc.category_rel:
@@ -122,61 +115,63 @@ def _fmt_order(order: Order) -> str:
     # Пользователь
     u = order.user
     tg_link = (
-        f"[@{u.username}](https://t.me/{u.username})" if u.username else e(u.full_name)
+        f'<a href="https://t.me/{u.username}">@{u.username}</a>'
+        if u.username
+        else e(u.full_name)
     )
-    user_str = f"{tg_link} (ID: `{u.id}`)"
+    user_str = f"{tg_link} (ID: <code>{u.id}</code>)"
 
     lines = [
-        f"*Заявка #*`{order.id}`",
-        f"*Дата создания:* {order.created_at.strftime('%d.%m.%Y %H:%M')}",
+        f"<b>Заявка #</b><code>{order.id}</code>",
+        f"<b>Дата создания:</b> {order.created_at.strftime('%d.%m.%Y %H:%M')}",
         "",
-        f"*Пользователь:* {user_str}",
-        f"*Имя:* {e(u.full_name)}",
+        f"<b>Пользователь:</b> {user_str}",
+        f"<b>Имя:</b> {e(u.full_name)}",
         "",
-        f"*Модель:* {model_str}",
-        f"*Сервис:* {svc_str}",
-        f"*Тип:* {_TYPE_RU.get(svc.service_type, svc.service_type) if svc else '—'}",
+        f"<b>Модель:</b> {model_str}",
+        f"<b>Сервис:</b> {svc_str}",
+        f"<b>Тип:</b> {_TYPE_RU.get(svc.service_type, svc.service_type) if svc else '—'}",
         "",
-        f"*Метро:* {e(order.metro_station) if order.metro_station else '—'}",
-        f"*Дата записи:* {order.scheduled_date or '—'}",
-        f"*Время:* {order.scheduled_time or '—'}",
+        f"<b>Метро:</b> {e(order.metro_station) if order.metro_station else '—'}",
+        f"<b>Дата записи:</b> {order.scheduled_date or '—'}",
+        f"<b>Время:</b> {order.scheduled_time or '—'}",
         "",
-        f"*Статус:* {_STATUS_RU.get(order.status, order.status)}",
+        f"<b>Статус:</b> {_STATUS_RU.get(order.status, order.status)}",
     ]
     if order.upgrade_category:
-        lines.append(f"*Категория апгрейда:* {e(order.upgrade_category)}")
+        lines.append(f"<b>Категория апгрейда:</b> {e(order.upgrade_category)}")
     if order.diagnostics_price:
         incl = (
             " (входит в стоимость)"
             if svc and svc.diagnostics_included
             else " (оплачивается отдельно)"
         )
-        lines.append(f"*Диагностика:* {order.diagnostics_price:.0f} ₽{incl}")
+        lines.append(f"<b>Диагностика:</b> {order.diagnostics_price:.0f} ₽{incl}")
     if order.total_cost is not None:
-        lines.append(f"*Итоговая стоимость:* {order.total_cost:.0f} ₽")
+        lines.append(f"<b>Итоговая стоимость:</b> {order.total_cost:.0f} ₽")
     if order.estimate_cost is not None:
-        lines.append(f"*Смета:* {order.estimate_cost:.0f} ₽")
+        lines.append(f"<b>Смета:</b> {order.estimate_cost:.0f} ₽")
     if order.estimate_items:
-        lines.append(f"*Работы:* {e(order.estimate_items)}")
+        lines.append(f"<b>Работы:</b> {e(order.estimate_items)}")
     if order.estimate_deadline:
-        lines.append(f"*Срок:* {e(order.estimate_deadline)}")
+        lines.append(f"<b>Срок:</b> {e(order.estimate_deadline)}")
     if order.estimate_description:
-        lines.append(f"*Описание сметы:* {e(order.estimate_description)}")
+        lines.append(f"<b>Описание сметы:</b> {e(order.estimate_description)}")
     if order.payment_id:
-        lines.append(f"*ID платежа:* `{order.payment_id}`")
+        lines.append(f"<b>ID платежа:</b> <code>{order.payment_id}</code>")
     if order.problem_description:
-        lines.append(f"*Описание проблемы:* {e(order.problem_description)}")
+        lines.append(f"<b>Описание проблемы:</b> {e(order.problem_description)}")
     if order.reject_reason:
-        lines.append(f"*Причина отказа:* {e(order.reject_reason)}")
+        lines.append(f"<b>Причина отказа:</b> {e(order.reject_reason)}")
     if order.refusal_reason:
-        lines.append(f"*Причина отказа клиента:* {e(order.refusal_reason)}")
+        lines.append(f"<b>Причина отказа клиента:</b> {e(order.refusal_reason)}")
     if order.dispute_reason:
-        lines.append(f"*Причина оспаривания:* {e(order.dispute_reason)}")
+        lines.append(f"<b>Причина оспаривания:</b> {e(order.dispute_reason)}")
     if order.partner_comment:
-        lines.append(f"*Комментарий партнёра:* {e(order.partner_comment)}")
+        lines.append(f"<b>Комментарий партнёра:</b> {e(order.partner_comment)}")
     if order.client_visited is not None:
         lines.append(
-            f"*Клиент был в сервисе:* {'Да' if order.client_visited else 'Нет'}"
+            f"<b>Клиент был в сервисе:</b> {'Да' if order.client_visited else 'Нет'}"
         )
     return "\n".join(lines)
 
@@ -330,7 +325,7 @@ async def adm_orders_list(cb: types.CallbackQuery, state: FSMContext) -> None:
     )
     try:
         await cb.message.edit_text(
-            f"*{header}:* {total_count} (стр. {page + 1}/{total_pages})",
+            f"<b>{header}:</b> {total_count} (стр. {page + 1}/{total_pages})",
             reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
         )
     except Exception as e:
@@ -426,7 +421,7 @@ async def adm_back_to_list(cb: types.CallbackQuery, state: FSMContext) -> None:
     )
     try:
         await cb.message.edit_text(
-            f"*{header}:* {total_count} (стр. {page + 1}/{total_pages})",
+            f"<b>{header}:</b> {total_count} (стр. {page + 1}/{total_pages})",
             reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
         )
     except Exception as e:
@@ -459,17 +454,16 @@ _PARTNER_STATUS_RU: dict[str, str] = {
 
 
 def _fmt_partner_short(owner: ServiceOwner) -> str:
-    e = _md_escape
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
     lines = [
-        f"*Партнёр #*`{owner.id}`",
-        f"*TG ID:* `{owner.telegram_id}`",
-        f"*Статус:* {_PARTNER_STATUS_RU.get(owner.status, owner.status)}",
-        f"*Название:* {e(owner.draft_name or '—')}",
-        f"*Тип:* {type_map.get(owner.draft_service_type or '', owner.draft_service_type or '—')}",
-        f"*Адрес:* {e(owner.draft_address or '—')}",
-        f"*Метро:* {e(owner.draft_metro or '—')}",
-        f"*Телефон:* {e(owner.draft_phone or '—')}",
+        f"<b>Партнёр #</b><code>{owner.id}</code>",
+        f"<b>TG ID:</b> <code>{owner.telegram_id}</code>",
+        f"<b>Статус:</b> {_PARTNER_STATUS_RU.get(owner.status, owner.status)}",
+        f"<b>Название:</b> {e(owner.draft_name or '—')}",
+        f"<b>Тип:</b> {type_map.get(owner.draft_service_type or '', owner.draft_service_type or '—')}",
+        f"<b>Адрес:</b> {e(owner.draft_address or '—')}",
+        f"<b>Метро:</b> {e(owner.draft_metro or '—')}",
+        f"<b>Телефон:</b> {e(owner.draft_phone or '—')}",
     ]
     return "\n".join(lines)
 
