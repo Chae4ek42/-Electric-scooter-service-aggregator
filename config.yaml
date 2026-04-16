@@ -1,8 +1,6 @@
-# ── ESAS Bot Configuration ──
-
 # Контакты поддержки
-support_user: "@i_jusp"
-cooperation_user: "@sergzvezdilin"
+support_user: "@i_jusp" #Техподдержка
+cooperation_user: "@sergzvezdilin" #Не техническая поддержка
 
 # Администраторы (без @)
 admin_usernames:

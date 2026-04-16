@@ -18,7 +18,7 @@ from sqlalchemy import select
 router = Router(name="common")
 
 _WELCOME_VIDEO = (
-    Path(__file__).resolve().parent.parent.parent / "media" / "IMG_4105.MOV"
+    Path(__file__).resolve().parent.parent.parent / "media" / "client_start.mp4"
 )
 
 _WELCOME_TEXT = (
@@ -45,7 +45,6 @@ def _is_admin(username: str | None) -> bool:
 @router.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
     await state.clear()
-    # Upsert user
     async with async_session() as session:
         user = (
             await session.execute(select(User).where(User.id == message.from_user.id))
@@ -65,8 +64,8 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
             FSInputFile(_WELCOME_VIDEO),
             caption=_WELCOME_TEXT,
             reply_markup=kb,
-            width=720,
-            height=1280,
+            # width=720,
+            # height=1280,
         )
     else:
         await message.answer(_WELCOME_TEXT, reply_markup=kb)
