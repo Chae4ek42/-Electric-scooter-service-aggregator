@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir .
 COPY bot/ bot/
 COPY partner_bot/ partner_bot/
 COPY media/ media/
+COPY config.yaml ./
 # Google SA key is mounted at runtime, not baked into image
 
 RUN pip install --no-cache-dir -e .
