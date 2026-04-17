@@ -306,6 +306,8 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
             )
 
             hydro_price = _col(row, "Цена гидроизоляции") or None
+            upgrade_categories = _col(row, "Категории апгрейда") or None
+            working_days = _col(row, "Рабочие дни") or None
 
             existing = (
                 await session.execute(select(Service).where(Service.name == name))
@@ -333,6 +335,8 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
                     ("hydroisolation_price", hydro_price),
                     ("diagnostics_price", diagnostics_price),
                     ("diagnostics_included", diag_included),
+                    ("upgrade_categories", upgrade_categories),
+                    ("working_days", working_days),
                 ]:
                     if getattr(existing, attr) != val:
                         setattr(existing, attr, val)
@@ -364,6 +368,8 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
                         hydroisolation_price=hydro_price,
                         diagnostics_price=diagnostics_price,
                         diagnostics_included=diag_included,
+                        upgrade_categories=upgrade_categories,
+                        working_days=working_days,
                     )
                 )
                 added += 1

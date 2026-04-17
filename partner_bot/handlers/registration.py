@@ -35,6 +35,7 @@ from partner_bot.ui.keyboards import (
     draft_edit_kb,
     metro_confirm_kb,
     partner_pending_menu_kb,
+    reg_back_kb,
     reg_category_kb,
     reg_confirm_kb,
     reg_diag_included_kb,
@@ -57,6 +58,7 @@ _PARTNER_MENU_TEXTS = (
     "Редактировать профиль",
     "Настройки уведомлений",
     "Мой статус",
+    "Мой профиль",
     "Поддержка",
     "Открыт / Закрыт",
     "Панель администратора",
@@ -115,18 +117,18 @@ async def _handle_menu_interrupt(message: types.Message, state: FSMContext) -> b
 
 
 _STYPE_TEXT = (
-    "🔧 *Выберите тип услуг:*\n\n"
-    "*Ремонт* — устранение неисправностей: "
+    "🔧 <b>Выберите тип услуг:</b>\n\n"
+    "<b>Ремонт</b> — устранение неисправностей: "
     "замена деталей, ремонт электроники, механики.\n\n"
-    "*Апгрейд* — модернизация и улучшение самоката: "
+    "<b>Апгрейд</b> — модернизация и улучшение самоката: "
     "гидроизоляция, окраска, прошивка, доп. оснащение.\n\n"
-    "*Комплекс* — и ремонт, и апгрейд."
+    "<b>Комплекс</b> — и ремонт, и апгрейд."
 )
 
 _CATEGORY_TEXT = (
-    "⚙️ *Выберите категорию ремонта:*\n\n"
-    "⚒️ *Механика* — замена колёс, тормозов, подвески, рулевой.\n\n"
-    "⚡️ *Электрика* — контроллер, батарея, проводка, дисплей."
+    "⚙️ <b>Выберите категорию ремонта:</b>\n\n"
+    "⚒️ <b>Механика</b> — замена колёс, тормозов, подвески, рулевой.\n\n"
+    "⚡️ <b>Электрика</b> — контроллер, батарея, проводка, дисплей."
 )
 
 
@@ -191,7 +193,9 @@ def _next_empty_state(owner: ServiceOwner) -> str | None:
 async def reg_start(callback: types.CallbackQuery, state: FSMContext) -> None:
     await _ensure_owner(callback.from_user.id)
     await state.set_state(RegistrationFSM.reg_name)
-    await _safe_edit_or_answer(callback, "Введите название вашего сервисного центра:")
+    await _safe_edit_or_answer(
+        callback, "Введите название вашего сервисного центра:", reg_back_kb()
+    )
 
 
 @router.message(F.text == "Продолжить заполнение")
@@ -504,15 +508,15 @@ async def reg_hydro(callback: types.CallbackQuery, state: FSMContext) -> None:
             callback,
             "💧 Укажите стоимость гидроизоляции.\n\n"
             "Введите фиксированную цену или диапазон:\n"
-            "• Фиксированная: `1000`\n"
-            "• Диапазон: `1000-2000`",
+            "• Фиксированная: <code>1000</code>\n"
+            "• Диапазон: <code>1000-2000</code>",
+            reg_back_kb(),
         )
     else:
         await state.set_state(RegistrationFSM.reg_address)
-        await _safe_edit_or_answer(callback, "Введите адрес сервисного центра:")
-
-
-# ── Step 4b: Hydro price ──────────────────────────────────────
+        await _safe_edit_or_answer(
+            callback, "Введите адрес сервисного центра:", reg_back_kb()
+        )
 
 
 @router.message(RegistrationFSM.reg_hydro_price, F.text)
@@ -530,7 +534,7 @@ async def reg_hydro_price(message: types.Message, state: FSMContext) -> None:
     if await _after_edit(message, state):
         return
     await state.set_state(RegistrationFSM.reg_address)
-    await message.answer("Введите адрес сервисного центра:")
+    await message.answer("Введите адрес сервисного центра:", reply_markup=reg_back_kb())
 
 
 # ── Step 5: Address ───────────────────────────────────────────
@@ -549,7 +553,10 @@ async def reg_address(message: types.Message, state: FSMContext) -> None:
     if await _after_edit(message, state):
         return
     await state.set_state(RegistrationFSM.reg_metro_search)
-    await message.answer("Введите ближайшую станцию метро (или часть названия):")
+    await message.answer(
+        "Введите ближайшую станцию метро (или часть названия):",
+        reply_markup=reg_back_kb(),
+    )
 
 
 # ── Step 6: Metro search ─────────────────────────────────────
@@ -613,7 +620,7 @@ async def reg_metro_ok(callback: types.CallbackQuery, state: FSMContext) -> None
     if await _after_edit(callback, state):
         return
     await state.set_state(RegistrationFSM.reg_phone)
-    await _safe_edit_or_answer(callback, "Введите контактный телефон:")
+    await _safe_edit_or_answer(callback, "Введите контактный телефон:", reg_back_kb())
 
 
 @router.callback_query(
@@ -634,7 +641,7 @@ async def reg_metro_pick(callback: types.CallbackQuery, state: FSMContext) -> No
     if await _after_edit(callback, state):
         return
     await state.set_state(RegistrationFSM.reg_phone)
-    await _safe_edit_or_answer(callback, "Введите контактный телефон:")
+    await _safe_edit_or_answer(callback, "Введите контактный телефон:", reg_back_kb())
 
 
 @router.callback_query(RegistrationFSM.reg_metro_confirm, F.data == "reg_metro_retry")
@@ -729,7 +736,9 @@ async def reg_days_done(callback: types.CallbackQuery, state: FSMContext) -> Non
         return
     await state.set_state(RegistrationFSM.reg_hours)
     await _safe_edit_or_answer(
-        callback, "Введите время работы (формат: HH:MM-HH:MM, например 09:00-21:00):"
+        callback,
+        "Введите время работы (формат: HH:MM-HH:MM, например 09:00-21:00):",
+        reg_back_kb(),
     )
 
 
@@ -754,11 +763,12 @@ async def reg_hours(message: types.Message, state: FSMContext) -> None:
         return
     await state.set_state(RegistrationFSM.reg_diagnostics)
     await message.answer(
-        "💰 *Стоимость диагностики*\n\n"
+        "💰 <b>Стоимость диагностики</b>\n\n"
         "Укажите стоимость диагностики в рублях.\n\n"
-        "• Если диагностика *бесплатная* — введите 0\n"
-        "• Если *платная* — укажите сумму в рублях\n\n"
-        "Пример: 500"
+        "• Если диагностика <b>бесплатная</b> — введите 0\n"
+        "• Если <b>платная</b> — укажите сумму в рублях\n\n"
+        "Пример: 500",
+        reply_markup=reg_back_kb(),
     )
 
 
@@ -780,10 +790,10 @@ async def reg_diagnostics(message: types.Message, state: FSMContext) -> None:
         return
     await state.set_state(RegistrationFSM.reg_diag_included)
     await message.answer(
-        "🔧 *Диагностика входит в стоимость ремонта?*\n\n"
-        "*Входит в стоимость* — клиент оплачивает диагностику, "
+        "🔧 <b>Диагностика входит в стоимость ремонта?</b>\n\n"
+        "<b>Входит в стоимость</b> — клиент оплачивает диагностику, "
         "и если ремонт состоится, сумма диагностики вычитается из итогового счёта.\n\n"
-        "*Оплачивается отдельно* — диагностика оплачивается как отдельная услуга.",
+        "<b>Оплачивается отдельно</b> — диагностика оплачивается как отдельная услуга.",
         reply_markup=reg_diag_included_kb(),
     )
 
@@ -833,7 +843,7 @@ async def reg_tax_system(callback: types.CallbackQuery, state: FSMContext) -> No
     await state.set_state(RegistrationFSM.reg_bank_details)
     await _safe_edit_or_answer(
         callback,
-        "⚠️ *Банковские реквизиты*\n"
+        "⚠️ <b>Банковские реквизиты</b>\n"
         "По этим реквизитам будут производиться выплаты.\n\n"
         f"Введите {_BANK_FIELDS[0][1]}:",
     )
@@ -967,7 +977,10 @@ _STATE_ORDER = [
 ]
 
 _STATE_PROMPTS = {
-    RegistrationFSM.reg_name.state: ("Введите название сервисного центра:", None),
+    RegistrationFSM.reg_name.state: (
+        "Введите название сервисного центра:",
+        reg_back_kb(),
+    ),
     RegistrationFSM.reg_service_type.state: (
         _STYPE_TEXT,
         reg_service_type_kb(),
@@ -986,18 +999,24 @@ _STATE_PROMPTS = {
     ),
     RegistrationFSM.reg_hydro_price.state: (
         "Укажите стоимость гидроизоляции (число или диапазон, напр. 1000 или 1000-2000):",
-        None,
+        reg_back_kb(),
     ),
-    RegistrationFSM.reg_address.state: ("Введите адрес:", None),
-    RegistrationFSM.reg_metro_search.state: ("Введите станцию метро:", None),
-    RegistrationFSM.reg_phone.state: ("Введите телефон:", None),
+    RegistrationFSM.reg_address.state: ("Введите адрес:", reg_back_kb()),
+    RegistrationFSM.reg_metro_search.state: ("Введите станцию метро:", reg_back_kb()),
+    RegistrationFSM.reg_phone.state: ("Введите телефон:", reg_back_kb()),
     RegistrationFSM.reg_telegram.state: ("Введите Telegram:", reg_skip_kb()),
     RegistrationFSM.reg_working_days.state: (
         "Выберите рабочие дни:",
         reg_working_days_kb(set()),
     ),
-    RegistrationFSM.reg_hours.state: ("Введите время работы (HH:MM-HH:MM):", None),
-    RegistrationFSM.reg_diagnostics.state: ("Стоимость диагностики (руб.):", None),
+    RegistrationFSM.reg_hours.state: (
+        "Введите время работы (HH:MM-HH:MM):",
+        reg_back_kb(),
+    ),
+    RegistrationFSM.reg_diagnostics.state: (
+        "Стоимость диагностики (руб.):",
+        reg_back_kb(),
+    ),
     RegistrationFSM.reg_diag_included.state: (
         "Диагностика входит в стоимость?",
         reg_diag_included_kb(),
@@ -1010,7 +1029,7 @@ _STATE_PROMPTS = {
         "Выберите систему налогообложения:",
         reg_tax_system_kb(),
     ),
-    RegistrationFSM.reg_bank_details.state: ("Введите расчётный счёт:", None),
+    RegistrationFSM.reg_bank_details.state: ("Введите расчётный счёт:", reg_back_kb()),
 }
 
 

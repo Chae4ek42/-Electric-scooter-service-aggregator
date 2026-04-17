@@ -13,6 +13,12 @@ from aiogram.types import (
 
 BACK_BTN = InlineKeyboardButton(text="Назад", callback_data="back")
 
+
+def reg_back_kb() -> InlineKeyboardMarkup:
+    """Inline keyboard with just one 'Назад' button — for text-input registration steps."""
+    return InlineKeyboardMarkup(inline_keyboard=[[BACK_BTN]])
+
+
 _DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 _UPGRADE_CATS = ["Окраска", "Прошивка", "Изменение конструкции", "Доп оснащение"]
 
@@ -43,12 +49,15 @@ def partner_main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
             KeyboardButton(text="Редактировать профиль"),
         ],
         [
-            KeyboardButton(text="Настройки уведомлений"),
             KeyboardButton(text="Мой статус"),
+            KeyboardButton(text="Мой профиль"),
+        ],
+        [
+            KeyboardButton(text="Настройки уведомлений"),
+            KeyboardButton(text="Поддержка"),
         ],
         [
             KeyboardButton(text="Открыт / Закрыт"),
-            KeyboardButton(text="Поддержка"),
         ],
     ]
     if is_admin:

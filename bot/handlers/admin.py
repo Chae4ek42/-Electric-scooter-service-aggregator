@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
 from bot.core.formatting import e
+from partner_bot.handlers.common import _draft_complete
 from bot.ui.keyboards import (
     ADMIN_PAGE_SIZE,
     admin_filter_kb,
@@ -239,7 +240,7 @@ async def admin_enter(message: types.Message, state: FSMContext) -> None:
         stats_rows = await session.execute(
             select(Order.status, func.count(Order.id)).group_by(Order.status)
         )
-    stat_lines = [f"*Всего заявок:* {total}", ""]
+    stat_lines = [f"<b>Всего заявок:</b> {total}", ""]
     for status, cnt in stats_rows:
         stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
     await message.answer("\n".join(stat_lines), reply_markup=admin_main_kb())
@@ -260,7 +261,7 @@ async def adm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
         stats_rows = await session.execute(
             select(Order.status, func.count(Order.id)).group_by(Order.status)
         )
-    stat_lines = [f"*Всего заявок:* {total}", ""]
+    stat_lines = [f"<b>Всего заявок:</b> {total}", ""]
     for status, cnt in stats_rows:
         stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
     await cb.message.edit_text("\n".join(stat_lines), reply_markup=admin_main_kb())
@@ -474,21 +475,19 @@ async def adm_partners_list(cb: types.CallbackQuery) -> None:
     page = int(parts[2])
 
     async with async_session() as session:
-        total = (
-            await session.execute(select(func.count()).select_from(ServiceOwner))
-        ).scalar_one()
-        owners = (
+        all_owners = (
             (
                 await session.execute(
-                    select(ServiceOwner)
-                    .order_by(ServiceOwner.registered_at.desc())
-                    .offset(page * ADMIN_PAGE_SIZE)
-                    .limit(ADMIN_PAGE_SIZE)
+                    select(ServiceOwner).order_by(ServiceOwner.registered_at.desc())
                 )
             )
             .scalars()
             .all()
         )
+    # Hide partners with incomplete drafts
+    filtered = [o for o in all_owners if o.status != "ожидает" or _draft_complete(o)]
+    total = len(filtered)
+    owners = filtered[page * ADMIN_PAGE_SIZE : (page + 1) * ADMIN_PAGE_SIZE]
     total_pages = max(1, math.ceil(total / ADMIN_PAGE_SIZE))
     if not owners:
         try:
@@ -537,7 +536,7 @@ async def adm_partners_list(cb: types.CallbackQuery) -> None:
     rows.append([InlineKeyboardButton(text="В главное меню", callback_data="adm:main")])
 
     await cb.message.edit_text(
-        f"*Заявки партнёров:* {total} (стр. {page + 1}/{total_pages})",
+        f"<b>Заявки партнёров:</b> {total} (стр. {page + 1}/{total_pages})",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await cb.answer()

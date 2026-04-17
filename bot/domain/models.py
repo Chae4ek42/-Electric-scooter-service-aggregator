@@ -140,6 +140,7 @@ class Order(Base):
     #   interrupted        — клиент не пришёл
     #   client_refused     — клиент отказался от ремонта
     #   disputed           — оспорена клиентом
+    order_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="awaiting_payment")
     payment_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     model_custom_name: Mapped[str | None] = mapped_column(String(300), nullable=True)

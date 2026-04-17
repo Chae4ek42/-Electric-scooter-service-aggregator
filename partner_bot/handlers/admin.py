@@ -18,6 +18,7 @@ from bot.core.database import async_session
 from bot.core.formatting import e
 from bot.domain.models import Service, ServiceCategory, ServiceOwner
 from bot.services.sheets_writer import add_service_row
+from partner_bot.handlers.common import _draft_complete
 from partner_bot.ui.keyboards import (
     padm_main_kb,
     padm_partner_detail_kb,
@@ -197,18 +198,16 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
         if status_filter:
             q = q.where(ServiceOwner.status == status_filter)
             cq = cq.where(ServiceOwner.status == status_filter)
-        total = (await session.execute(cq)).scalar_one()
-        owners = (
-            (
-                await session.execute(
-                    q.order_by(ServiceOwner.registered_at.desc())
-                    .offset(page * PARTNER_PAGE_SIZE)
-                    .limit(PARTNER_PAGE_SIZE)
-                )
-            )
+        total_raw = (await session.execute(cq)).scalar_one()
+        all_owners = (
+            (await session.execute(q.order_by(ServiceOwner.registered_at.desc())))
             .scalars()
             .all()
         )
+    # Hide partners with incomplete drafts (unless already active/suspended/rejected)
+    filtered = [o for o in all_owners if o.status != "ожидает" or _draft_complete(o)]
+    total = len(filtered)
+    owners = filtered[page * PARTNER_PAGE_SIZE : (page + 1) * PARTNER_PAGE_SIZE]
     total_pages = max(1, math.ceil(total / PARTNER_PAGE_SIZE))
     if not owners:
         try:
@@ -225,7 +224,7 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
         else f"Статус: {_STATUS_RU.get(status_filter, status_filter)}"
     )
     await cb.message.edit_text(
-        f"*{header}:* {total} (стр. {page + 1}/{total_pages})",
+        f"<b>{header}:</b> {total} (стр. {page + 1}/{total_pages})",
         reply_markup=padm_partners_kb(list(owners), page, total_pages, status_filter),
     )
     await cb.answer()

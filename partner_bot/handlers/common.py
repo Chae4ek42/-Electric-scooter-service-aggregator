@@ -267,6 +267,36 @@ async def show_status(message: types.Message) -> None:
         await message.answer("Сервис не найден.")
         return
 
+    status_text = "🟢 Открыт" if svc.is_available else "🔴 Закрыт"
+    await message.answer(
+        f"<b>Статус сервиса:</b> {status_text}\n\n"
+        "ℹ️ Эта опция показывает, доступен ли ваш сервис для клиентов. "
+        "Если вам нужно временно приостановить приём заявок "
+        "(отпуск, непредвиденные обстоятельства и т.д.), "
+        "используйте кнопку «Открыт / Закрыт»."
+    )
+
+
+@router.message(F.text == "Мой профиль")
+async def show_profile(message: types.Message) -> None:
+    owner = await _get_owner(message.from_user.id)
+    if not owner:
+        await message.answer("Вы не зарегистрированы.")
+        return
+
+    if owner.status != "активный" or not owner.service_id:
+        await message.answer(f"Статус: {owner.status}")
+        return
+
+    async with async_session() as session:
+        svc = (
+            await session.execute(select(Service).where(Service.id == owner.service_id))
+        ).scalar_one_or_none()
+
+    if not svc:
+        await message.answer("Сервис не найден.")
+        return
+
     wd = _sort_days(svc.working_days)
     lines = [
         f"Название: {e(svc.name)}",

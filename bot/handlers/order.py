@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import random
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
@@ -548,6 +549,7 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
                 problem_description=data.get("problem_description"),
                 upgrade_category=data.get("upgrade_category"),
                 diagnostics_price=None,
+                order_code=str(random.randint(100000, 999999)),
                 status="no_center",
             )
             session.add(order)
@@ -679,6 +681,7 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
             problem_description=data.get("problem_description"),
             upgrade_category=data.get("upgrade_category"),
             diagnostics_price=data.get("diagnostics_price"),
+            order_code=str(random.randint(100000, 999999)),
             status="awaiting_payment",
         )
         session.add(order)
@@ -735,6 +738,11 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
                 info_lines.append(
                     f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}"
                 )
+                if o.order_code:
+                    info_lines.append(
+                        f"\nВаш номер заказа: <b>{o.order_code}</b>\n"
+                        "По прибытии в сервис назовите этот номер."
+                    )
 
                 try:
                     await callback.message.answer("\n".join(info_lines))
@@ -814,6 +822,11 @@ async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> N
                 info_lines.append(
                     f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}"
                 )
+                if o.order_code:
+                    info_lines.append(
+                        f"\nВаш номер заказа: <b>{o.order_code}</b>\n"
+                        "По прибытии в сервис назовите этот номер."
+                    )
 
                 try:
                     await callback.message.answer("\n".join(info_lines))
