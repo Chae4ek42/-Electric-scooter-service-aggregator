@@ -16,9 +16,6 @@ admin_usernames:
     - "chae4ek42"
     - "sergzvezdilin"
 
-# База данных
-database_url: "sqlite+aiosqlite:///esas.db"
-
 # Google Sheets — путь к JSON-ключу Service Account
 google_sa_path: "service-account-key.json"
 
