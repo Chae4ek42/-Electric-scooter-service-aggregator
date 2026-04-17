@@ -1,3 +1,11 @@
+# Google Sheets
+google_sheet_id: "1ZozqkpDXKwTetoUprf5rgIq77l7quBibFISoSMIoGG0"
+
+# Инфраструктура
+redis_url: "redis://redis:6379/0"
+database_url: "sqlite+aiosqlite:///data/esas.db"
+google_sa_path: "service-account-key.json"
+
 # Контакты поддержки
 support_user: "@i_jusp" #Техподдержка
 cooperation_user: "@sergzvezdilin" #Не техническая поддержка

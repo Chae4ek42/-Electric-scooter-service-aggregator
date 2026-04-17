@@ -17,10 +17,9 @@ services:
     env_file: .env
     environment:
       - TZ=Europe/Moscow
-      - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=sqlite+aiosqlite:///data/esas.db
     volumes:
       - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
       - ./service-account-key.json:/app/service-account-key.json:ro
     depends_on:
       redis:
@@ -38,10 +37,9 @@ services:
     env_file: .env
     environment:
       - TZ=Europe/Moscow
-      - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=sqlite+aiosqlite:///data/esas.db
     volumes:
       - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
       - ./service-account-key.json:/app/service-account-key.json:ro
     depends_on:
       redis:

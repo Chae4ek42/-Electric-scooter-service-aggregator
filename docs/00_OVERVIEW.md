@@ -75,8 +75,8 @@ tests/
 
 ### `bot/core/config.py`
 Конфигурация разделена на два уровня:
-- **`.env`** — секреты (токены, ключи, админы, URL БД/Redis)
-- **`config.yaml`** (корень проекта) — операционные настройки с Pydantic-валидацией (модель `AppConfig`)
+- **`.env`** — токены ботов (`BOT_TOKEN`, `PARTNER_BOT_TOKEN`)
+- **`config.yaml`** (корень проекта) — всё остальное с Pydantic-валидацией (модель `AppConfig`)
 
 #### Секреты (`.env`)
 
@@ -84,25 +84,25 @@ tests/
 |---|---|
 | `BOT_TOKEN` | Токен клиентского бота (**обязательно**) |
 | `PARTNER_BOT_TOKEN` | Токен партнёрского бота |
-| `GOOGLE_SHEET_ID` | ID Google Таблицы |
-| `REDIS_URL` | URL Redis для FSM storage и throttling (default: `redis://localhost:6379/0`) |
 
 #### Настройки (`config.yaml`)
 
-| Раздел | Параметр | По умолчанию | Описание |
-|---|---|---|---|
-| — | `support_user` | `@i_jusp` | Контакт техподдержки |
-| — | `cooperation_user` | `@i_jusp` | Контакт для сотрудничества |
-| — | `admin_usernames` | `[]` | Список username админов (без @) |
-| — | `database_url` | `sqlite+aiosqlite:///esas.db` | URL подключения к БД |
-| — | `google_sa_path` | `service-account-key.json` | Путь к JSON-ключу Service Account |
-| `sheets` | `sync_interval` | `300` | Интервал синхронизации Google Sheets (сек) |
-| `sheets` | `tab_services` | `Сервисы` | Название листа сервисов |
-| `sheets` | `tab_orders` | `Заявки` | Название листа заявок |
-| `sheets` | `tab_clients` | `Клиенты` | Название листа клиентов |
-| `sheets` | `columns` | 17 колонок | Порядок столбцов листа «Сервисы» |
-| `calendar` | `days` | `14` | Дней вперёд в календаре |
-| `calendar` | `work_hour_start` | `8` | Начало рабочего дня (час, МСК) |
+| Параметр | По умолчанию | Описание |
+|---|---|---|
+| `google_sheet_id` | `""` | ID Google Таблицы |
+| `redis_url` | `redis://localhost:6379/0` | URL Redis |
+| `database_url` | `sqlite+aiosqlite:///data/esas.db` | URL подключения к БД |
+| `google_sa_path` | `service-account-key.json` | Путь к JSON-ключу Service Account |
+| `support_user` | `@i_jusp` | Контакт техподдержки |
+| `cooperation_user` | `@i_jusp` | Контакт для сотрудничества |
+| `admin_usernames` | `[]` | Список username админов (без @) |
+| `sheets.sync_interval` | `300` | Интервал синхронизации Google Sheets (сек) |
+| `sheets.tab_services` | `Сервисы` | Название листа сервисов |
+| `sheets.tab_orders` | `Заявки` | Название листа заявок |
+| `sheets.tab_clients` | `Клиенты` | Название листа клиентов |
+| `sheets.columns` | 17 колонок | Порядок столбцов листа «Сервисы» |
+| `calendar.days` | `14` | Дней вперёд в календаре |
+| `calendar.work_hour_start` | `8` | Начало рабочего дня (час, МСК) |
 | `calendar` | `work_hour_end` | `22` | Конец рабочего дня (час, МСК) |
 | `calendar` | `time_slot_minutes` | `60` | Шаг тайм-слота (мин) |
 | — | `throttle_rate` | `0.2` | Мин. интервал между запросами (сек) |
@@ -136,7 +136,7 @@ ORM-модели. Текущий набор полей `Service`:
 | `main_brand_scooter` | `str?` | Основной бренд самокатов |
 | `category_id` | `int?` FK | Связь с `ServiceCategory` (Механика/Электрика) |
 
-`Order.model_id` — nullable (поддерживает кнопку «Другое»). `Order.model_custom_name` — свободный ввод модели. `Order.total_cost` — итоговая стоимость, устанавливаемая партнёром.
+`Order.model_id` — nullable (поддерживает кнопку «Другое»). `Order.model_custom_name` — свободный ввод модели. `Order.total_cost` — итоговая стоимость, устанавливаемая партнёром. `Order.order_code` — 6-значный цифровой код (String(6), nullable), генерируется при создании заявки через `random.randint(100000, 999999)` и отправляется клиенту вместе с подтверждением оплаты.
 
 Поля жизненного цикла:
 - `estimate_cost` (Float) — стоимость в смете
@@ -224,6 +224,10 @@ dist = metro_transfer_distance("Ленинский проспект", "Охот�
 | Цена гидроизоляции | `hydroisolation_price` | Фиксированная или диапазон |
 | Диагностика | `diagnostics_price` | Стоимость |
 | Входит в стоимость | `diagnostics_included` | да/нет |
+| Категории апгрейда | `upgrade_categories` | Через запятую |
+| Рабочие дни | `working_days` | Через запятую (Пн,Вт,...) |
+
+**Приоритет:** Google Sheets является источником истины — при каждой синхронизации значения из таблицы перезаписывают значения в БД (включая `upgrade_categories` и `working_days`).
 
 **Upsert-логика:** поиск по `name`. Если запись существует — обновляются только реально изменившиеся поля (каждое поле сравнивается с текущим значением в БД; счётчик `изменено` инкрементируется только при наличии фактических отличий). Новая запись без типа — создаётся с `service_type="complex"`.
 
@@ -248,7 +252,7 @@ dist = metro_transfer_distance("Ленинский проспект", "Охот�
 
 **Ключевые особенности:**
 - Переход без шага выбора сервиса: в `pick_time` вызывается `rank_services()`, сервис-центр подбирается автоматически и показывается на экране подтверждения.
-- Заявка создаётся со статусом `awaiting_payment`. Сразу отправляется заглушка предоплаты.
+- Заявка создаётся со статусом `awaiting_payment` и получает `order_code` — 6-значный код (генерируется через `random.randint`). После успешной оплаты код отправляется клиенту: «Ваш номер заказа: **XXXXXX**. По прибытии в сервис назовите этот номер.»
 - Для заказов типа «Гидроизоляция»: пропускается описание проблемы, на экране подтверждения показывается цена гидроизоляции из БД сервиса + предоплата 500 руб.
 - Платёжные хендлеры (`pay:proceed:*`, `pay:cancel:*`) — state-agnostic, работают и из FSM-потока, и из «Мои заявки».
 - «Мои заявки»: показываются все незакрытые заявки, **включая `no_center`** (сервис не найден). Все пользовательские строки (название модели, название сервиса, метро) экранируются через `_md_escape()` перед Markdown-рендерингом.
@@ -320,19 +324,19 @@ ESAS — два Telegram-бота для приёма заявок на ремо
 ## Быстрый старт
 
 ```bash
-# 1. Создать .env в корне проекта
+# 1. Создать .env в корне проекта (только токены ботов)
 BOT_TOKEN=<token>
-ADMIN_USERNAMES=username1,username2   # без @
-SUPPORT_USER=@support_handle
-GOOGLE_SHEET_ID=<sheet_id>            # опционально
+PARTNER_BOT_TOKEN=<partner_token>   # опционально
 
-# 2. Установить зависимости
+# 2. Заполнить config.yaml (google_sheet_id, database_url, admin_usernames и т.д.)
+
+# 3. Установить зависимости
 pip install -e .
 
-# 3. Запустить бота
+# 4. Запустить бота
 python -m bot
 
-# 4. Запустить тесты
+# 5. Запустить тесты
 pytest tests/test_smoke.py -v
 ```
 
@@ -346,7 +350,7 @@ bot/
 ├── __main__.py          # Точка входа: init_db → sheets sync → polling
 │
 ├── core/                # Инфраструктурный слой
-│   ├── config.py        # .env (секреты) + config.yaml (настройки, Pydantic-валидация)
+│   ├── config.py        # .env (токены) + config.yaml (всё остальное, Pydantic-валидация)
 │   ├── database.py      # async engine + sessionmaker
 │   └── middlewares.py   # ActionLogger, Throttling, ErrorMiddleware
 │
@@ -381,8 +385,11 @@ tests/
 ## Ключевые модули
 
 ### `bot/core/config.py`
-Все настройки — из переменных окружения через `os.environ`. Нет pydantic-settings.
-Важные переменные: `BOT_TOKEN`, `ADMIN_USERNAMES` (set[str], нижний регистр без @), `GOOGLE_SHEET_ID`, `SHEETS_SYNC_INTERVAL`, `SHEETS_COLUMNS`.
+Конфигурация разделена на два уровня:
+- **`.env`** — токены ботов (`BOT_TOKEN`, `PARTNER_BOT_TOKEN`)
+- **`config.yaml`** — всё остальное (Pydantic-валидация, модель `AppConfig`).
+
+Важные поля `AppConfig`: `google_sheet_id`, `redis_url`, `database_url`, `google_sa_path`, `admin_usernames`, `sheets`, `calendar`.
 
 ### `bot/domain/models.py`
 ORM-модели. `Order.model_id` — nullable (поддерживает кнопку «Другое»). `Order.model_custom_name` — свободный ввод модели.

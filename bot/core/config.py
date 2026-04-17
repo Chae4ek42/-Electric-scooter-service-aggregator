@@ -62,11 +62,15 @@ class FSMReminderConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    # Инфраструктура
+    redis_url: str = "redis://localhost:6379/0"
+    database_url: str = "sqlite+aiosqlite:///data/esas.db"
+    google_sa_path: str = "service-account-key.json"
+    google_sheet_id: str = ""
+    # Операционные
     support_user: str = "@i_jusp"
     cooperation_user: str = "@i_jusp"
     admin_usernames: List[str] = []
-    database_url: str = "sqlite+aiosqlite:///esas.db"
-    google_sa_path: str = "service-account-key.json"
     sheets: SheetsConfig = SheetsConfig()
     calendar: CalendarConfig = CalendarConfig()
     throttle_rate: float = Field(0.2, ge=0.0, le=10.0)
@@ -75,25 +79,22 @@ class AppConfig(BaseModel):
 
 def _load_app_config() -> AppConfig:
     config_path = BASE_DIR / "config.yaml"
-    if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-        return AppConfig.model_validate(raw)
-    return AppConfig()
+    if not config_path.exists():
+        raise FileNotFoundError(f"config.yaml не найден: {config_path}")
+    with open(config_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    return AppConfig.model_validate(raw)
 
 
 app_config = _load_app_config()
 
 
-# ── Secrets from .env ─────────────────────────────────────────
+# ── Публичные константы ───────────────────────────────────────
 
 BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 PARTNER_BOT_TOKEN: str = os.environ.get("PARTNER_BOT_TOKEN", "")
-GOOGLE_SHEET_ID: str = os.environ.get("GOOGLE_SHEET_ID", "")
-REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-
-
-# ── Convenience aliases (backward-compatible) ────────────────
+GOOGLE_SHEET_ID: str = app_config.google_sheet_id
+REDIS_URL: str = app_config.redis_url
 
 SUPPORT_USER: str = app_config.support_user
 COOPERATION_USER: str = app_config.cooperation_user
