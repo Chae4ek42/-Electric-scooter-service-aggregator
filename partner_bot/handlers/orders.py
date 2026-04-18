@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 
 from bot.core.database import async_session
 from bot.core.formatting import e
-from bot.domain.models import Order, Service, ServiceOwner
+from bot.domain.models import Order, Service
 from bot.domain.schemas import RejectReasonInput
 from bot.domain.states import PartnerOrderFSM
 from partner_bot.handlers.common import _get_owner
@@ -149,10 +149,10 @@ async def _get_partner_orders(
     return list(orders), total_pages
 
 
-async def _require_active_owner(event) -> ServiceOwner | None:
+async def _require_active_owner(event) -> Service | None:
     tg_id = event.from_user.id
     owner = await _get_owner(tg_id)
-    if not owner or owner.status != "активный" or not owner.service_id:
+    if not owner or owner.status != "активный":
         text = (
             "Вы не зарегистрированы или не одобрены."
             if not owner
@@ -180,7 +180,7 @@ async def incoming_orders(message: types.Message, state: FSMContext) -> None:
             (
                 await session.execute(
                     select(Order)
-                    .where(Order.service_id == owner.service_id)
+                    .where(Order.service_id == owner.id)
                     .where(Order.status == "awaiting_payment")
                     .order_by(Order.created_at.desc())
                     .limit(20)
@@ -230,7 +230,7 @@ async def order_detail(callback: types.CallbackQuery, state: FSMContext) -> None
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
 
-    if not order or order.service_id != owner.service_id:
+    if not order or order.service_id != owner.id:
         await callback.answer("Заявка не найдена.", show_alert=True)
         return
 
@@ -261,7 +261,7 @@ async def accept_order(callback: types.CallbackQuery, state: FSMContext) -> None
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status != "awaiting_payment":
@@ -276,15 +276,8 @@ async def accept_order(callback: types.CallbackQuery, state: FSMContext) -> None
 
     # Notify client
     try:
-        svc_name = ""
-        async with async_session() as session:
-            svc = (
-                await session.execute(
-                    select(Service).where(Service.id == owner.service_id)
-                )
-            ).scalar_one_or_none()
-            svc_name = svc.name if svc else ""
-            svc_address = svc.address if svc else ""
+        svc_name = owner.name or ""
+        svc_address = owner.address or ""
         from bot.core.config import BOT_TOKEN
         from aiogram import Bot
 
@@ -355,7 +348,7 @@ async def reject_order_reason(message: types.Message, state: FSMContext) -> None
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await message.answer("Заявка не найдена.")
             await state.clear()
             return
@@ -399,7 +392,7 @@ async def client_refused_start(
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status != "accepted":
@@ -433,7 +426,7 @@ async def client_refused_reason(message: types.Message, state: FSMContext) -> No
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await message.answer("Заявка не найдена.")
             await state.clear()
             return
@@ -489,7 +482,7 @@ async def start_work(callback: types.CallbackQuery, state: FSMContext) -> None:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status != "accepted":
@@ -635,7 +628,7 @@ async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> 
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             await state.clear()
             return
@@ -733,7 +726,7 @@ async def order_ready(callback: types.CallbackQuery) -> None:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status != "in_progress":
@@ -810,7 +803,7 @@ async def set_cost_start(callback: types.CallbackQuery, state: FSMContext) -> No
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status not in ("accepted", "in_progress"):
@@ -850,7 +843,7 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.service_id:
+        if not order or order.service_id != owner.id:
             await message.answer("Заявка не найдена.")
             await state.clear()
             return
@@ -905,7 +898,7 @@ async def orders_history(message: types.Message, state: FSMContext) -> None:
     if not owner:
         return
     await state.update_data(history_page=0, history_filter=None)
-    await _show_history(message, owner.service_id, 0, None)
+    await _show_history(message, owner.id, 0, None)
 
 
 async def _show_history(
@@ -952,7 +945,7 @@ async def orders_page(callback: types.CallbackQuery, state: FSMContext) -> None:
     page = int(callback.data.split(":")[2])
     data = await state.get_data()
     await state.update_data(history_page=page)
-    await _show_history(callback, owner.service_id, page, data.get("history_filter"))
+    await _show_history(callback, owner.id, page, data.get("history_filter"))
 
 
 @router.callback_query(F.data == "pord:back_list")
@@ -962,7 +955,7 @@ async def back_to_list(callback: types.CallbackQuery, state: FSMContext) -> None
         return
     data = await state.get_data()
     page = data.get("history_page", 0)
-    await _show_history(callback, owner.service_id, page, data.get("history_filter"))
+    await _show_history(callback, owner.id, page, data.get("history_filter"))
 
 
 @router.callback_query(F.data.startswith("pord:filter:"))
@@ -972,7 +965,7 @@ async def orders_filter(callback: types.CallbackQuery, state: FSMContext) -> Non
         return
     f = callback.data.split(":")[2]
     await state.update_data(history_filter=f if f != "all" else None, history_page=0)
-    await _show_history(callback, owner.service_id, 0, f if f != "all" else None)
+    await _show_history(callback, owner.id, 0, f if f != "all" else None)
 
 
 @router.callback_query(F.data == "noop")

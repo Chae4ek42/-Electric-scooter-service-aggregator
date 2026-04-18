@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
-from bot.core.config import PARTNER_BOT_TOKEN, REDIS_URL, SHEETS_SYNC_INTERVAL
+from bot.core.config import PARTNER_BOT_TOKEN, REDIS_URL
 from bot.core.middlewares import (
     ActionLoggerMiddleware,
     ErrorMiddleware,
@@ -18,7 +18,6 @@ from bot.core.middlewares import (
 )
 from bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
 from bot.services.seed import init_db
-from bot.services.sheets_sync import run_full_sync
 
 from partner_bot.handlers.common import router as common_router
 from partner_bot.handlers.registration import router as registration_router
@@ -39,14 +38,39 @@ def _setup_logging() -> None:
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
 
-async def _sheets_sync_loop(interval: int) -> None:
+async def _pause_reopen_loop() -> None:
+    """Auto-reopen services whose pause_until has passed."""
+    import datetime
+    from sqlalchemy import select, update
+    from bot.core.database import async_session
+    from bot.domain.models import Service
+
     logger = logging.getLogger(__name__)
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(60)
         try:
-            await run_full_sync()
+            now = datetime.datetime.now(tz=datetime.timezone.utc)
+            async with async_session() as session:
+                expired = (
+                    (
+                        await session.execute(
+                            select(Service)
+                            .where(Service.is_available.is_(False))
+                            .where(Service.pause_until.isnot(None))
+                            .where(Service.pause_until <= now)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for svc in expired:
+                    svc.is_available = True
+                    svc.pause_until = None
+                    logger.info("Auto-reopened service %s (id=%s)", svc.name, svc.id)
+                if expired:
+                    await session.commit()
         except Exception as exc:
-            logger.error("Sheets sync error: %s", exc)
+            logger.error("Pause reopen loop error: %s", exc)
 
 
 async def _make_storage(logger):
@@ -76,9 +100,6 @@ async def main() -> None:
 
     logger.info("Initialising database ...")
     await init_db()
-
-    logger.info("Sheets sync ...")
-    await run_full_sync(first_run=True)
 
     bot = Bot(
         token=PARTNER_BOT_TOKEN,
@@ -113,8 +134,8 @@ async def main() -> None:
     )
     try:
         await asyncio.gather(
-            _sheets_sync_loop(SHEETS_SYNC_INTERVAL),
             fsm_reminder_loop(bot, "partner"),
+            _pause_reopen_loop(),
             dp.start_polling(bot),
         )
     finally:

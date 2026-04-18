@@ -30,7 +30,8 @@ Partner-bot — Telegram-бот для владельцев / операторо
 Только `активный`-владелец видит заявки и может редактировать профиль.
 `ожидает` видит только экран ожидания с кнопками «Моя анкета», «Продолжить заполнение», «Поддержка».
 
-> **Статусы хранятся на русском языке** в колонке `service_owners.status`. Миграция с английских значений (pending/active/rejected/suspended) выполняется автоматически в `seed.py`.
+> **Статусы хранятся на русском языке** в колонке `services.status`. Миграция с английских значений (pending/active/rejected/suspended) выполняется автоматически в `seed.py`.  
+> **Модель данных:** Сервисы и партнёры — это одна и та же сущность. Все данные хранятся в единой таблице `services`. Draft-поля, telegram_id, статус владельца и банковские реквизиты — поля `Service`. Таблицы `service_owners` не существует. Незаконченные анкеты (статус ≠ «активный») не отображаются в списке сервисов при ранжировании.
 
 ---
 
@@ -64,9 +65,7 @@ Partner-bot — Telegram-бот для владельцев / операторо
             ▼
         reg_metro_confirm     ← inline: [Да, {станция} / Искать заново]
             ▼
-        reg_phone             ← «Контактный телефон» (PhoneInput)
-            ▼
-        reg_telegram          ← «Telegram-аккаунт» (TelegramHandleInput / кнопка пропуска)
+        reg_phone             ← «Контактный телефон» (PhoneInput); telegram берётся автоматически из username
             ▼
         reg_working_days      ← multi-select inline: 7 кнопок [Пн/Вт/Ср/Чт/Пт/Сб/Вс]
             │                    + кнопка «Готово ✓» (при ≥1 выборе)
@@ -92,14 +91,14 @@ Partner-bot — Telegram-бот для владельцев / операторо
             ▼
         reg_confirm           ← карточка с итоговыми данными + [Отправить / Изменить / Заново]
             ▼
-        (создаётся ServiceOwner + draft-данные в 22 полях)
+        (создаётся Service с telegram_id + draft-данные в 22 полях)
         (уведомление администратору ESAS)
             ▼
         waiting_approval      ← «Ваша заявка принята, ожидайте одобрения»
 ```
 
 **Особенности:**
-- На каждом этапе состояние сохраняется в `draft_*`-поля `ServiceOwner` — прерывание не теряет данные.
+- На каждом этапе состояние сохраняется в `draft_*`-поля `Service` — прерывание не теряет данные.
 - На текстовых шагах регистрации (address, phone, hours, diagnostics, bank details и др.) отображается inline-кнопка **«Назад»** (откатывает FSM на предыдущий шаг).
 - Кнопка «Продолжить заполнение» — определяет первое пустое поле через `_next_empty_state()` и перемещает в соответствующее FSM-состояние.
 - Кнопка «Изменить» на экране подтверждения — выводит текущую анкету + 15 inline-кнопок для редактирования конкретных полей.
@@ -128,8 +127,8 @@ Partner-bot — Telegram-бот для владельцев / операторо
 ### 3.3 Что происходит при одобрении
 
 1. Admin в admin-bot нажимает «Одобрить» (inline callback).
-2. Создаётся `Service` из `draft_*`-полей (включая `upgrade_categories`, `working_days`), `is_available=True`.
-3. `ServiceOwner.status` → `активный`, `ServiceOwner.service_id` → id нового сервиса.
+2. `draft_*`-поля копируются в основные поля `Service` (name, address, phone и т.д.), `is_available=True`.
+3. `Service.status` → `активный`, `Service.partnership_status` → `активный`.
 4. Владелец получает уведомление с **новой reply-клавиатурой** `partner_main_menu_kb()` (заменяет pending-меню).
 5. Google Sheets: строка сервиса добавляется через `sheets_writer.add_service_row()`.
 
@@ -238,27 +237,22 @@ rejected_by_partner   ← партнёр отклонил с указанием 
 При редактировании любого поля (кроме «Открыт/Закрыт») происходит:
 1. При выборе поля партнёру показывается предупреждение о деактивации.
 2. Поле обновляется в БД и Google Sheets.
-3. `ServiceOwner.status` → `ожидает` (повторная модерация).
+3. `Service.status` → `ожидает` (повторная модерация).
 4. `Service.is_available` → `False` (сервис недоступен на время проверки).
 5. Reply-клавиатура меняется на `partner_pending_menu_kb`.
 
-Быстрый переключатель «Открыт/Закрыт» (`pedit:status`) **не вызывает** ре-модерацию.
+Быстрый переключатель статуса (`pedit:status`) **не вызывает** ре-модерацию. Доступен через кнопку «Статус сервиса» в главном меню.
 
-После каждого изменения:
-1. Запись обновляется в локальной БД.
-2. `sheets_writer.update_service_row()` перезаписывает строку в Google Sheets.
-3. Логируется в `user_actions`.
-
-### 6.1 Редактируемые поля
-
-Кнопки выбора поля: Название, Адрес, Телефон, Telegram, Время работы.
-
-### 6.2 Быстрые статусы
+### 6.2 Быстрые статусы (с длительностью паузы)
 
 | Кнопка | Действие |
 |---|---|
-| Закрыть сегодня | `is_available=False` |
-| Открыть сейчас | `is_available=True` |
+| Открыть сейчас | `is_available=True`, `pause_until=None` |
+| Закрыть на сегодня | `is_available=False`, `pause_until` = конец текущего дня (МСК) |
+| Закрыть до конца недели | `is_available=False`, `pause_until` = ближайший понедельник 00:00 (МСК) |
+| Закрыть пока не открою | `is_available=False`, `pause_until=None` (без автооткрытия) |
+
+Фоновая задача `_pause_reopen_loop()` в `partner_bot/__main__.py` каждые 60 секунд проверяет сервисы с истёкшим `pause_until` и автоматически открывает их (`is_available=True`, `pause_until=None`).
 
 ---
 
@@ -287,7 +281,7 @@ Toggle-кнопки (inline) для каждого типа:
 - Новые заявки (`notif_new_order`)
 - Отмены клиентом (`notif_cancel`)
 
-Хранятся в `ServiceOwnerSettings (owner_id, notif_new_order, notif_cancel)`.
+Хранятся в `ServiceOwnerSettings (owner_id → services.id, notif_new_order, notif_cancel)`.
 
 ---
 
@@ -361,11 +355,11 @@ Sheets updated
 
 | Функция | Callback | Описание |
 |---|---|---|
-| Главное меню | `padm:main` | Статистика партнёров по статусам |
+| Главное меню | `padm:main` | Сводная статистика: количество партнёров (с разбивкой по статусам) |
 | Список партнёров | `padm:partners:{page}` | Пагинация (10), сортировка по дате. Незавершённые анкеты (статус «ожидает» + незаполненые обязательные поля) скрыты. Заголовок: `Все партнёры: N (стр. X/Y)` |
 | Фильтр по статусу | `padm:filter` → `padm:partners:0:status:{status}` | ожидает/активный/приостановлен/отклонён |
 | Карточка партнёра | `padm:partner:{id}` | Все 22 draft-поля + банковские реквизиты |
-| Одобрить | `padm:approve:{id}` | Создаёт `Service`, пишет в Sheets, уведомляет, отправляет новую клавиатуру |
+| Одобрить | `padm:approve:{id}` | Копирует draft→main поля в `Service`, пишет в Sheets, уведомляет, отправляет новую клавиатуру |
 | Отклонить | `padm:reject_partner:{id}` | Меняет статус → отклонён, уведомляет |
 | Приостановить | `padm:suspend:{id}` | Статус → приостановлен, `is_available=False` |
 | Восстановить | `padm:unsuspend:{id}` | Статус → активный, `is_available=True` |
@@ -430,7 +424,7 @@ bot/                              ← общий код + клиентский �
 │   ├── database.py
 │   └── middlewares.py
 ├── domain/
-│   ├── models.py                 (Service, ServiceOwner, ServiceOwnerSettings, ...)
+│   ├── models.py                 (Service, ServiceOwnerSettings, ...)
 │   ├── states.py                 (OrderFSM, RegistrationFSM, PartnerProfileFSM, PartnerOrderFSM, ClientOrderFSM)
 │   └── schemas.py                (все Pydantic-схемы, включая банковские)
 ├── services/
@@ -463,13 +457,41 @@ partner_bot/                      ← партнёрский бот
 
 ### 11.2 Модели данных
 
-#### `ServiceOwner` — 22 draft-поля
+#### `Service` — единая модель (бывшие Service + ServiceOwner)
+
+Таблица `service_owners` не существует: сервисы и партнёры — это одна сущность, все поля хранятся в таблице `services`.
+
+**Основные поля сервиса** (заполняются из Google Sheets или при одобрении из draft):
 
 | Поле | Тип | Описание |
 |---|---|---|
-| `id`, `telegram_id`, `service_id`, `status` | — | Идентификация и статус |
+| `id` | PK | — |
+| `name` | String(300), NOT NULL | Название сервиса |
+| `service_type` | String(20), NOT NULL | repair / upgrade / complex |
+| `is_available` | Boolean, NOT NULL | Доступен |
+| `address`, `nearest_metro`, `phone`, `telegram_handle` | String | Контакты |
+| `open_time`, `close_time` | String(5) | HH:MM |
+| `has_hydroisolation`, `hydroisolation_price` | Boolean / String | Гидроизоляция |
+| `diagnostics_price`, `diagnostics_included` | Float / Boolean | Диагностика |
+| `upgrade_categories` | String(500) | Категории апгрейда через запятую |
+| `working_days` | String(100) | Рабочие дни через запятую |
+| `partnership_status` | String(100) | Статус партнёрства |
+
+**Поля владельца** (nullable — заполняются при регистрации через partner-bot):
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `telegram_id` | BigInteger, unique | Telegram ID владельца (NULL если сервис из Sheets без владельца) |
+| `status` | String(20) | ожидает / активный / приостановлен / отклонён |
+| `registered_at`, `approved_at` | DateTime | Даты регистрации и одобрения |
+| `approved_by` | String(200) | Username одобрившего админа |
+
+**22 draft-поля** (заполняются при регистрации, копируются в основные при одобрении):
+
+| Поле | Тип | Описание |
+|---|---|---|
 | `draft_name` | String(300) | Название сервиса |
-| `draft_service_type` | String(20) | `repair` / `upgrade` |
+| `draft_service_type` | String(20) | repair / upgrade |
 | `draft_category` | String(100) | Механика / Электрика |
 | `draft_address` | String(500) | Адрес |
 | `draft_metro` | String(200) | Ближайшее метро |
@@ -479,8 +501,8 @@ partner_bot/                      ← партнёрский бот
 | `draft_hydroisolation` | Boolean | Гидроизоляция |
 | `draft_diagnostics_price` | Float | Стоимость диагностики |
 | `draft_diag_included` | Boolean | Входит в стоимость |
-| `draft_upgrade_categories` | String(500) | Через запятую: Окраска,Прошивка,... |
-| `draft_working_days` | String(100) | Через запятую: Пн,Вт,Ср,... |
+| `draft_upgrade_categories` | String(500) | Через запятую |
+| `draft_working_days` | String(100) | Через запятую |
 | `draft_legal_form` | String(50) | ИП / Юр. лицо |
 | `draft_tax_system` | String(100) | ОСНО / УСН / АУСН / Патентная / НПД |
 | `draft_bank_account` | String(30) | Расчётный счёт (20 цифр) |
@@ -489,13 +511,6 @@ partner_bot/                      ← партнёрский бот
 | `draft_corr_account` | String(30) | Корреспондентский счёт |
 | `draft_org_name` | String(300) | Наименование организации |
 | `draft_inn` | String(20) | ИНН (10 или 12 цифр) |
-
-#### `Service` — новые поля
-
-| Поле | Тип | Описание |
-|---|---|---|
-| `upgrade_categories` | String(500), nullable | Категории апгрейда через запятую |
-| `working_days` | String(100), nullable | Рабочие дни через запятую |
 
 #### `ServiceOwnerSettings`
 
@@ -518,12 +533,12 @@ partner_bot/                      ← партнёрский бот
 
 ### 10.3 FSM-схема
 
-#### `RegistrationFSM` — 17 состояний
+#### `RegistrationFSM` — 16 состояний
 
 ```
 reg_name → reg_service_type → [reg_upgrade_categories] →
   reg_hydroisolation → reg_address → reg_metro_search → reg_metro_confirm →
-    reg_phone → reg_telegram → reg_working_days → reg_hours →
+    reg_phone → reg_working_days → reg_hours →
       reg_diagnostics → reg_diag_included → reg_legal_form → reg_tax_system →
         reg_bank_details (×6) → reg_confirm
 ```

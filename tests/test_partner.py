@@ -293,14 +293,13 @@ class TestInnInput:
 
 
 class TestPartnerModels:
-    def test_service_owner_table(self):
-        from bot.domain.models import ServiceOwner
+    def test_service_has_owner_fields(self):
+        from bot.domain.models import Service
 
-        cols = {c.name for c in ServiceOwner.__table__.columns}
+        cols = {c.name for c in Service.__table__.columns}
         expected = {
             "id",
             "telegram_id",
-            "service_id",
             "status",
             "registered_at",
             "approved_at",
@@ -378,7 +377,6 @@ class TestPartnerStates:
             "reg_metro_search",
             "reg_metro_confirm",
             "reg_phone",
-            "reg_telegram",
             "reg_working_days",
             "reg_hours",
             "reg_diagnostics",
@@ -421,7 +419,7 @@ class TestPartnerKeyboards:
         assert "История заявок" in texts
         assert "Редактировать профиль" in texts
         assert "Настройки уведомлений" in texts
-        assert "Мой статус" in texts
+        assert "Статус сервиса" in texts
         assert "Поддержка" in texts
 
     def test_pending_menu_has_support(self):
@@ -584,7 +582,7 @@ class TestPartnerKeyboards:
 
         kb = quick_status_kb()
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        assert "Закрыть сегодня" in texts
+        assert "Закрыть на сегодня" in texts
         assert "Открыть сейчас" in texts
 
     def test_profile_edit_fields(self):
@@ -723,9 +721,9 @@ class TestHydroPriceField:
         assert "total_cost" in t.columns.keys()
 
     def test_owner_has_draft_hydro_price(self):
-        from bot.domain.models import ServiceOwner
+        from bot.domain.models import Service
 
-        t = ServiceOwner.__table__
+        t = Service.__table__
         assert "draft_hydro_price" in t.columns.keys()
 
 
@@ -1179,22 +1177,22 @@ class TestAdminFilterKb:
 class TestFormatDraftHidesEmpty:
     def test_no_hydro_price_when_no_hydro(self):
         from partner_bot.handlers.common import _format_draft
-        from bot.domain.models import ServiceOwner
+        from bot.domain.models import Service
 
-        owner = ServiceOwner(telegram_id=123)
-        owner.draft_hydroisolation = False
-        owner.draft_hydro_price = None
-        result = _format_draft(owner)
+        svc = Service(name="test", service_type="repair", telegram_id=123)
+        svc.draft_hydroisolation = False
+        svc.draft_hydro_price = None
+        result = _format_draft(svc)
         assert "Цена гидроизоляции" not in result
 
     def test_shows_hydro_price_when_hydro(self):
         from partner_bot.handlers.common import _format_draft
-        from bot.domain.models import ServiceOwner
+        from bot.domain.models import Service
 
-        owner = ServiceOwner(telegram_id=123)
-        owner.draft_hydroisolation = True
-        owner.draft_hydro_price = "1500"
-        result = _format_draft(owner)
+        svc = Service(name="test", service_type="repair", telegram_id=123)
+        svc.draft_hydroisolation = True
+        svc.draft_hydro_price = "1500"
+        result = _format_draft(svc)
         assert "Цена гидроизоляции" in result
         assert "1500" in result
 

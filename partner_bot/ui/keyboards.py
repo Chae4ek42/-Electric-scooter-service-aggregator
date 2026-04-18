@@ -10,6 +10,7 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
+from bot.texts import Btn
 
 BACK_BTN = InlineKeyboardButton(text="Назад", callback_data="back")
 
@@ -30,46 +31,43 @@ def partner_pending_menu_kb(
     has_draft: bool = False, is_admin: bool = False
 ) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(text="Моя анкета")],
+        [KeyboardButton(text=Btn.MY_DRAFT)],
     ]
     if has_draft:
-        rows.append([KeyboardButton(text="Продолжить заполнение")])
-    rows.append([KeyboardButton(text="Изменить анкету")])
-    rows.append([KeyboardButton(text="Поддержка")])
+        rows.append([KeyboardButton(text=Btn.CONTINUE_DRAFT)])
+    rows.append([KeyboardButton(text=Btn.EDIT_DRAFT)])
+    rows.append([KeyboardButton(text=Btn.SUPPORT)])
     if is_admin:
-        rows.append([KeyboardButton(text="Панель администратора")])
+        rows.append([KeyboardButton(text=Btn.ADMIN_PANEL)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def partner_main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(text="Входящие заявки")],
+        [KeyboardButton(text=Btn.INCOMING_ORDERS)],
         [
-            KeyboardButton(text="История заявок"),
-            KeyboardButton(text="Редактировать профиль"),
+            KeyboardButton(text=Btn.ORDER_HISTORY),
+            KeyboardButton(text=Btn.EDIT_PROFILE),
         ],
         [
-            KeyboardButton(text="Мой статус"),
-            KeyboardButton(text="Мой профиль"),
+            KeyboardButton(text=Btn.SERVICE_STATUS),
+            KeyboardButton(text=Btn.MY_PROFILE),
         ],
         [
-            KeyboardButton(text="Настройки уведомлений"),
-            KeyboardButton(text="Поддержка"),
-        ],
-        [
-            KeyboardButton(text="Открыт / Закрыт"),
+            KeyboardButton(text=Btn.NOTIF_SETTINGS),
+            KeyboardButton(text=Btn.SUPPORT),
         ],
     ]
     if is_admin:
-        rows.append([KeyboardButton(text="Панель администратора")])
+        rows.append([KeyboardButton(text=Btn.ADMIN_PANEL)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def admin_only_menu_kb() -> ReplyKeyboardMarkup:
     """Keyboard for admins who are not active partners — only admin panel + support."""
     rows = [
-        [KeyboardButton(text="Панель администратора")],
-        [KeyboardButton(text="Поддержка")],
+        [KeyboardButton(text=Btn.ADMIN_PANEL)],
+        [KeyboardButton(text=Btn.SUPPORT)],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -262,7 +260,6 @@ def draft_edit_kb() -> InlineKeyboardMarkup:
         ("Адрес", "edit_draft:address"),
         ("Метро", "edit_draft:metro"),
         ("Телефон", "edit_draft:phone"),
-        ("Telegram", "edit_draft:telegram"),
         ("Рабочие дни", "edit_draft:working_days"),
         ("Время работы", "edit_draft:hours"),
         ("Диагностика", "edit_draft:diagnostics"),
@@ -505,12 +502,24 @@ def profile_edit_fields_kb() -> InlineKeyboardMarkup:
 def quick_status_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Открыть сейчас", callback_data="pstatus:open")],
             [
                 InlineKeyboardButton(
-                    text="Закрыть сегодня", callback_data="pstatus:close"
+                    text="Закрыть на сегодня", callback_data="pstatus:pause_today"
                 )
             ],
-            [InlineKeyboardButton(text="Открыть сейчас", callback_data="pstatus:open")],
+            [
+                InlineKeyboardButton(
+                    text="Закрыть до конца недели",
+                    callback_data="pstatus:pause_week",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Закрыть пока не открою",
+                    callback_data="pstatus:close",
+                )
+            ],
         ]
     )
 

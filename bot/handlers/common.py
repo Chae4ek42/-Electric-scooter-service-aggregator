@@ -13,6 +13,7 @@ from bot.core.config import ADMIN_USERNAMES, SUPPORT_USER, COOPERATION_USER
 from bot.ui.keyboards import main_menu_kb, support_kb
 from bot.core.database import async_session
 from bot.domain.models import User
+from bot.texts import Btn, Client
 from sqlalchemy import select
 
 router = Router(name="common")
@@ -21,21 +22,7 @@ _WELCOME_VIDEO = (
     Path(__file__).resolve().parent.parent.parent / "media" / "client_start.mp4"
 )
 
-_WELCOME_TEXT = (
-    "Добро пожаловать в \n"
-    "<b>Service Map</b>📍\n\n"
-    "<b>Кто мы?</b>\n"
-    "Сервис подбора и контроля ремонта электросамокатов. \n"
-    "Ремонт без риска - только проверенные сервисы с гарантией.🔗\n\n"
-    "<b>Что мы делаем?</b>\n"
-    "Подберем проверенный сервис для ремонта электросамоката "
-    "за 10 минут с гарантией результата по лучшей цене. "
-    "Проконтролируем ремонт за вас🤝"
-    "Мы решаем вашу проблему  под ключ. "
-    "Вы оставляете заявку, мы подбираем сервис по вашему запросу "
-    "и проблеме, контролируем весь процесс, даем гарантию. \n\n"
-    "<i>Оставляй заявку прямо сейчас!</i>"
-)
+_WELCOME_TEXT = Client.Common.WELCOME
 
 
 def _is_admin(username: str | None) -> bool:
@@ -71,14 +58,14 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
         await message.answer(_WELCOME_TEXT, reply_markup=kb)
 
 
-@router.message(F.text == "Поддержка")
+@router.message(F.text == Btn.SUPPORT)
 async def cmd_support(message: types.Message, state: FSMContext) -> None:
     current = await state.get_state()
     if current is not None:
         await state.clear()
-        await message.answer("Процедура прервана.")
+        await message.answer(Client.PROCEDURE_INTERRUPTED)
     await message.answer(
-        "Выберите тему обращения:",
+        Client.Common.CHOOSE_SUPPORT_TOPIC,
         reply_markup=support_kb(SUPPORT_USER, COOPERATION_USER),
     )
 
@@ -86,11 +73,11 @@ async def cmd_support(message: types.Message, state: FSMContext) -> None:
 @router.message(Command("admin"))
 async def cmd_admin(message: types.Message, state: FSMContext) -> None:
     if not _is_admin(message.from_user.username):
-        await message.answer("Недоступно.")
+        await message.answer(Client.Common.UNAVAILABLE)
         return
     await state.clear()
     await message.answer(
-        "Панель администратора.",
+        Client.Common.ADMIN_PANEL,
         reply_markup=main_menu_kb(is_admin=True),
     )
 
@@ -99,6 +86,6 @@ async def cmd_admin(message: types.Message, state: FSMContext) -> None:
 async def cmd_client(message: types.Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        "Главное меню.",
+        Client.Common.MAIN_MENU,
         reply_markup=main_menu_kb(is_admin=_is_admin(message.from_user.username)),
     )

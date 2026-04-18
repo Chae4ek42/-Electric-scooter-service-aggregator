@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
-from bot.domain.models import Service, ServiceOwner
+from bot.domain.models import Service
 from bot.domain.schemas import (
     AddressInput,
     BankAccountInput,
@@ -28,6 +28,7 @@ from bot.domain.schemas import (
 from bot.domain.states import PartnerProfileFSM
 from bot.services.sheets_writer import set_service_available, update_service_row
 from bot.core.formatting import e
+from bot.texts import Btn, Partner, PARTNER_MENU_TEXTS
 from partner_bot.handlers.common import _get_owner, _sort_days, _TYPE_RU
 from partner_bot.ui.keyboards import (
     partner_main_menu_kb,
@@ -69,37 +70,20 @@ _NO_REMOD_FIELDS = {
 }
 
 
-_PARTNER_MENU_TEXTS = (
-    "Входящие заявки",
-    "История заявок",
-    "Редактировать профиль",
-    "Настройки уведомлений",
-    "Мой статус",
-    "Мой профиль",
-    "Поддержка",
-    "Открыт / Закрыт",
-    "Панель администратора",
-    "Моя анкета",
-    "Продолжить заполнение",
-    "Изменить анкету",
-)
+_PARTNER_MENU_TEXTS = PARTNER_MENU_TEXTS
 
 
-async def _require_active(event) -> tuple[ServiceOwner | None, Service | None]:
+async def _require_active(event) -> Service | None:
     tg_id = event.from_user.id
     owner = await _get_owner(tg_id)
-    if not owner or owner.status != "активный" or not owner.service_id:
+    if not owner or owner.status != "активный":
         text = "Вы не зарегистрированы или не одобрены."
         if isinstance(event, types.CallbackQuery):
             await event.answer(text, show_alert=True)
         else:
             await event.answer(text)
-        return None, None
-    async with async_session() as session:
-        svc = (
-            await session.execute(select(Service).where(Service.id == owner.service_id))
-        ).scalar_one_or_none()
-    return owner, svc
+        return None
+    return owner
 
 
 def _format_profile(svc: Service) -> str:
@@ -125,9 +109,9 @@ def _format_profile(svc: Service) -> str:
 # ── Show profile ──────────────────────────────────────────────
 
 
-@router.message(F.text == "Редактировать профиль")
+@router.message(F.text == Btn.EDIT_PROFILE)
 async def edit_profile(message: types.Message, state: FSMContext) -> None:
-    owner, svc = await _require_active(message)
+    svc = await _require_active(message)
     if not svc:
         return
     await state.clear()
@@ -139,7 +123,7 @@ async def edit_profile(message: types.Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("pedit:"))
 async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None:
-    owner, svc = await _require_active(callback)
+    svc = await _require_active(callback)
     if not svc:
         return
     field = callback.data.split(":")[1]
@@ -215,8 +199,8 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
             OrgNameInput(text=text)
         elif field == "inn":
             InnInput(text=text)
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}\nПопробуйте ещё раз:")
+    except Exception as exc:
+        await message.answer(f"Ошибка: {exc}\nПопробуйте ещё раз:")
         return
 
     needs_remod = field not in _NO_REMOD_FIELDS
@@ -230,70 +214,50 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
             await message.answer("Сервис не найден.")
             await state.clear()
             return
-        owner = (
-            await session.execute(
-                select(ServiceOwner).where(ServiceOwner.service_id == service_id)
-            )
-        ).scalar_one_or_none()
 
         if field == "name":
             svc.name = text
-            if owner:
-                owner.draft_name = text
+            svc.draft_name = text
         elif field == "address":
             svc.address = text
-            if owner:
-                owner.draft_address = text
+            svc.draft_address = text
         elif field == "phone":
             svc.phone = text
-            if owner:
-                owner.draft_phone = text
+            svc.draft_phone = text
         elif field == "telegram":
             svc.telegram_handle = text
-            if owner:
-                owner.draft_telegram = f"@{text.lstrip('@')}"
+            svc.draft_telegram = f"@{text.lstrip('@')}"
         elif field == "hours":
             parts = text.split("-")
             svc.open_time = parts[0].strip()
             svc.close_time = parts[1].strip()
-            if owner:
-                owner.draft_open_time = parts[0].strip()
-                owner.draft_close_time = parts[1].strip()
+            svc.draft_open_time = parts[0].strip()
+            svc.draft_close_time = parts[1].strip()
         elif field == "diagnostics":
             svc.diagnostics_price = float(text)
-            if owner:
-                owner.draft_diagnostics_price = float(text)
+            svc.draft_diagnostics_price = float(text)
         elif field == "metro":
             svc.nearest_metro = text
-            if owner:
-                owner.draft_metro = text
+            svc.draft_metro = text
         elif field == "hydro_price":
             svc.hydroisolation_price = text
-            if owner:
-                owner.draft_hydro_price = text
+            svc.draft_hydro_price = text
         elif field == "bank_account":
-            if owner:
-                owner.draft_bank_account = text
+            svc.draft_bank_account = text
         elif field == "bank_name":
-            if owner:
-                owner.draft_bank_name = text
+            svc.draft_bank_name = text
         elif field == "bik":
-            if owner:
-                owner.draft_bik = text
+            svc.draft_bik = text
         elif field == "corr_account":
-            if owner:
-                owner.draft_corr_account = text
+            svc.draft_corr_account = text
         elif field == "org_name":
-            if owner:
-                owner.draft_org_name = text
+            svc.draft_org_name = text
         elif field == "inn":
-            if owner:
-                owner.draft_inn = text
+            svc.draft_inn = text
 
         if needs_remod:
             svc.is_available = False
-            if owner:
-                owner.status = "ожидает"
+            svc.status = "ожидает"
         await session.commit()
 
     # Write back to Sheets
@@ -331,20 +295,40 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         )
 
 
-# ── Quick status toggle (text menu button) ────────────────────
+# ── Combined status toggle (merged "Мой статус" + "Открыт / Закрыт") ───
 
 
-@router.message(F.text == "Открыт / Закрыт")
+@router.message(F.text == Btn.SERVICE_STATUS)
 async def status_toggle_menu(message: types.Message, state: FSMContext) -> None:
     current = await state.get_state()
     if current is not None:
         await state.clear()
-        await message.answer("Процедура прервана.")
-    owner, svc = await _require_active(message)
+        await message.answer(Partner.PROCEDURE_INTERRUPTED)
+    svc = await _require_active(message)
     if not svc:
         return
+    import datetime, zoneinfo
+
+    _msk = zoneinfo.ZoneInfo("Europe/Moscow")
+    now = datetime.datetime.now(tz=_msk)
+
+    if svc.is_available:
+        status_text = "🟢 Открыт"
+        pause_info = ""
+    else:
+        status_text = "🔴 Закрыт"
+        if svc.pause_until:
+            pause_dt = svc.pause_until.astimezone(_msk)
+            pause_info = f"\nОткроется: {pause_dt.strftime('%d.%m.%Y %H:%M')}"
+        else:
+            pause_info = "\nОткроется: вручную"
+
     await message.answer(
-        f"Текущий статус: {'Открыт' if svc.is_available else 'Закрыт'}",
+        f"<b>Статус сервиса:</b> {status_text}{pause_info}\n\n"
+        "ℹ️ Эта опция показывает, доступен ли ваш сервис для клиентов. "
+        "Если вам нужно временно приостановить приём заявок "
+        "(отпуск, непредвиденные обстоятельства и т.д.), "
+        "выберите длительность паузы ниже.",
         reply_markup=quick_status_kb(),
     )
 
@@ -354,11 +338,26 @@ async def status_toggle_menu(message: types.Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "pedit:status")
 async def show_status_toggle(callback: types.CallbackQuery) -> None:
-    owner, svc = await _require_active(callback)
+    svc = await _require_active(callback)
     if not svc:
         return
+    import datetime, zoneinfo
+
+    _msk = zoneinfo.ZoneInfo("Europe/Moscow")
+
+    if svc.is_available:
+        status_text = "🟢 Открыт"
+        pause_info = ""
+    else:
+        status_text = "🔴 Закрыт"
+        if svc.pause_until:
+            pause_dt = svc.pause_until.astimezone(_msk)
+            pause_info = f"\nОткроется: {pause_dt.strftime('%d.%m.%Y %H:%M')}"
+        else:
+            pause_info = "\nОткроется: вручную"
+
     await callback.message.edit_text(
-        f"Текущий статус: {'Открыт' if svc.is_available else 'Закрыт'}",
+        f"<b>Статус сервиса:</b> {status_text}{pause_info}",
         reply_markup=quick_status_kb(),
     )
     await callback.answer()
@@ -366,16 +365,49 @@ async def show_status_toggle(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("pstatus:"))
 async def toggle_status(callback: types.CallbackQuery) -> None:
-    owner, svc = await _require_active(callback)
+    svc = await _require_active(callback)
     if not svc:
         return
-    new_val = callback.data.split(":")[1] == "open"
+
+    action = callback.data.split(":")[1]
+    import datetime, zoneinfo
+
+    _msk = zoneinfo.ZoneInfo("Europe/Moscow")
+    now = datetime.datetime.now(tz=_msk)
+
+    if action == "open":
+        new_val = True
+        pause_until = None
+        status_text = "🟢 Открыт"
+    elif action == "pause_today":
+        new_val = False
+        # Закрыть до конца текущего дня (23:59 МСК)
+        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        pause_until = end_of_day
+        status_text = f"🔴 Закрыт до {end_of_day.strftime('%d.%m %H:%M')}"
+    elif action == "pause_week":
+        new_val = False
+        # Закрыть до конца недели (воскресенье 23:59 МСК)
+        days_until_sunday = 6 - now.weekday()
+        if days_until_sunday <= 0:
+            days_until_sunday = 7
+        end_of_week = (now + datetime.timedelta(days=days_until_sunday)).replace(
+            hour=23, minute=59, second=59, microsecond=0
+        )
+        pause_until = end_of_week
+        status_text = f"🔴 Закрыт до {end_of_week.strftime('%d.%m %H:%M')}"
+    else:  # close — пока не открою
+        new_val = False
+        pause_until = None
+        status_text = "🔴 Закрыт (до ручного открытия)"
+
     async with async_session() as session:
         svc_db = (
             await session.execute(select(Service).where(Service.id == svc.id))
         ).scalar_one_or_none()
         if svc_db:
             svc_db.is_available = new_val
+            svc_db.pause_until = pause_until
             await session.commit()
 
     try:
@@ -383,16 +415,16 @@ async def toggle_status(callback: types.CallbackQuery) -> None:
     except Exception:
         logger.exception("Sheets status update failed")
 
-    status_text = "Открыт" if new_val else "Закрыт"
     logger.info(
-        "partner %s set status=%s for service %s",
+        "partner %s set status=%s pause_until=%s for service %s",
         callback.from_user.id,
-        status_text,
+        "open" if new_val else "closed",
+        pause_until,
         svc.id,
     )
     await callback.answer(f"Статус: {status_text}", show_alert=True)
     await callback.message.edit_text(
-        f"Текущий статус: {status_text}",
+        f"<b>Статус сервиса:</b> {status_text}",
         reply_markup=quick_status_kb(),
     )
 

@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
-from bot.domain.models import MetroStation, ServiceOwner, User
+from bot.domain.models import MetroStation, Service, ServiceCategory, User
 from bot.domain.schemas import (
     AddressInput,
     BankAccountInput,
@@ -24,11 +24,12 @@ from bot.domain.schemas import (
     OrgNameInput,
     PhoneInput,
     ServiceNameInput,
-    TelegramHandleInput,
     WorkHoursInput,
 )
 from bot.domain.states import RegistrationFSM
 from bot.services.metro_search import best_metro_match, top_metro_matches
+from bot.services.sheets_writer import add_service_row
+from bot.texts import TYPE_RU, Btn, PARTNER_MENU_TEXTS, Partner
 from partner_bot.handlers.common import _draft_complete, _format_draft, _get_owner
 from partner_bot.ui.keyboards import (
     BACK_BTN,
@@ -52,20 +53,7 @@ from partner_bot.ui.keyboards import (
 logger = logging.getLogger(__name__)
 router = Router(name="partner_registration")
 
-_PARTNER_MENU_TEXTS = (
-    "Входящие заявки",
-    "История заявок",
-    "Редактировать профиль",
-    "Настройки уведомлений",
-    "Мой статус",
-    "Мой профиль",
-    "Поддержка",
-    "Открыт / Закрыт",
-    "Панель администратора",
-    "Моя анкета",
-    "Продолжить заполнение",
-    "Изменить анкету",
-)
+_PARTNER_MENU_TEXTS = PARTNER_MENU_TEXTS
 
 
 def _pydantic_msg(exc: ValidationError) -> str:
@@ -116,51 +104,45 @@ async def _handle_menu_interrupt(message: types.Message, state: FSMContext) -> b
     return True
 
 
-_STYPE_TEXT = (
-    "🔧 <b>Выберите тип услуг:</b>\n\n"
-    "<b>Ремонт</b> — устранение неисправностей: "
-    "замена деталей, ремонт электроники, механики.\n\n"
-    "<b>Апгрейд</b> — модернизация и улучшение самоката: "
-    "гидроизоляция, окраска, прошивка, доп. оснащение.\n\n"
-    "<b>Комплекс</b> — и ремонт, и апгрейд."
-)
+_STYPE_TEXT = Partner.Registration.STYPE_TEXT
 
-_CATEGORY_TEXT = (
-    "⚙️ <b>Выберите категорию ремонта:</b>\n\n"
-    "⚒️ <b>Механика</b> — замена колёс, тормозов, подвески, рулевой.\n\n"
-    "⚡️ <b>Электрика</b> — контроллер, батарея, проводка, дисплей."
-)
+_CATEGORY_TEXT = Partner.Registration.CATEGORY_TEXT
 
 
-async def _ensure_owner(tg_id: int) -> ServiceOwner:
+async def _ensure_owner(tg_id: int) -> Service:
     async with async_session() as session:
-        owner = (
-            await session.execute(
-                select(ServiceOwner).where(ServiceOwner.telegram_id == tg_id)
-            )
+        svc = (
+            await session.execute(select(Service).where(Service.telegram_id == tg_id))
         ).scalar_one_or_none()
-        if owner is None:
-            owner = ServiceOwner(telegram_id=tg_id, status="ожидает")
-            session.add(owner)
+        if svc is None:
+            import datetime
+
+            svc = Service(
+                telegram_id=tg_id,
+                status="ожидает",
+                name="(не заполнено)",
+                service_type="repair",
+                is_available=False,
+                registered_at=datetime.datetime.now(tz=datetime.timezone.utc),
+            )
+            session.add(svc)
             await session.commit()
-            await session.refresh(owner)
-        return owner
+            await session.refresh(svc)
+        return svc
 
 
 async def _update_draft(tg_id: int, **kwargs) -> None:
     async with async_session() as session:
-        owner = (
-            await session.execute(
-                select(ServiceOwner).where(ServiceOwner.telegram_id == tg_id)
-            )
+        svc = (
+            await session.execute(select(Service).where(Service.telegram_id == tg_id))
         ).scalar_one_or_none()
-        if owner:
+        if svc:
             for k, v in kwargs.items():
-                setattr(owner, k, v)
+                setattr(svc, k, v)
             await session.commit()
 
 
-def _next_empty_state(owner: ServiceOwner) -> str | None:
+def _next_empty_state(owner: Service) -> str | None:
     """Find next state that needs filling."""
     if not owner.draft_name:
         return RegistrationFSM.reg_name.state
@@ -198,7 +180,7 @@ async def reg_start(callback: types.CallbackQuery, state: FSMContext) -> None:
     )
 
 
-@router.message(F.text == "Продолжить заполнение")
+@router.message(F.text == Btn.CONTINUE_DRAFT)
 async def reg_continue(message: types.Message, state: FSMContext) -> None:
     owner = await _get_owner(message.from_user.id)
     if not owner:
@@ -257,7 +239,7 @@ async def reg_continue(message: types.Message, state: FSMContext) -> None:
         await message.answer(prompt)
 
 
-@router.message(F.text == "Изменить анкету")
+@router.message(F.text == Btn.EDIT_DRAFT)
 async def edit_draft(message: types.Message, state: FSMContext) -> None:
     owner = await _get_owner(message.from_user.id)
     if not owner:
@@ -288,7 +270,6 @@ _EDIT_DRAFT_MAP = {
     "edit_draft:address": (RegistrationFSM.reg_address, "Введите адрес:"),
     "edit_draft:metro": (RegistrationFSM.reg_metro_search, "Введите станцию метро:"),
     "edit_draft:phone": (RegistrationFSM.reg_phone, "Введите телефон:"),
-    "edit_draft:telegram": (RegistrationFSM.reg_telegram, "Введите Telegram:"),
     "edit_draft:working_days": (RegistrationFSM.reg_working_days, None),
     "edit_draft:hours": (RegistrationFSM.reg_hours, "Время работы (HH:MM-HH:MM):"),
     "edit_draft:diagnostics": (
@@ -662,46 +643,15 @@ async def reg_phone(message: types.Message, state: FSMContext) -> None:
     except ValidationError as e:
         await message.answer(_pydantic_msg(e))
         return
-    await _update_draft(message.from_user.id, draft_phone=v.text)
-    if await _after_edit(message, state):
-        return
-    await state.set_state(RegistrationFSM.reg_telegram)
-    await message.answer(
-        "Введите Telegram-аккаунт (или нажмите пропустить):", reply_markup=reg_skip_kb()
-    )
-
-
-# ── Step 8: Telegram ──────────────────────────────────────────
-
-
-@router.message(RegistrationFSM.reg_telegram, F.text)
-async def reg_telegram(message: types.Message, state: FSMContext) -> None:
-    if await _handle_menu_interrupt(message, state):
-        return
-    try:
-        v = TelegramHandleInput(text=message.text)
-    except ValidationError as e:
-        await message.answer(_pydantic_msg(e))
-        return
-    await _update_draft(message.from_user.id, draft_telegram=f"@{v.text}")
+    uname = message.from_user.username
+    tg = f"@{uname}" if uname else ""
+    await _update_draft(message.from_user.id, draft_phone=v.text, draft_telegram=tg)
     if await _after_edit(message, state):
         return
     await state.update_data(selected_days=[])
     await state.set_state(RegistrationFSM.reg_working_days)
     await message.answer(
         "Выберите рабочие дни:", reply_markup=reg_working_days_kb(set())
-    )
-
-
-@router.callback_query(RegistrationFSM.reg_telegram, F.data == "reg_skip")
-async def reg_telegram_skip(callback: types.CallbackQuery, state: FSMContext) -> None:
-    await _update_draft(callback.from_user.id, draft_telegram="")
-    if await _after_edit(callback, state):
-        return
-    await state.update_data(selected_days=[])
-    await state.set_state(RegistrationFSM.reg_working_days)
-    await _safe_edit_or_answer(
-        callback, "Выберите рабочие дни:", reg_working_days_kb(set())
     )
 
 
@@ -891,6 +841,53 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
         await _safe_edit_or_answer(callback, "Анкета не заполнена полностью.")
         return
 
+    # Copy draft → main fields immediately on submission
+    async with async_session() as session:
+        svc = (
+            await session.execute(
+                select(Service).where(Service.telegram_id == callback.from_user.id)
+            )
+        ).scalar_one_or_none()
+        if svc:
+            cat_id = None
+            if svc.draft_category:
+                cat = (
+                    await session.execute(
+                        select(ServiceCategory).where(
+                            ServiceCategory.name == svc.draft_category
+                        )
+                    )
+                ).scalar_one_or_none()
+                if cat:
+                    cat_id = cat.id
+
+            svc.name = svc.draft_name or "Без названия"
+            svc.service_type = svc.draft_service_type or "repair"
+            svc.category_id = cat_id
+            svc.address = svc.draft_address
+            svc.nearest_metro = svc.draft_metro
+            svc.phone = svc.draft_phone
+            svc.telegram_handle = svc.draft_telegram
+            svc.open_time = svc.draft_open_time
+            svc.close_time = svc.draft_close_time
+            svc.has_hydroisolation = svc.draft_hydroisolation
+            svc.hydroisolation_price = svc.draft_hydro_price
+            svc.diagnostics_price = svc.draft_diagnostics_price
+            svc.diagnostics_included = svc.draft_diag_included
+            svc.upgrade_categories = svc.draft_upgrade_categories
+            svc.working_days = svc.draft_working_days
+            svc.is_available = False
+            svc.registration_complete = True
+            await session.commit()
+            await session.refresh(svc)
+
+        # Write to Google Sheets (status = "ожидает", is_available = False)
+        if svc:
+            try:
+                add_service_row(svc)
+            except Exception:
+                logger.exception("Failed to write submitted service to Sheets")
+
     logger.info("partner %s submitted registration draft", callback.from_user.id)
     await state.clear()
     await _safe_edit_or_answer(
@@ -965,7 +962,6 @@ _STATE_ORDER = [
     RegistrationFSM.reg_metro_search,
     RegistrationFSM.reg_metro_confirm,
     RegistrationFSM.reg_phone,
-    RegistrationFSM.reg_telegram,
     RegistrationFSM.reg_working_days,
     RegistrationFSM.reg_hours,
     RegistrationFSM.reg_diagnostics,
@@ -1004,7 +1000,6 @@ _STATE_PROMPTS = {
     RegistrationFSM.reg_address.state: ("Введите адрес:", reg_back_kb()),
     RegistrationFSM.reg_metro_search.state: ("Введите станцию метро:", reg_back_kb()),
     RegistrationFSM.reg_phone.state: ("Введите телефон:", reg_back_kb()),
-    RegistrationFSM.reg_telegram.state: ("Введите Telegram:", reg_skip_kb()),
     RegistrationFSM.reg_working_days.state: (
         "Выберите рабочие дни:",
         reg_working_days_kb(set()),

@@ -63,6 +63,7 @@ _HEADER_TO_FIELD: dict[str, str] = {
     "входит в стоимость": "diagnostics_included",
     "категории апгрейда": "upgrade_categories",
     "рабочие дни": "working_days",
+    "завершена": "registration_complete",
 }
 
 
@@ -309,6 +310,14 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
             upgrade_categories = _col(row, "Категории апгрейда") or None
             working_days = _col(row, "Рабочие дни") or None
 
+            raw_reg_complete = _col(row, "Завершена", "да").lower()
+            registration_complete = raw_reg_complete in (
+                "да",
+                "yes",
+                "1",
+                "true",
+            )
+
             existing = (
                 await session.execute(select(Service).where(Service.name == name))
             ).scalar_one_or_none()
@@ -337,6 +346,7 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
                     ("diagnostics_included", diag_included),
                     ("upgrade_categories", upgrade_categories),
                     ("working_days", working_days),
+                    ("registration_complete", registration_complete),
                 ]:
                     if getattr(existing, attr) != val:
                         setattr(existing, attr, val)
@@ -370,6 +380,7 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
                         diagnostics_included=diag_included,
                         upgrade_categories=upgrade_categories,
                         working_days=working_days,
+                        registration_complete=registration_complete,
                     )
                 )
                 added += 1

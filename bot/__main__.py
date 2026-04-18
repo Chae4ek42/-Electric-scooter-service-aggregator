@@ -12,7 +12,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 import datetime
 
-from bot.core.config import BOT_TOKEN, REDIS_URL, SHEETS_SYNC_INTERVAL
+from bot.core.config import BOT_TOKEN, REDIS_URL
 from bot.handlers.admin import router as admin_router
 from bot.handlers.common import router as common_router
 from bot.handlers.order import router as order_router
@@ -23,7 +23,6 @@ from bot.core.middlewares import (
 )
 from bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
 from bot.services.seed import init_db
-from bot.services.sheets_sync import run_full_sync
 
 
 def _setup_logging() -> None:
@@ -35,17 +34,6 @@ def _setup_logging() -> None:
     )
     logging.basicConfig(level=logging.INFO, handlers=[handler])
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
-
-
-async def _sheets_sync_loop(interval: int) -> None:
-    """Фоновая задача: синх каждые N секунд."""
-    logger = logging.getLogger(__name__)
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            await run_full_sync()
-        except Exception as exc:
-            logger.error("Sheets sync error: %s", exc)
 
 
 async def _payment_expire_loop() -> None:
@@ -98,11 +86,6 @@ async def main() -> None:
     logger.info("Initialising database …")
     await init_db()
 
-    # Первичная синхронизация с Google Sheets.
-    # Любая ошибка (сетевая или логическая) — бот не стартует.
-    logger.info("Синхронизация с Google Sheets …")
-    await run_full_sync(first_run=True)
-
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -136,7 +119,6 @@ async def main() -> None:
     try:
         # Стартуем фоновую синхронизацию и polling параллельно
         await asyncio.gather(
-            _sheets_sync_loop(SHEETS_SYNC_INTERVAL),
             _payment_expire_loop(),
             fsm_reminder_loop(bot, "client"),
             dp.start_polling(bot),

@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
 from bot.core.formatting import e
-from partner_bot.handlers.common import _draft_complete
+from bot.texts import TYPE_RU, ORDER_STATUS_RU, Btn, Client
 from bot.ui.keyboards import (
     ADMIN_PAGE_SIZE,
     admin_filter_kb,
@@ -33,7 +33,6 @@ from bot.domain.models import (
     Order,
     Service,
     ServiceCategory,
-    ServiceOwner,
     User,
 )
 
@@ -65,21 +64,7 @@ class AdminFSM(StatesGroup):
 
 # ── Статусы — человеческие названия ──────────────────────────
 
-_STATUS_RU: dict[str, str] = {
-    "new": "Новая",
-    "awaiting_payment": "Ожидает оплаты",
-    "paid": "Оплачено",
-    "accepted": "Принята",
-    "in_progress": "В работе",
-    "ready_for_pickup": "Готов к выдаче",
-    "interrupted": "Прервана",
-    "completed": "Завершена",
-    "cancelled": "Отменена",
-    "client_refused": "Клиент отказался",
-    "disputed": "Оспорена",
-    "rejected_by_partner": "Отклонена",
-    "no_center": "Не найден центр",
-}
+_STATUS_RU = ORDER_STATUS_RU
 
 
 # ── Helpers ───────────────────────────────────────────────────
@@ -87,7 +72,7 @@ _STATUS_RU: dict[str, str] = {
 
 def _fmt_order(order: Order) -> str:
     """Format full order card in HTML."""
-    _TYPE_RU = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
+    _TYPE_RU = TYPE_RU
     # Модель
     if order.brand_custom_name:
         model_str = e(order.brand_custom_name)
@@ -181,11 +166,7 @@ async def _get_orders(
     page: int,
     status_filter: str | None = None,
 ) -> tuple[list[Order], int, int]:
-    """Возвращает (заявки на странице, total_pages, total_count).
-
-    Без фильтра скрываем черновики (awaiting_payment) — они ещё
-    не подтверждены оплатой и не считаются оформленными.
-    """
+    """Возвращает (заявки на странице, total_pages, total_count)."""
     offset = page * ADMIN_PAGE_SIZE
     async with async_session() as session:
         query = select(Order)
@@ -193,9 +174,6 @@ async def _get_orders(
         if status_filter:
             query = query.where(Order.status == status_filter)
             count_q = count_q.where(Order.status == status_filter)
-        else:
-            query = query.where(Order.status != "awaiting_payment")
-            count_q = count_q.where(Order.status != "awaiting_payment")
         total: int = (await session.execute(count_q)).scalar_one()
         orders = (
             (
@@ -208,6 +186,13 @@ async def _get_orders(
             .scalars()
             .all()
         )
+    logger.info(
+        "ADM_ORDERS | page=%d | filter=%s | total=%d | page_size=%d",
+        page,
+        status_filter,
+        total,
+        len(orders),
+    )
     total_pages = max(1, math.ceil(total / ADMIN_PAGE_SIZE))
     return list(orders), total_pages, total
 
@@ -230,17 +215,30 @@ async def _send_or_edit(
 # ══════════════════════════════════════════════════════════════
 
 
-@router.message(F.text == "Панель администратора")
+@router.message(F.text == Btn.ADMIN_PANEL)
 async def admin_enter(message: types.Message, state: FSMContext) -> None:
     await state.clear()
     async with async_session() as session:
         total = (
             await session.execute(select(func.count()).select_from(Order))
         ).scalar_one()
-        stats_rows = await session.execute(
-            select(Order.status, func.count(Order.id)).group_by(Order.status)
-        )
-    stat_lines = [f"<b>Всего заявок:</b> {total}", ""]
+        stats_rows = (
+            await session.execute(
+                select(Order.status, func.count(Order.id)).group_by(Order.status)
+            )
+        ).all()
+        partner_total = (
+            await session.execute(
+                select(func.count())
+                .select_from(Service)
+                .where(Service.telegram_id.isnot(None))
+            )
+        ).scalar_one()
+    stat_lines = [
+        f"<b>Партнёров:</b> {partner_total}",
+        f"<b>Заявок:</b> {total}",
+        "",
+    ]
     for status, cnt in stats_rows:
         stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
     await message.answer("\n".join(stat_lines), reply_markup=admin_main_kb())
@@ -258,10 +256,23 @@ async def adm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
         total = (
             await session.execute(select(func.count()).select_from(Order))
         ).scalar_one()
-        stats_rows = await session.execute(
-            select(Order.status, func.count(Order.id)).group_by(Order.status)
-        )
-    stat_lines = [f"<b>Всего заявок:</b> {total}", ""]
+        stats_rows = (
+            await session.execute(
+                select(Order.status, func.count(Order.id)).group_by(Order.status)
+            )
+        ).all()
+        partner_total = (
+            await session.execute(
+                select(func.count())
+                .select_from(Service)
+                .where(Service.telegram_id.isnot(None))
+            )
+        ).scalar_one()
+    stat_lines = [
+        f"<b>Партнёров:</b> {partner_total}",
+        f"<b>Заявок:</b> {total}",
+        "",
+    ]
     for status, cnt in stats_rows:
         stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
     await cb.message.edit_text("\n".join(stat_lines), reply_markup=admin_main_kb())
@@ -273,11 +284,11 @@ async def adm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
 # ══════════════════════════════════════════════════════════════
 
 
-@router.message(F.text == "Выйти из панели")
+@router.message(F.text == Btn.EXIT_PANEL)
 async def admin_exit(message: types.Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        "Вы вышли из панели администратора.",
+        Client.Admin.EXIT,
         reply_markup=main_menu_kb(is_admin=True),
     )
 
@@ -290,7 +301,7 @@ async def admin_exit(message: types.Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "adm:filter")
 async def adm_filter(cb: types.CallbackQuery) -> None:
     await cb.message.edit_text(
-        "Выберите статус для фильтрации:", reply_markup=admin_filter_kb()
+        Client.Admin.CHOOSE_STATUS_FILTER, reply_markup=admin_filter_kb()
     )
     await cb.answer()
 
@@ -312,10 +323,13 @@ async def adm_orders_list(cb: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminFSM.orders_list)
 
     if not orders:
-        await cb.message.edit_text(
-            "Заявки не найдены.",
-            reply_markup=admin_main_kb(),
-        )
+        try:
+            await cb.message.edit_text(
+                "Заявки не найдены.",
+                reply_markup=admin_main_kb(),
+            )
+        except TelegramBadRequest:
+            pass
         await cb.answer()
         return
 
@@ -329,8 +343,8 @@ async def adm_orders_list(cb: types.CallbackQuery, state: FSMContext) -> None:
             f"<b>{header}:</b> {total_count} (стр. {page + 1}/{total_pages})",
             reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
         )
-    except Exception as e:
-        if "message is not modified" not in str(e):
+    except Exception as exc:
+        if "message is not modified" not in str(exc):
             raise
     await cb.answer()
 
@@ -425,8 +439,8 @@ async def adm_back_to_list(cb: types.CallbackQuery, state: FSMContext) -> None:
             f"<b>{header}:</b> {total_count} (стр. {page + 1}/{total_pages})",
             reply_markup=admin_orders_kb(orders, page, total_pages, status_filter),
         )
-    except Exception as e:
-        if "message is not modified" not in str(e):
+    except Exception as exc:
+        if "message is not modified" not in str(exc):
             raise
     await cb.answer()
 
@@ -454,7 +468,7 @@ _PARTNER_STATUS_RU: dict[str, str] = {
 }
 
 
-def _fmt_partner_short(owner: ServiceOwner) -> str:
+def _fmt_partner_short(owner: Service) -> str:
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
     lines = [
         f"<b>Партнёр #</b><code>{owner.id}</code>",
@@ -478,16 +492,19 @@ async def adm_partners_list(cb: types.CallbackQuery) -> None:
         all_owners = (
             (
                 await session.execute(
-                    select(ServiceOwner).order_by(ServiceOwner.registered_at.desc())
+                    select(Service)
+                    .where(Service.telegram_id.isnot(None))
+                    .order_by(Service.registered_at.desc())
                 )
             )
             .scalars()
             .all()
         )
-    # Hide partners with incomplete drafts
-    filtered = [o for o in all_owners if o.status != "ожидает" or _draft_complete(o)]
-    total = len(filtered)
-    owners = filtered[page * ADMIN_PAGE_SIZE : (page + 1) * ADMIN_PAGE_SIZE]
+    total = len(all_owners)
+    owners = all_owners[page * ADMIN_PAGE_SIZE : (page + 1) * ADMIN_PAGE_SIZE]
+    logger.info(
+        "ADM_PARTNERS | total=%d | page=%d | page_size=%d", total, page, len(owners)
+    )
     total_pages = max(1, math.ceil(total / ADMIN_PAGE_SIZE))
     if not owners:
         try:
@@ -547,9 +564,7 @@ async def adm_partner_detail(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
     async with async_session() as session:
         owner = (
-            await session.execute(
-                select(ServiceOwner).where(ServiceOwner.id == owner_id)
-            )
+            await session.execute(select(Service).where(Service.id == owner_id))
         ).scalar_one_or_none()
     if not owner:
         await cb.answer("Партнёр не найден.", show_alert=True)

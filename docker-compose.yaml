@@ -50,5 +50,22 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  sync-service:
+    build: .
+    command: python -m sync_service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=Europe/Moscow
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+      - ./service-account-key.json:/app/service-account-key.json:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   redis_data:

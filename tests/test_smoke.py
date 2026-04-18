@@ -296,15 +296,14 @@ async def test_all() -> None:
         await session.commit()
         print("    ✅ UserAction OK")
 
-    # 13. ServiceOwner statuses in Russian
-    print("\n[13] Testing Russian status constants …")
-    from bot.domain.models import ServiceOwner as SO
+    # 13. Service owner-related columns
+    print("\n[13] Testing Service owner columns …")
+    from bot.domain.models import Service as SVC
 
-    col = SO.__table__.columns["status"]
-    assert (
-        col.default.arg == "ожидает"
-    ), f"Default is '{col.default.arg}', expected 'ожидает'"
-    print("    ServiceOwner.status default = 'ожидает'")
+    svc_cols = {c.name for c in SVC.__table__.columns}
+    assert "status" in svc_cols, "Service must have 'status' column"
+    assert "telegram_id" in svc_cols, "Service must have 'telegram_id' column"
+    print("    Service has status & telegram_id columns")
 
     from partner_bot.handlers.admin import _STATUS_RU
 

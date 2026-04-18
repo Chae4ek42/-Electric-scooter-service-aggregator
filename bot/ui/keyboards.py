@@ -19,6 +19,7 @@ from bot.core.config import (
     WORK_HOUR_START,
     TIME_SLOT_MINUTES,
 )
+from bot.texts import Btn
 
 _MOSCOW_TZ = zoneinfo.ZoneInfo("Europe/Moscow")
 
@@ -27,14 +28,14 @@ _MOSCOW_TZ = zoneinfo.ZoneInfo("Europe/Moscow")
 
 def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = [
-        [KeyboardButton(text="Оставить заявку")],
+        [KeyboardButton(text=Btn.SUBMIT_ORDER)],
         [
-            KeyboardButton(text="Мои заявки"),
-            KeyboardButton(text="Поддержка"),
+            KeyboardButton(text=Btn.MY_ORDERS),
+            KeyboardButton(text=Btn.SUPPORT),
         ],
     ]
     if is_admin:
-        rows.append([KeyboardButton(text="Панель администратора")])
+        rows.append([KeyboardButton(text=Btn.ADMIN_PANEL)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 

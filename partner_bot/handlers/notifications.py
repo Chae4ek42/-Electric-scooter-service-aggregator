@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from bot.core.database import async_session
 from bot.domain.models import ServiceOwnerSettings
+from bot.texts import Btn, Partner
 from partner_bot.handlers.common import _get_owner
 from partner_bot.ui.keyboards import notif_settings_kb
 
@@ -39,15 +40,15 @@ async def _get_or_create_settings(owner_id: int) -> ServiceOwnerSettings:
     return settings
 
 
-@router.message(F.text == "Настройки уведомлений")
+@router.message(F.text == Btn.NOTIF_SETTINGS)
 async def notif_menu(message: types.Message) -> None:
     owner = await _get_owner(message.from_user.id)
     if not owner or owner.status != "активный":
-        await message.answer("Доступно только для активных партнёров.")
+        await message.answer(Partner.Notifications.ACTIVE_ONLY)
         return
     settings = await _get_or_create_settings(owner.id)
     await message.answer(
-        "Настройки уведомлений:",
+        Partner.Notifications.HEADER,
         reply_markup=notif_settings_kb(settings.notif_new_order, settings.notif_cancel),
     )
 
@@ -56,7 +57,7 @@ async def notif_menu(message: types.Message) -> None:
 async def toggle_notif(callback: types.CallbackQuery) -> None:
     owner = await _get_owner(callback.from_user.id)
     if not owner or owner.status != "активный":
-        await callback.answer("Недоступно.", show_alert=True)
+        await callback.answer(Partner.Notifications.UNAVAILABLE, show_alert=True)
         return
 
     field = callback.data.split(":")[2]  # new_order | cancel
@@ -83,7 +84,7 @@ async def toggle_notif(callback: types.CallbackQuery) -> None:
         cancel = settings.notif_cancel
 
     await callback.message.edit_text(
-        "Настройки уведомлений:",
+        Partner.Notifications.HEADER,
         reply_markup=notif_settings_kb(new_order, cancel),
     )
     await callback.answer()

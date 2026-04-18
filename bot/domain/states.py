@@ -35,7 +35,6 @@ class RegistrationFSM(StatesGroup):
     reg_metro_search = State()
     reg_metro_confirm = State()
     reg_phone = State()
-    reg_telegram = State()
     reg_working_days = State()
     reg_hours = State()
     reg_diagnostics = State()

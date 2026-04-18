@@ -2,7 +2,7 @@
 
 ## Описание
 
-ESAS — Telegram-бот для приёма заявок на ремонт и апгрейд электросамокатов. Написан на Python 3.12 с использованием aiogram 3.x (async FSM), SQLAlchemy 2.0 + aiosqlite (SQLite), Pydantic v2, Redis (хранение FSM-состояний и throttling). Интеграция с Google Sheets через публичный CSV-экспорт без учётных данных.
+ESAS — Telegram-бот для приёма заявок на ремонт и апгрейд электросамокатов. Написан на Python 3.12 с использованием aiogram 3.x (async FSM), SQLAlchemy 2.0 + aiosqlite (SQLite), Pydantic v2, Redis (хранение FSM-состояний и throttling). Интеграция с Google Sheets через Service Account (gspread + google-auth). Синхронизация БД ↔ Google Sheets вынесена в отдельный сервис `sync_service/`.
 
 ---
 
@@ -21,8 +21,11 @@ pip install -e .
 # 3. Запустить бота
 python -m bot
 
-# 4. Запустить тесты
-pytest tests/test_smoke.py -v
+# 4. Запустить sync-сервис (отдельно от ботов)
+python -m sync_service
+
+# 5. Запустить тесты
+pytest tests/ -v
 ```
 
 ---
@@ -66,7 +69,12 @@ bot/
 
 tests/
 ├── test_smoke.py        # 18 авто-проверок без Telegram API
-└── test_partner.py     # 126 unit-тестов схем, клавиатур, хендлеров, FSM-состояний
+├── test_partner.py     # Партнёрский бот: схемы, клавиатуры, хендлеры, FSM-состояния
+└── test_scenarios.py   # 203 теста: тексты, форматирование, метро, ранжирование, схемы, БД
+
+sync_service/
+├── __init__.py
+└── __main__.py          # Независимый сервис синхронизации Google Sheets ↔ БД
 ```
 
 ---
@@ -132,6 +140,7 @@ ORM-модели. Текущий набор полей `Service`:
 | `diagnostics_included` | `bool` | Входит ли в стоимость |
 | `upgrade_categories` | `str?` | Категории апгрейда через запятую (Окраска, Прошивка и т.д.) |
 | `working_days` | `str?` | Рабочие дни через запятую (Пн,Вт,...) |
+| `pause_until` | `datetime?` | Время окончания паузы (авто-открытие) |
 | `partnership_status` | `str?` | Статус партнёрства |
 | `main_brand_scooter` | `str?` | Основной бренд самокатов |
 | `category_id` | `int?` FK | Связь с `ServiceCategory` (Механика/Электрика) |
@@ -168,7 +177,7 @@ service_type → brand [→ brand_custom] → model [→ model_custom]
 reg_name → reg_service_type → reg_category (если ремонт)
   → reg_upgrade_categories (если апгрейд)
   → reg_hydroisolation → reg_hydro_price (если да) → reg_address → reg_metro_search → reg_metro_confirm
-    → reg_phone → reg_telegram → reg_working_days → reg_hours
+    → reg_phone → reg_working_days → reg_hours
       → reg_diagnostics → reg_diag_included → reg_legal_form → reg_tax_system
         → reg_bank_details (6 полей подряд) → reg_confirm
 ```
@@ -292,14 +301,16 @@ Middlewares применяются к `dp.message` и `dp.callback_query`:
 - Список заявок: каждая отдельным сообщением + inline-кнопки оплаты для `awaiting_payment`
 - Синхронизация из Google Sheets (сечас — лист «Сервисы», upsert по названию)
 - Панель администратора с пагинацией и сменой статусов
-- `ActionLogger` — все действия пользователя в `user_actions`
+- `ActionLogger` — все действия пользователя в `user_actions` (консольный лог на уровне `DEBUG`, ошибки — `ERROR`)
 - Throttling (0.2 сек/запрос), ErrorMiddleware- Гидроизоляция: цена (фиксированная/диапазон) из профиля → отображается клиенту, предоплата 500 руб.
 - Итоговая стоимость: партнёр вводит через кнопку «Указать итоговую стоимость», клиент получает уведомление с остатком к оплате
 - 30-минутный напоминатель о незавершённой форме (FSMActivityMiddleware + background loop). Срабатывает только для состояний анкет: `OrderFSM` (клиентский бот), `RegistrationFSM` (партнёрский бот). Прочие FSM-состояния (диспуты, редактирование профиля, действия с заявками) **не** вызывают напоминаний. При нажатии «Продолжить» пользователю повторно отправляется сообщение того этапа, на котором он остановился.
 - Отмена FSM по нажатию кнопок меню (оба бота)
 - Полное редактирование профиля (14 полей), поля без ре-модерации (метро, реквизиты)
-- Переключение Открыт/Закрыт через текстовое меню без ре-модерации
-- Команды /admin и /client для переключения режимов- Полный жизненный цикл заявки: смета партнёра → подтверждение клиентом → готовность к выдаче → оплата/оспаривание
+- Переключение Открыт/Закрыт через текстовое меню без ре-модерации (с выбором длительности паузы: на сегодня / до конца недели / пока не открою; авто-открытие через `pause_until` + фоновая задача)
+- Команды /admin и /client для переключения режимов
+- Централизованные тексты сообщений и кнопок (`bot/texts.py`) — единый источник для обоих ботов
+- Независимый сервис синхронизации Google Sheets ↔ БД (`sync_service/`) — отделён от ботов, запускается отдельным контейнером- Полный жизненный цикл заявки: смета партнёра → подтверждение клиентом → готовность к выдаче → оплата/оспаривание
 - FSM-состояния сметы (PartnerOrderFSM: cost → items → deadline → description → confirm)
 - Клиентские действия: подтверждение сметы, оплата, оспаривание (ClientOrderFSM)
 - Статусы `client_refused`, `ready_for_pickup`, `disputed`
@@ -377,7 +388,12 @@ bot/
 
 tests/
 ├── test_smoke.py        # Комплексный smoke-тест без Telegram API
-└── test_partner.py      # 144 теста: схемы, модели, состояния, клавиатуры, импорты
+├── test_partner.py      # Партнёрский бот: схемы, модели, состояния, клавиатуры, импорты
+└── test_scenarios.py    # 203 теста: тексты, метро-граф, ранжирование, схемы, БД-интеграция
+
+sync_service/
+├── __init__.py
+└── __main__.py          # Независимый сервис синхронизации Google Sheets ↔ БД
 ```
 
 ---
@@ -404,6 +420,19 @@ ORM-модели. `Order.model_id` — nullable (поддерживает кно
 
 ### `bot/services/seed.py`
 `init_db()` — создаёт таблицы через `Base.metadata.create_all`, применяет inline-миграции (ALTER TABLE), вызывает `seed_database()`.
+
+### `bot/texts.py`
+Единый источник всех текстов сообщений и подписей кнопок. Вложенная структура:
+- `TYPE_RU`, `ORDER_STATUS_RU`, `PARTNER_STATUS_RU` — словари для отображения enum → русский текст
+- `Btn` — константы подписей кнопок (единое место для клавиатур и фильтров `F.text`)
+- `PARTNER_MENU_TEXTS` — кортеж всех партнёрских кнопок меню (для проверки прерывания FSM)
+- `Client` — тексты клиентского бота (вложенные: `Common`, `Order`, `Admin`)
+- `Partner` — тексты партнёрского бота (вложенные: `Common`, `Profile`, `Orders`, `Registration`, `Admin`, `Notifications`)
+
+Все хендлеры и клавиатуры импортируют тексты из `bot.texts` вместо inline-строк.
+
+### `sync_service/__main__.py`
+Независимый сервис синхронизации БД ↔ Google Sheets. Запускается отдельно от ботов (`python -m sync_service`). При старте выполняет `init_db()` + первичную синхронизацию, затем в цикле вызывает `run_full_sync()` каждые `SHEETS_SYNC_INTERVAL` секунд. Боты больше не содержат sync-loop — вся периодическая синхронизация централизована здесь.
 
 ### `bot/handlers/order.py`
 Самый большой модуль (~840 строк). Обрабатывает весь пользовательский flow. Содержит универсальный обработчик `back` (if/elif по текущему состоянию), catch-all для неожиданного текста.

@@ -30,7 +30,7 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 
 **Перехват ответов бота:** `_ResponseCapture` временно оборачивает `Bot.send_message` и `Bot.edit_message_text` через `unittest.mock.patch.object`. Обёртки устанавливаются перед вызовом хендлера и снимаются в `finally`.
 
-**Реализовано:** ✅ Middleware перехватывает `Message` и `CallbackQuery`. В лог выводится: `@username`, `action`, `state`, `payload`, `status`, `response_type`. User ID и elapsed time **не логируются** (конфиденциальность и лаконичность).
+**Уровень логирования:** Успешные действия пользователей записываются на уровне `DEBUG` (по умолчанию не отображаются в консоли). Ошибки записываются на уровне `ERROR`. Для просмотра пользовательских действий установите уровень логгера `bot.core.middlewares` в `DEBUG`. Все действия также сохраняются в таблицу `user_actions` в БД независимо от уровня логирования.
 
 ---
 

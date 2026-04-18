@@ -9,13 +9,13 @@
 | `brands` | `id`, `name` |
 | `models` | `id`, `brand_id` (FK), `name` |
 | `service_categories` | `id`, `name` (Механика / Электрика) |
-| `services` | `id`, `category_id` (FK, nullable), `name`, `service_type`, `is_available`, `address`, `yandex_rating`, `nearest_metro`, `phone`, `telegram_handle`, `partnership_status`, `main_brand_scooter`, `open_time`, `close_time`, `has_hydroisolation`, `diagnostics_price`, `diagnostics_included`, `upgrade_categories`, `working_days` |
+| `services` | `id`, `category_id` (FK, nullable), `name`, `service_type`, `is_available`, `address`, `yandex_rating`, `nearest_metro`, `phone`, `telegram_handle`, `partnership_status`, `main_brand_scooter`, `open_time`, `close_time`, `has_hydroisolation`, `diagnostics_price`, `diagnostics_included`, `upgrade_categories`, `working_days`, `pause_until`, `registration_complete` (Boolean), `telegram_id` (BigInteger, unique, nullable), `status`, `registered_at`, `approved_at`, `approved_by`, `draft_*` (22 поля анкеты) |
 | `metro_stations` | `id`, `name`, `line`, `lat` (nullable), `lon` (nullable) |
 
 **`service_type`**: `'repair'` — только ремонт, `'upgrade'` — только апгрейд, `'complex'` — оба типа.
 
 **`is_available`**: `Boolean`, `default=True`. Синхронизируется из колонки «Доступен» в Google Sheets. Все запросы к списку сервисов фильтруют `is_available.is_(True)`.
-
+**`registration_complete`**: `Boolean`, `default=False`. Сервис виден клиентам только при `registration_complete = True`. Устанавливается в `True` при импорте из Google Sheets и при одобрении анкеты партнёра админом.
 > Удалённые поля: `price`, `top_service`. Данные о сервисах в seed не вносятся — всё из Google Sheets.
 
 ### Пользователи и заявки
@@ -24,8 +24,7 @@
 |---|---|
 | `users` | `id` (TG BigInteger), `username`, `full_name`, `created_at` |
 | `orders` | `id`, `user_id` (FK), `service_id` (FK, **nullable**), `model_id` (FK, **nullable**), `model_custom_name`, `brand_custom_name`, `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `total_cost`, `partner_comment`, `reject_reason`, `estimate_cost`, `estimate_items`, `estimate_deadline`, `estimate_description`, `client_visited`, `client_confirmed_estimate`, `dispute_reason`, `refusal_reason`, `accepted_at`, `completed_at`, `status`, `created_at` |
-| `service_owners` | `id`, `telegram_id` (BigInteger, unique), `service_id` (FK, nullable), `status`, `registered_at`, `approved_at`, `approved_by`, `draft_*` (22 поля анкеты: name, service_type, category, address, metro, phone, telegram, open_time, close_time, hydroisolation, diagnostics_price, diag_included, upgrade_categories, working_days, legal_form, tax_system, bank_account, bank_name, bik, corr_account, org_name, inn) |
-| `service_owner_settings` | `owner_id` (PK, FK), `notif_new_order`, `notif_cancel` |
+| `service_owner_settings` | `owner_id` (PK, FK → services.id), `notif_new_order`, `notif_cancel` |
 | `sheets_retry_queue` | `id`, `service_id` (FK), `operation`, `payload_json`, `attempts`, `last_attempt_at`, `created_at` |
 
 **Статусы заявки:**
@@ -224,6 +223,7 @@ result: RankingResult = await rank_services(ctx, session, limit=1)
 **Фильтрация:**
 - `service_type`: `'repair'` → `IN ('repair', 'complex')`, `'upgrade'` → `IN ('upgrade', 'complex')`
 - `is_available IS TRUE`
+- Незаконченные анкеты исключаются: `telegram_id IS NULL OR status = 'активный'`
 - Гидроизоляция: `has_hydroisolation IS TRUE` (независимо от `service_type`)
 - Фильтр по времени работы (`open_time` / `close_time` vs `scheduled_time`)
 - Если ни один сервис не подходит по времени — fallback: возвращает всех + `time_fallback=True` + `suggested_time`

@@ -51,6 +51,8 @@ _FIELD_GETTERS: dict[str, Callable[[Service], str]] = {
     "входит в стоимость": lambda s: "Да" if s.diagnostics_included else "Нет",
     "категории апгрейда": lambda s: s.upgrade_categories or "",
     "рабочие дни": lambda s: (s.working_days or "").replace(",", ", "),
+    "дни недели": lambda s: (s.working_days or "").replace(",", ", "),
+    "завершена": lambda s: "Да" if s.registration_complete else "Нет",
 }
 
 

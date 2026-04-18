@@ -307,6 +307,7 @@ async def rank_services(
             select(Service)
             .where(Service.is_available.is_(True))
             .where(Service.has_hydroisolation.is_(True))
+            .where(Service.registration_complete.is_(True))
         )
     else:
         if ctx.service_type == "repair":
@@ -320,6 +321,7 @@ async def rank_services(
             select(Service)
             .where(Service.service_type.in_(allowed_types))
             .where(Service.is_available.is_(True))
+            .where(Service.registration_complete.is_(True))
         )
 
         if ctx.malfunction_category:

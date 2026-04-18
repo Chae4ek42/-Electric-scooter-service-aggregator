@@ -88,6 +88,58 @@ class Service(Base):
     main_brand_scooter: Mapped[str | None] = mapped_column(String(200), nullable=True)
     upgrade_categories: Mapped[str | None] = mapped_column(String(500), nullable=True)
     working_days: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    pause_until: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Анкета завершена (True для импортированных из Sheets и одобренных партнёров)
+    registration_complete: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
+    # ── Поля владельца (бывший ServiceOwner) ──────────────────
+    telegram_id: Mapped[int | None] = mapped_column(
+        BigInteger, unique=True, nullable=True
+    )
+    status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    registered_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # Registration draft fields
+    draft_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    draft_service_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    draft_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    draft_address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    draft_metro: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    draft_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    draft_telegram: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    draft_open_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    draft_close_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    draft_hydroisolation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    draft_hydro_price: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    draft_diagnostics_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    draft_diag_included: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    draft_upgrade_categories: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
+    draft_working_days: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    draft_legal_form: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    draft_tax_system: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    draft_bank_account: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    draft_bank_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    draft_bik: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    draft_corr_account: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    draft_org_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    draft_inn: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     category_rel: Mapped["ServiceCategory | None"] = relationship(
         back_populates="services", lazy="selectin"
@@ -197,63 +249,10 @@ class UserAction(Base):
     )
 
 
-class ServiceOwner(Base):
-    __tablename__ = "service_owners"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
-    service_id: Mapped[int | None] = mapped_column(
-        ForeignKey("services.id"), nullable=True
-    )
-    status: Mapped[str] = mapped_column(String(20), default="ожидает")
-    registered_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    approved_at: Mapped[datetime.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    approved_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
-
-    # Registration draft fields (stored before approval)
-    draft_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    draft_service_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    draft_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    draft_address: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    draft_metro: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    draft_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    draft_telegram: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    draft_open_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
-    draft_close_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
-    draft_hydroisolation: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    draft_hydro_price: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    draft_diagnostics_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    draft_diag_included: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    draft_upgrade_categories: Mapped[str | None] = mapped_column(
-        String(500), nullable=True
-    )
-    draft_working_days: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    draft_legal_form: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    draft_tax_system: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    draft_bank_account: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    draft_bank_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    draft_bik: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    draft_corr_account: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    draft_org_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    draft_inn: Mapped[str | None] = mapped_column(String(20), nullable=True)
-
-    service: Mapped["Service | None"] = relationship(lazy="selectin")
-
-
 class ServiceOwnerSettings(Base):
     __tablename__ = "service_owner_settings"
 
-    owner_id: Mapped[int] = mapped_column(
-        ForeignKey("service_owners.id"), primary_key=True
-    )
+    owner_id: Mapped[int] = mapped_column(ForeignKey("services.id"), primary_key=True)
     notif_new_order: Mapped[bool] = mapped_column(Boolean, default=True)
     notif_cancel: Mapped[bool] = mapped_column(Boolean, default=True)
 

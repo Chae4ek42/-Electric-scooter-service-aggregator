@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from bot.core.config import ADMIN_USERNAMES
 from bot.core.database import async_session
-from bot.domain.models import Service, ServiceOwner, User
+from bot.domain.models import Service, User
 from bot.domain.states import (
     RegistrationFSM,
 )
@@ -33,11 +33,19 @@ from partner_bot.ui.keyboards import (
 )
 
 from bot.core.formatting import e
+from bot.texts import (
+    TYPE_RU,
+    PARTNER_STATUS_RU,
+    Btn,
+    PARTNER_MENU_TEXTS,
+    Partner,
+    Client,
+)
 
 # Keep _md_escape as alias so profile.py imports keep working
 _md_escape = e
 
-_TYPE_RU = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
+_TYPE_RU = TYPE_RU
 _DAY_ORDER = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 logger = logging.getLogger(__name__)
@@ -52,16 +60,14 @@ def _sort_days(raw: str | None) -> str:
     return ", ".join(d for d in _DAY_ORDER if d in days)
 
 
-async def _get_owner(tg_id: int) -> ServiceOwner | None:
+async def _get_owner(tg_id: int) -> Service | None:
     async with async_session() as session:
         return (
-            await session.execute(
-                select(ServiceOwner).where(ServiceOwner.telegram_id == tg_id)
-            )
+            await session.execute(select(Service).where(Service.telegram_id == tg_id))
         ).scalar_one_or_none()
 
 
-def _draft_complete(owner: ServiceOwner) -> bool:
+def _draft_complete(owner: Service) -> bool:
     required = [
         owner.draft_name,
         owner.draft_service_type,
@@ -86,14 +92,9 @@ def _draft_complete(owner: ServiceOwner) -> bool:
     return all(required)
 
 
-def _format_draft(owner: ServiceOwner) -> str:
-    type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
-    _status_ru = {
-        "ожидает": "Ожидает модерации",
-        "активный": "Активный",
-        "отклонён": "Отклонён",
-        "приостановлен": "Приостановлен",
-    }
+def _format_draft(owner: Service) -> str:
+    type_map = TYPE_RU
+    _status_ru = PARTNER_STATUS_RU
     type_label = type_map.get(
         owner.draft_service_type or "", owner.draft_service_type or "(не заполнено)"
     )
@@ -171,24 +172,14 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
     # Администраторы видят только панель администратора (не партнёрский интерфейс)
     if is_admin and (owner is None or owner.status != "активный"):
         await message.answer(
-            "Service Map\n\nВы авторизованы как администратор.",
+            Partner.Common.WELCOME_ADMIN,
             reply_markup=admin_only_menu_kb(),
         )
         return
 
     if owner is None:
         await message.answer(
-            "Добро пожаловать в <b>Service Map</b>!\n\n"
-            "🗺 <b>Service Map для партнёров</b>\n\n"
-            "Мы — платформа, которая помогает клиентам находить "
-            "ближайшие сервисные центры по ремонту и апгрейду электросамокатов.\n\n"
-            "Зарегистрируйте свой сервис — и получайте заявки "
-            "от клиентов автоматически.\n\n"
-            "📋 <b>Как это работает:</b>\n"
-            "1. Заполните анкету\n"
-            "2. Пройдите модерацию\n"
-            "3. Получайте заявки и управляйте ими прямо в боте\n\n"
-            "Нажмите кнопку ниже, чтобы начать регистрацию.",
+            Partner.Common.WELCOME_NEW,
             reply_markup=reg_start_kb(),
         )
         return
@@ -198,130 +189,79 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
         complete = _draft_complete(owner)
         if complete:
             await message.answer(
-                "Ваша анкета отправлена на модерацию. Ожидайте одобрения.",
+                Partner.Common.DRAFT_PENDING,
                 reply_markup=partner_pending_menu_kb(
                     has_draft=False, is_admin=is_admin
                 ),
             )
         else:
             await message.answer(
-                "У вас есть незавершенная анкета. Продолжите заполнение.",
+                Partner.Common.DRAFT_INCOMPLETE,
                 reply_markup=partner_pending_menu_kb(has_draft=True, is_admin=is_admin),
             )
         return
 
     if owner.status == "отклонён":
-        await message.answer(
-            "Ваша заявка была отклонена. Обратитесь в поддержку.",
-        )
+        await message.answer(Partner.Common.REJECTED)
         return
 
     if owner.status == "приостановлен":
-        await message.answer("Ваш аккаунт приостановлен. Обратитесь в поддержку.")
+        await message.answer(Partner.Common.SUSPENDED)
         return
 
     # active
-    svc_name = ""
-    if owner.service_id:
-        async with async_session() as session:
-            svc = (
-                await session.execute(
-                    select(Service).where(Service.id == owner.service_id)
-                )
-            ).scalar_one_or_none()
-            svc_name = svc.name if svc else ""
-
-    greeting = f"Service Map \u2014 {e(svc_name)}"
+    greeting = f"Service Map \u2014 {e(owner.name)}"
     await message.answer(
         f"{greeting}\n\nВыберите действие:",
         reply_markup=partner_main_menu_kb(is_admin=is_admin),
     )
 
 
-@router.message(F.text == "Моя анкета")
+@router.message(F.text == Btn.MY_DRAFT)
 async def show_draft(message: types.Message) -> None:
     owner = await _get_owner(message.from_user.id)
     if not owner:
-        await message.answer("Вы не зарегистрированы.", reply_markup=reg_start_kb())
+        await message.answer(Partner.NOT_REGISTERED, reply_markup=reg_start_kb())
         return
     await message.answer(_format_draft(owner))
 
 
-@router.message(F.text == "Мой статус")
-async def show_status(message: types.Message) -> None:
-    owner = await _get_owner(message.from_user.id)
-    if not owner:
-        await message.answer("Вы не зарегистрированы.")
-        return
-
-    if owner.status != "активный" or not owner.service_id:
-        await message.answer(f"Статус: {owner.status}")
-        return
-
-    async with async_session() as session:
-        svc = (
-            await session.execute(select(Service).where(Service.id == owner.service_id))
-        ).scalar_one_or_none()
-
-    if not svc:
-        await message.answer("Сервис не найден.")
-        return
-
-    status_text = "🟢 Открыт" if svc.is_available else "🔴 Закрыт"
-    await message.answer(
-        f"<b>Статус сервиса:</b> {status_text}\n\n"
-        "ℹ️ Эта опция показывает, доступен ли ваш сервис для клиентов. "
-        "Если вам нужно временно приостановить приём заявок "
-        "(отпуск, непредвиденные обстоятельства и т.д.), "
-        "используйте кнопку «Открыт / Закрыт»."
-    )
-
-
-@router.message(F.text == "Мой профиль")
+@router.message(F.text == Btn.MY_PROFILE)
 async def show_profile(message: types.Message) -> None:
     owner = await _get_owner(message.from_user.id)
     if not owner:
-        await message.answer("Вы не зарегистрированы.")
+        await message.answer(Partner.NOT_REGISTERED)
         return
 
-    if owner.status != "активный" or not owner.service_id:
+    if owner.status != "активный":
         await message.answer(f"Статус: {owner.status}")
         return
 
-    async with async_session() as session:
-        svc = (
-            await session.execute(select(Service).where(Service.id == owner.service_id))
-        ).scalar_one_or_none()
-
-    if not svc:
-        await message.answer("Сервис не найден.")
-        return
-
-    wd = _sort_days(svc.working_days)
+    wd = _sort_days(owner.working_days)
     lines = [
-        f"Название: {e(svc.name)}",
-        f"Тип: {_TYPE_RU.get(svc.service_type, svc.service_type)}",
-        f"Адрес: {e(svc.address or '-')}",
-        f"Метро: {e(svc.nearest_metro or '-')}",
-        f"Телефон: {e(svc.phone or '-')}",
-        f"Telegram: {e(svc.telegram_handle or '-')}",
+        f"Название: {e(owner.name)}",
+        f"Тип: {_TYPE_RU.get(owner.service_type, owner.service_type)}",
+        f"Адрес: {e(owner.address or '-')}",
+        f"Метро: {e(owner.nearest_metro or '-')}",
+        f"Телефон: {e(owner.phone or '-')}",
+        f"Telegram: {e(owner.telegram_handle or '-')}",
         f"Рабочие дни: {e(wd or '-')}",
-        f"Время работы: {svc.open_time or '?'}\u2014{svc.close_time or '?'}",
-        f"Гидроизоляция: {'Да' if svc.has_hydroisolation else 'Нет'}",
-        f"Цена гидроизоляции: {e(svc.hydroisolation_price or '-')}",
-        f"Диагностика: {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
-        f"Входит в стоимость: {'Да' if svc.diagnostics_included else 'Нет'}",
-        f"Рейтинг: {svc.yandex_rating or '-'}",
-        f"Доступен: {'Да' if svc.is_available else 'Нет'}",
+        f"Время работы: {owner.open_time or '?'}\u2014{owner.close_time or '?'}",
+        f"Гидроизоляция: {'Да' if owner.has_hydroisolation else 'Нет'}",
+        f"Цена гидроизоляции: {e(owner.hydroisolation_price or '-')}",
+        f"Диагностика: {int(owner.diagnostics_price) if owner.diagnostics_price else 0} руб.",
+        f"Входит в стоимость: {'Да' if owner.diagnostics_included else 'Нет'}",
+        f"Рейтинг: {owner.yandex_rating or '-'}",
+        f"Доступен: {'Да' if owner.is_available else 'Нет'}",
     ]
-    if svc.upgrade_categories:
+    if owner.upgrade_categories:
         lines.append(
-            f"Категории апгрейда: {e(svc.upgrade_categories.replace(',', ', '))}"
+            f"Категории апгрейда: {e(owner.upgrade_categories.replace(',', ', '))}"
         )
     await message.answer("\n".join(lines))
 
 
-@router.message(F.text == "Поддержка")
+@router.message(F.text == Btn.SUPPORT)
 async def cmd_support(message: types.Message, state: FSMContext) -> None:
     from bot.core.config import SUPPORT_USER, COOPERATION_USER
     from bot.ui.keyboards import support_kb
@@ -329,9 +269,9 @@ async def cmd_support(message: types.Message, state: FSMContext) -> None:
     current = await state.get_state()
     if current is not None:
         await state.clear()
-        await message.answer("Процедура прервана.")
+        await message.answer(Partner.PROCEDURE_INTERRUPTED)
     await message.answer(
-        "Выберите тему обращения:",
+        Client.Common.CHOOSE_SUPPORT_TOPIC,
         reply_markup=support_kb(SUPPORT_USER, COOPERATION_USER),
     )
 
@@ -340,11 +280,11 @@ async def cmd_support(message: types.Message, state: FSMContext) -> None:
 async def cmd_admin_mode(message: types.Message, state: FSMContext) -> None:
     uname = message.from_user.username or ""
     if uname.lower() not in ADMIN_USERNAMES:
-        await message.answer("Недоступно.")
+        await message.answer(Client.Common.UNAVAILABLE)
         return
     await state.clear()
     await message.answer(
-        "Режим администратора.",
+        Partner.Common.ADMIN_MODE,
         reply_markup=admin_only_menu_kb(),
     )
 
@@ -400,9 +340,9 @@ async def cmd_client_mode(message: types.Message, state: FSMContext) -> None:
 async def fsm_remind_cancel(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     try:
-        await callback.message.edit_text("Заполнение формы отменено.")
+        await callback.message.edit_text(Partner.FORM_CANCELLED)
     except Exception:
-        await callback.message.answer("Заполнение формы отменено.")
+        await callback.message.answer(Partner.FORM_CANCELLED)
     await callback.answer()
 
 
@@ -414,13 +354,13 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
 
     if not current:
         try:
-            await callback.message.edit_text("Нет активной формы.")
+            await callback.message.edit_text(Partner.NO_ACTIVE_FORM)
         except Exception:
             pass
         await callback.answer()
         return
 
-    await callback.answer("Продолжаем…")
+    await callback.answer(Partner.LETS_CONTINUE)
 
     # ── RegistrationFSM ──
     if current == RegistrationFSM.reg_name.state:
@@ -466,11 +406,6 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
     elif current == RegistrationFSM.reg_phone.state:
         await callback.message.answer(
             "Введите номер телефона:", reply_markup=reg_skip_kb()
-        )
-    elif current == RegistrationFSM.reg_telegram.state:
-        await callback.message.answer(
-            "Введите Telegram (например @username):",
-            reply_markup=reg_skip_kb(),
         )
     elif current == RegistrationFSM.reg_working_days.state:
         selected = set(data.get("working_days", []))

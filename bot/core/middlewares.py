@@ -165,7 +165,7 @@ class ActionLoggerMiddleware(BaseMiddleware):
             if status == "error":
                 logger.error(log_msg)
             else:
-                logger.info(log_msg)
+                logger.debug(log_msg)
 
             try:
                 async with async_session() as session:
