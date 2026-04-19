@@ -31,6 +31,7 @@ from bot.core.formatting import e
 from bot.texts import Btn, Partner, PARTNER_MENU_TEXTS
 from partner_bot.handlers.common import _get_owner, _sort_days, _TYPE_RU
 from partner_bot.ui.keyboards import (
+    bank_edit_fields_kb,
     hydro_toggle_kb,
     partner_main_menu_kb,
     partner_pending_menu_kb,
@@ -62,6 +63,8 @@ _FIELD_LABELS = {
 _NO_REMOD_FIELDS = {
     "diagnostics",
     "hydro_price",
+    "legal_form",
+    "tax_system",
     "bank_account",
     "bank_name",
     "bik",
@@ -107,6 +110,22 @@ def _format_profile(svc: Service) -> str:
     return "\n".join(lines)
 
 
+def _format_bank_details(svc: Service) -> str:
+    lines = [
+        "Банковские реквизиты:",
+        "",
+        f"Форма: {e(svc.draft_legal_form or '—')}",
+        f"Налогообложение: {e(svc.draft_tax_system or '—')}",
+        f"Расч. счёт: {e(svc.draft_bank_account or '—')}",
+        f"Банк: {e(svc.draft_bank_name or '—')}",
+        f"БИК: {e(svc.draft_bik or '—')}",
+        f"Корр. счёт: {e(svc.draft_corr_account or '—')}",
+        f"Организация: {e(svc.draft_org_name or '—')}",
+        f"ИНН: {e(svc.draft_inn or '—')}",
+    ]
+    return "\n".join(lines)
+
+
 # ── Show profile ──────────────────────────────────────────────
 
 
@@ -117,6 +136,126 @@ async def edit_profile(message: types.Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer(_format_profile(svc), reply_markup=profile_edit_fields_kb())
+
+
+# ── Bank details ──────────────────────────────────────────────
+
+
+@router.message(F.text == Btn.BANK_DETAILS)
+async def show_bank_details(message: types.Message, state: FSMContext) -> None:
+    svc = await _require_active(message)
+    if not svc:
+        return
+    await state.clear()
+    await message.answer(_format_bank_details(svc), reply_markup=bank_edit_fields_kb())
+
+
+@router.callback_query(F.data == "bedit:legal_form")
+async def bedit_select_legal_form(callback: types.CallbackQuery) -> None:
+    svc = await _require_active(callback)
+    if not svc:
+        return
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="ИП", callback_data="bedit_legal:ИП")],
+            [
+                InlineKeyboardButton(
+                    text="Юр. лицо", callback_data="bedit_legal:Юр. лицо"
+                )
+            ],
+        ]
+    )
+    await callback.message.answer("Выберите правовую форму:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bedit_legal:"))
+async def bedit_save_legal_form(callback: types.CallbackQuery) -> None:
+    svc = await _require_active(callback)
+    if not svc:
+        return
+    value = callback.data.split(":", 1)[1]
+    async with async_session() as session:
+        obj = (
+            await session.execute(select(Service).where(Service.id == svc.id))
+        ).scalar_one_or_none()
+        if obj:
+            obj.draft_legal_form = value
+            await session.commit()
+    async with async_session() as session:
+        updated = (
+            await session.execute(select(Service).where(Service.id == svc.id))
+        ).scalar_one_or_none()
+    await callback.message.answer(
+        _format_bank_details(updated) if updated else "Обновлено.",
+        reply_markup=bank_edit_fields_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "bedit:tax_system")
+async def bedit_select_tax_system(callback: types.CallbackQuery) -> None:
+    svc = await _require_active(callback)
+    if not svc:
+        return
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="ОСНО", callback_data="bedit_tax:ОСНО")],
+            [InlineKeyboardButton(text="УСН", callback_data="bedit_tax:УСН")],
+            [InlineKeyboardButton(text="АУСН", callback_data="bedit_tax:АУСН")],
+            [
+                InlineKeyboardButton(
+                    text="Патентная система", callback_data="bedit_tax:Патент"
+                )
+            ],
+            [InlineKeyboardButton(text="НПД", callback_data="bedit_tax:НПД")],
+        ]
+    )
+    await callback.message.answer("Выберите систему налогообложения:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bedit_tax:"))
+async def bedit_save_tax_system(callback: types.CallbackQuery) -> None:
+    svc = await _require_active(callback)
+    if not svc:
+        return
+    value = callback.data.split(":", 1)[1]
+    async with async_session() as session:
+        obj = (
+            await session.execute(select(Service).where(Service.id == svc.id))
+        ).scalar_one_or_none()
+        if obj:
+            obj.draft_tax_system = value
+            await session.commit()
+    async with async_session() as session:
+        updated = (
+            await session.execute(select(Service).where(Service.id == svc.id))
+        ).scalar_one_or_none()
+    await callback.message.answer(
+        _format_bank_details(updated) if updated else "Обновлено.",
+        reply_markup=bank_edit_fields_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bedit:"))
+async def bedit_select_field(callback: types.CallbackQuery, state: FSMContext) -> None:
+    svc = await _require_active(callback)
+    if not svc:
+        return
+    field = callback.data.split(":")[1]
+    label = _FIELD_LABELS.get(field, field)
+    await state.set_state(PartnerProfileFSM.edit_field_value)
+    await state.update_data(
+        edit_field=field, edit_service_id=svc.id, edit_section="bank"
+    )
+    await callback.message.answer(f"Введите новое значение для поля '{label}':")
+    await callback.answer()
 
 
 # ── Hydroisolation toggle (inline yes/no, no FSM text state needed) ──────────
@@ -330,6 +469,18 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         service_id,
         needs_remod,
     )
+
+    edit_section = data.get("edit_section", "profile")
+    if edit_section == "bank":
+        async with async_session() as session:
+            updated = (
+                await session.execute(select(Service).where(Service.id == service_id))
+            ).scalar_one_or_none()
+        await message.answer(
+            _format_bank_details(updated) if updated else "Поле обновлено.",
+            reply_markup=bank_edit_fields_kb(),
+        )
+        return
 
     uname = message.from_user.username or ""
     is_admin = uname.lower() in ADMIN_USERNAMES

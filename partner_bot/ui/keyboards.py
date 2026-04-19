@@ -54,9 +54,10 @@ def partner_main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
             KeyboardButton(text=Btn.MY_PROFILE),
         ],
         [
+            KeyboardButton(text=Btn.BANK_DETAILS),
             KeyboardButton(text=Btn.NOTIF_SETTINGS),
-            KeyboardButton(text=Btn.SUPPORT),
         ],
+        [KeyboardButton(text=Btn.SUPPORT)],
     ]
     if is_admin:
         rows.append([KeyboardButton(text=Btn.ADMIN_PANEL)])
@@ -229,13 +230,15 @@ def reg_diag_included_kb() -> InlineKeyboardMarkup:
     )
 
 
-def reg_confirm_kb() -> InlineKeyboardMarkup:
+def reg_confirm_kb(has_bank: bool = False) -> InlineKeyboardMarkup:
+    bank_label = "✏️ Изменить реквизиты" if has_bank else "Заполнить банк. реквизиты"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="Отправить", callback_data="reg:submit"),
                 InlineKeyboardButton(text="Заново", callback_data="reg:restart"),
             ],
+            [InlineKeyboardButton(text=bank_label, callback_data="reg:fill_bank")],
         ]
     )
 
@@ -503,12 +506,23 @@ def profile_edit_fields_kb() -> InlineKeyboardMarkup:
         ("Диагностика", "pedit:diagnostics"),
         ("Гидроизоляция", "pedit:hydro"),
         ("Цена гидроизоляции", "pedit:hydro_price"),
-        ("Расч. счёт", "pedit:bank_account"),
-        ("Банк", "pedit:bank_name"),
-        ("БИК", "pedit:bik"),
-        ("Корр. счёт", "pedit:corr_account"),
-        ("Организация", "pedit:org_name"),
-        ("ИНН", "pedit:inn"),
+    ]
+    rows = [
+        [InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in fields
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def bank_edit_fields_kb() -> InlineKeyboardMarkup:
+    fields = [
+        ("Форма", "bedit:legal_form"),
+        ("Налогообложение", "bedit:tax_system"),
+        ("Расч. счёт", "bedit:bank_account"),
+        ("Банк", "bedit:bank_name"),
+        ("БИК", "bedit:bik"),
+        ("Корр. счёт", "bedit:corr_account"),
+        ("Организация", "bedit:org_name"),
+        ("ИНН", "bedit:inn"),
     ]
     rows = [
         [InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in fields

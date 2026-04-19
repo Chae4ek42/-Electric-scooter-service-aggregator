@@ -158,9 +158,6 @@ def _next_empty_state(owner: Service) -> str | None:
         ("draft_phone", RegistrationFSM.reg_phone.state),
         ("draft_working_days", RegistrationFSM.reg_working_days.state),
         ("draft_open_time", RegistrationFSM.reg_hours.state),
-        ("draft_legal_form", RegistrationFSM.reg_legal_form.state),
-        ("draft_tax_system", RegistrationFSM.reg_tax_system.state),
-        ("draft_bank_account", RegistrationFSM.reg_bank_details.state),
     ]
     for field, state in more:
         if not getattr(owner, field, None):
@@ -189,7 +186,10 @@ async def reg_continue(message: types.Message, state: FSMContext) -> None:
     next_state = _next_empty_state(owner)
     if next_state is None:
         await state.set_state(RegistrationFSM.reg_confirm)
-        await message.answer(_format_draft(owner), reply_markup=reg_confirm_kb())
+        await message.answer(
+            _format_draft(owner),
+            reply_markup=reg_confirm_kb(has_bank=bool(owner.draft_bank_account)),
+        )
         return
     await state.set_state(next_state)
     prompts = {
@@ -759,9 +759,12 @@ async def reg_diag_included(callback: types.CallbackQuery, state: FSMContext) ->
     await _update_draft(callback.from_user.id, draft_diag_included=val)
     if await _after_edit(callback, state):
         return
-    await state.set_state(RegistrationFSM.reg_legal_form)
+    await state.set_state(RegistrationFSM.reg_confirm)
+    owner = await _get_owner(callback.from_user.id)
     await _safe_edit_or_answer(
-        callback, "Выберите организационно-правовую форму:", reg_legal_form_kb()
+        callback,
+        _format_draft(owner) + "\n\nВсё верно?",
+        reg_confirm_kb(has_bank=bool(owner.draft_bank_account)),
     )
 
 
@@ -789,14 +792,24 @@ async def reg_tax_system(callback: types.CallbackQuery, state: FSMContext) -> No
     await _update_draft(callback.from_user.id, draft_tax_system=tax)
     if await _after_edit(callback, state):
         return
-    await state.update_data(bank_step=0)
-    await state.set_state(RegistrationFSM.reg_bank_details)
-    await _safe_edit_or_answer(
-        callback,
-        "⚠️ <b>Банковские реквизиты</b>\n"
-        "По этим реквизитам будут производиться выплаты.\n\n"
-        f"Введите {_BANK_FIELDS[0][1]}:",
-    )
+    data = await state.get_data()
+    if data.get("filling_bank"):
+        await state.update_data(bank_step=0, filling_bank=False)
+        await state.set_state(RegistrationFSM.reg_bank_details)
+        await _safe_edit_or_answer(
+            callback,
+            "⚠️ <b>Банковские реквизиты</b>\n"
+            "По этим реквизитам будут производиться выплаты.\n\n"
+            f"Введите {_BANK_FIELDS[0][1]}:",
+        )
+    else:
+        await state.set_state(RegistrationFSM.reg_confirm)
+        owner = await _get_owner(callback.from_user.id)
+        await _safe_edit_or_answer(
+            callback,
+            _format_draft(owner) + "\n\nВсё верно?",
+            reg_confirm_kb(has_bank=bool(owner.draft_bank_account)),
+        )
 
 
 # ── Step 15: Bank details (6 sequential inputs) ──────────────
@@ -827,11 +840,38 @@ async def reg_bank_detail(message: types.Message, state: FSMContext) -> None:
         await state.set_state(RegistrationFSM.reg_confirm)
         owner = await _get_owner(message.from_user.id)
         await message.answer(
-            _format_draft(owner) + "\n\nВсё верно?", reply_markup=reg_confirm_kb()
+            _format_draft(owner) + "\n\nВсё верно?",
+            reply_markup=reg_confirm_kb(has_bank=True),
         )
 
 
 # ── Step 16: Confirm ──────────────────────────────────────────
+
+
+@router.callback_query(RegistrationFSM.reg_confirm, F.data == "reg:fill_bank")
+async def reg_fill_bank(callback: types.CallbackQuery, state: FSMContext) -> None:
+    owner = await _get_owner(callback.from_user.id)
+    if not owner.draft_legal_form:
+        await state.update_data(filling_bank=True)
+        await state.set_state(RegistrationFSM.reg_legal_form)
+        await _safe_edit_or_answer(
+            callback, "Выберите организационно-правовую форму:", reg_legal_form_kb()
+        )
+    elif not owner.draft_tax_system:
+        await state.update_data(filling_bank=True)
+        await state.set_state(RegistrationFSM.reg_tax_system)
+        await _safe_edit_or_answer(
+            callback, "Выберите систему налогообложения:", reg_tax_system_kb()
+        )
+    else:
+        await state.update_data(bank_step=0)
+        await state.set_state(RegistrationFSM.reg_bank_details)
+        await _safe_edit_or_answer(
+            callback,
+            "⚠️ <b>Банковские реквизиты</b>\n"
+            "По этим реквизитам будут производиться выплаты.\n\n"
+            f"Введите {_BANK_FIELDS[0][1]}:",
+        )
 
 
 @router.callback_query(RegistrationFSM.reg_confirm, F.data == "reg:submit")

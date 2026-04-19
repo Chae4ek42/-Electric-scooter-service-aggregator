@@ -68,6 +68,7 @@ async def _get_owner(tg_id: int) -> Service | None:
 
 
 def _draft_complete(owner: Service) -> bool:
+    """Returns True when all main required fields are filled."""
     required = [
         owner.draft_name,
         owner.draft_service_type,
@@ -76,14 +77,6 @@ def _draft_complete(owner: Service) -> bool:
         owner.draft_open_time,
         owner.draft_close_time,
         owner.draft_working_days,
-        owner.draft_legal_form,
-        owner.draft_tax_system,
-        owner.draft_bank_account,
-        owner.draft_bank_name,
-        owner.draft_bik,
-        owner.draft_corr_account,
-        owner.draft_org_name,
-        owner.draft_inn,
     ]
     if owner.draft_service_type == "upgrade":
         required.append(owner.draft_upgrade_categories)
@@ -129,20 +122,22 @@ def _format_draft(owner: Service) -> str:
     else:
         lines.append("Диагностика: бесплатно (0 руб.)")
     lines.append(f"Входит в стоимость: {'Да' if owner.draft_diag_included else 'Нет'}")
-    lines += [
-        f"Форма: {e(owner.draft_legal_form or '(не заполнено)')}",
-        f"Налогообложение: {e(owner.draft_tax_system or '(не заполнено)')}",
-        "",
-        "Банковские реквизиты:",
-        f"  Расч. счёт: {e(owner.draft_bank_account or '—')}",
-        f"  Банк: {e(owner.draft_bank_name or '—')}",
-        f"  БИК: {e(owner.draft_bik or '—')}",
-        f"  Корр. счёт: {e(owner.draft_corr_account or '—')}",
-        f"  Организация: {e(owner.draft_org_name or '—')}",
-        f"  ИНН: {e(owner.draft_inn or '—')}",
-        "",
-        f"Статус: {_status_ru.get(owner.status, owner.status)}",
-    ]
+    if owner.draft_legal_form or owner.draft_tax_system or owner.draft_bank_account:
+        lines.append("")
+        lines.append("Реквизиты:")
+        if owner.draft_legal_form:
+            lines.append(f"  Форма: {e(owner.draft_legal_form)}")
+        if owner.draft_tax_system:
+            lines.append(f"  Налогообложение: {e(owner.draft_tax_system)}")
+        if owner.draft_bank_account:
+            lines += [
+                f"  Расч. счёт: {e(owner.draft_bank_account)}",
+                f"  Банк: {e(owner.draft_bank_name or '—')}",
+                f"  БИК: {e(owner.draft_bik or '—')}",
+                f"  Корр. счёт: {e(owner.draft_corr_account or '—')}",
+                f"  Организация: {e(owner.draft_org_name or '—')}",
+                f"  ИНН: {e(owner.draft_inn or '—')}",
+            ]
     return "\n".join(lines)
 
 
@@ -185,9 +180,7 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
         return
 
     if owner.status == "ожидает":
-        has_draft = bool(owner.draft_name)
-        complete = _draft_complete(owner)
-        if complete:
+        if owner.registration_complete:
             await message.answer(
                 Partner.Common.DRAFT_PENDING,
                 reply_markup=partner_pending_menu_kb(
@@ -297,24 +290,13 @@ async def cmd_client_mode(message: types.Message, state: FSMContext) -> None:
 
     owner = await _get_owner(message.from_user.id)
     if owner and owner.status == "активный":
-        svc_name = ""
-        if owner.service_id:
-            async with async_session() as session:
-                svc = (
-                    await session.execute(
-                        select(Service).where(Service.id == owner.service_id)
-                    )
-                ).scalar_one_or_none()
-                svc_name = svc.name if svc else ""
-        greeting = f"Service Map \u2014 {e(svc_name)}"
+        greeting = f"Service Map \u2014 {e(owner.name)}"
         await message.answer(
             f"{greeting}\n\nВыберите действие:",
             reply_markup=partner_main_menu_kb(is_admin=is_admin),
         )
     elif owner and owner.status == "ожидает":
-        has_draft = bool(owner.draft_name)
-        complete = _draft_complete(owner)
-        if complete:
+        if owner.registration_complete:
             await message.answer(
                 "Ваша анкета отправлена на модерацию.",
                 reply_markup=partner_pending_menu_kb(
@@ -440,7 +422,8 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
             from partner_bot.handlers.common import _format_draft
 
             await callback.message.answer(
-                _format_draft(owner), reply_markup=reg_confirm_kb()
+                _format_draft(owner),
+                reply_markup=reg_confirm_kb(has_bank=bool(owner.draft_bank_account)),
             )
         else:
             await callback.message.answer(

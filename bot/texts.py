@@ -70,6 +70,7 @@ class Btn:
     MY_DRAFT = "Моя анкета"
     CONTINUE_DRAFT = "Продолжить заполнение"
     EDIT_DRAFT = "Изменить анкету"
+    BANK_DETAILS = "Банковские реквизиты"
 
 
 # Tuple of all partner-side menu labels (for FSM interruption checks)
@@ -85,6 +86,7 @@ PARTNER_MENU_TEXTS: tuple[str, ...] = (
     Btn.MY_DRAFT,
     Btn.CONTINUE_DRAFT,
     Btn.EDIT_DRAFT,
+    Btn.BANK_DETAILS,
 )
 
 
