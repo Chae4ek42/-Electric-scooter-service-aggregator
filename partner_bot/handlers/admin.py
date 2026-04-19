@@ -129,12 +129,14 @@ async def padm_enter(message: types.Message, state: FSMContext) -> None:
                 select(func.count())
                 .select_from(Service)
                 .where(Service.telegram_id.isnot(None))
+                .where(Service.registration_complete.is_(True))
             )
         ).scalar_one()
         stats_rows = (
             await session.execute(
                 select(Service.status, func.count(Service.id))
                 .where(Service.telegram_id.isnot(None))
+                .where(Service.registration_complete.is_(True))
                 .group_by(Service.status)
             )
         ).all()
@@ -161,12 +163,14 @@ async def padm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
                 select(func.count())
                 .select_from(Service)
                 .where(Service.telegram_id.isnot(None))
+                .where(Service.registration_complete.is_(True))
             )
         ).scalar_one()
         stats_rows = (
             await session.execute(
                 select(Service.status, func.count(Service.id))
                 .where(Service.telegram_id.isnot(None))
+                .where(Service.registration_complete.is_(True))
                 .group_by(Service.status)
             )
         ).all()
@@ -206,11 +210,16 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
     status_filter = parts[4] if len(parts) >= 5 and parts[3] == "status" else None
 
     async with async_session() as session:
-        q = select(Service).where(Service.telegram_id.isnot(None))
+        q = (
+            select(Service)
+            .where(Service.telegram_id.isnot(None))
+            .where(Service.registration_complete.is_(True))
+        )
         cq = (
             select(func.count())
             .select_from(Service)
             .where(Service.telegram_id.isnot(None))
+            .where(Service.registration_complete.is_(True))
         )
         if status_filter:
             q = q.where(Service.status == status_filter)

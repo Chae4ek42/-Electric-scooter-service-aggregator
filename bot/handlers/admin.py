@@ -232,6 +232,7 @@ async def admin_enter(message: types.Message, state: FSMContext) -> None:
                 select(func.count())
                 .select_from(Service)
                 .where(Service.telegram_id.isnot(None))
+                .where(Service.registration_complete.is_(True))
             )
         ).scalar_one()
     stat_lines = [
@@ -266,6 +267,7 @@ async def adm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
                 select(func.count())
                 .select_from(Service)
                 .where(Service.telegram_id.isnot(None))
+                .where(Service.registration_complete.is_(True))
             )
         ).scalar_one()
     stat_lines = [
