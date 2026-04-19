@@ -90,7 +90,7 @@ def _ensure_worksheet(sh, name: str, headers: list[str]):
         return ws
     except Exception:
         ws = sh.add_worksheet(title=name, rows=100, cols=len(headers))
-        ws.append_row(headers, value_input_option="USER_ENTERED")
+        ws.update("A1", [headers], value_input_option="USER_ENTERED")
         logger.info("SHEETS | created worksheet '%s'", name)
         return ws
 
@@ -103,7 +103,11 @@ def add_service_row(svc: Service) -> bool:
         gc = _get_client()
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
         ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
-        ws.append_row(_service_to_row(svc), value_input_option="USER_ENTERED")
+        ws.append_row(
+            _service_to_row(svc),
+            value_input_option="USER_ENTERED",
+            table_range="A1",
+        )
         logger.info(
             "SHEETS_WRITE | op=add | service=%s | columns=%d",
             svc.name,
