@@ -250,7 +250,7 @@ async def edit_draft(message: types.Message, state: FSMContext) -> None:
         return
     await message.answer(
         _format_draft(owner) + "\n\nВыберите поле для изменения:",
-        reply_markup=draft_edit_kb(),
+        reply_markup=draft_edit_kb(owner.draft_service_type),
     )
 
 
@@ -350,7 +350,7 @@ async def _after_edit(event, state: FSMContext) -> bool:
         await _safe_edit_or_answer(
             event,
             _format_draft(owner) + "\n\nВыберите поле для изменения:",
-            draft_edit_kb(),
+            draft_edit_kb(owner.draft_service_type),
         )
     return True
 

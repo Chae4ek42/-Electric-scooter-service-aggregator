@@ -31,6 +31,7 @@ from bot.core.formatting import e
 from bot.texts import Btn, Partner, PARTNER_MENU_TEXTS
 from partner_bot.handlers.common import _get_owner, _sort_days, _TYPE_RU
 from partner_bot.ui.keyboards import (
+    hydro_toggle_kb,
     partner_main_menu_kb,
     partner_pending_menu_kb,
     profile_edit_fields_kb,
@@ -118,6 +119,46 @@ async def edit_profile(message: types.Message, state: FSMContext) -> None:
     await message.answer(_format_profile(svc), reply_markup=profile_edit_fields_kb())
 
 
+# ── Hydroisolation toggle (inline yes/no, no FSM text state needed) ──────────
+
+
+@router.callback_query(F.data.startswith("pedit:hydro:"))
+async def profile_toggle_hydro(callback: types.CallbackQuery) -> None:
+    svc = await _require_active(callback)
+    if not svc:
+        return
+    val = callback.data.split(":")[2] == "yes"
+    async with async_session() as session:
+        obj = (
+            await session.execute(select(Service).where(Service.id == svc.id))
+        ).scalar_one_or_none()
+        if obj:
+            obj.has_hydroisolation = val
+            obj.draft_hydroisolation = val
+            if not val:
+                obj.hydroisolation_price = None
+                obj.draft_hydro_price = None
+            await session.commit()
+    try:
+        async with async_session() as session:
+            updated = (
+                await session.execute(select(Service).where(Service.id == svc.id))
+            ).scalar_one_or_none()
+        if updated:
+            update_service_row(updated)
+    except Exception:
+        logger.exception("Sheets write-back failed (hydro toggle)")
+    async with async_session() as session:
+        updated = (
+            await session.execute(select(Service).where(Service.id == svc.id))
+        ).scalar_one_or_none()
+    await callback.message.answer(
+        _format_profile(updated) if updated else "Профиль обновлён.",
+        reply_markup=profile_edit_fields_kb(),
+    )
+    await callback.answer()
+
+
 # ── Select field to edit ──────────────────────────────────────
 
 
@@ -129,6 +170,13 @@ async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None
     field = callback.data.split(":")[1]
     if field in ("status", "back"):
         return  # handled by dedicated handlers
+    if field == "hydro":
+        await callback.message.answer(
+            f"Гидроизоляция сейчас: {'Да' if svc.has_hydroisolation else 'Нет'}. Изменить?",
+            reply_markup=hydro_toggle_kb(),
+        )
+        await callback.answer()
+        return
     label = _FIELD_LABELS.get(field, field)
     await state.set_state(PartnerProfileFSM.edit_field_value)
     await state.update_data(edit_field=field, edit_service_id=svc.id)
@@ -242,6 +290,9 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         elif field == "hydro_price":
             svc.hydroisolation_price = text
             svc.draft_hydro_price = text
+            # Setting a price implies hydroisolation is offered
+            svc.has_hydroisolation = True
+            svc.draft_hydroisolation = True
         elif field == "bank_account":
             svc.draft_bank_account = text
         elif field == "bank_name":

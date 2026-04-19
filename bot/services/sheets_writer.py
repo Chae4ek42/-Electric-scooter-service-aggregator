@@ -78,21 +78,26 @@ def _service_to_row(svc: Service) -> list[str]:
 
 
 def _ensure_worksheet(sh, name: str, headers: list[str]):
-    """Return existing worksheet with validated headers, or create new one."""
+    """Return worksheet with up-to-date header row, creating it if needed."""
     try:
         ws = sh.worksheet(name)
-        # Verify the first row has correct headers (not duplicated)
-        existing = ws.row_values(1)
-        if existing and existing == ws.row_values(2):
-            # Duplicated header row — remove second copy
-            ws.delete_rows(2)
-            logger.warning("SHEETS | removed duplicate header row in '%s'", name)
-        return ws
     except Exception:
         ws = sh.add_worksheet(title=name, rows=100, cols=len(headers))
         ws.update("A1", [headers], value_input_option="USER_ENTERED")
         logger.info("SHEETS | created worksheet '%s'", name)
         return ws
+
+    # Always sync header row so column count stays consistent with SHEETS_COLUMNS
+    existing = ws.row_values(1)
+    if existing != headers:
+        ws.update("A1", [headers], value_input_option="USER_ENTERED")
+        logger.info(
+            "SHEETS | updated headers for '%s': %d→%d cols",
+            name,
+            len(existing),
+            len(headers),
+        )
+    return ws
 
 
 def add_service_row(svc: Service) -> bool:

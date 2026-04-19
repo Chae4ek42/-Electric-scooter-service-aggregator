@@ -1189,11 +1189,18 @@ class TestPartnerKeyboards:
     def test_draft_edit_kb_fields(self):
         from partner_bot.ui.keyboards import draft_edit_kb
 
-        kb = draft_edit_kb()
-        texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        assert "Категории апгрейда" in texts
-        assert "Рабочие дни" in texts
-        assert "Банковские реквизиты" in texts
+        kb_upgrade = draft_edit_kb(service_type="upgrade")
+        texts_upgrade = [btn.text for row in kb_upgrade.inline_keyboard for btn in row]
+        assert "Категории апгрейда" in texts_upgrade
+
+        kb_repair = draft_edit_kb(service_type="repair")
+        texts_repair = [btn.text for row in kb_repair.inline_keyboard for btn in row]
+        assert "Категория ремонта" in texts_repair
+
+        for kb in (kb_upgrade, kb_repair):
+            texts = [btn.text for row in kb.inline_keyboard for btn in row]
+            assert "Рабочие дни" in texts
+            assert "Банковские реквизиты" in texts
 
 
 # ═══════════════════════════════════════════════════════════════

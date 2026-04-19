@@ -190,6 +190,18 @@ def reg_yes_no_kb(prefix: str) -> InlineKeyboardMarkup:
     )
 
 
+def hydro_toggle_kb() -> InlineKeyboardMarkup:
+    """Yes/No inline keyboard for hydroisolation toggle in profile editing."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Да", callback_data="pedit:hydro:yes"),
+                InlineKeyboardButton(text="Нет", callback_data="pedit:hydro:no"),
+            ]
+        ]
+    )
+
+
 def reg_skip_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -249,12 +261,16 @@ def metro_confirm_kb(station_name: str) -> InlineKeyboardMarkup:
 # ── Draft edit ────────────────────────────────────────────────
 
 
-def draft_edit_kb() -> InlineKeyboardMarkup:
+def draft_edit_kb(service_type: str | None = None) -> InlineKeyboardMarkup:
     fields = [
         ("Название", "edit_draft:name"),
         ("Тип услуг", "edit_draft:service_type"),
-        ("Категория ремонта", "edit_draft:category"),
-        ("Категории апгрейда", "edit_draft:upgrade_cats"),
+    ]
+    if service_type == "upgrade":
+        fields.append(("Категории апгрейда", "edit_draft:upgrade_cats"))
+    elif service_type in ("repair", "complex"):
+        fields.append(("Категория ремонта", "edit_draft:category"))
+    fields += [
         ("Гидроизоляция", "edit_draft:hydro"),
         ("Цена гидроизоляции", "edit_draft:hydro_price"),
         ("Адрес", "edit_draft:address"),
@@ -485,6 +501,7 @@ def profile_edit_fields_kb() -> InlineKeyboardMarkup:
         ("Telegram", "pedit:telegram"),
         ("Время работы", "pedit:hours"),
         ("Диагностика", "pedit:diagnostics"),
+        ("Гидроизоляция", "pedit:hydro"),
         ("Цена гидроизоляции", "pedit:hydro_price"),
         ("Расч. счёт", "pedit:bank_account"),
         ("Банк", "pedit:bank_name"),

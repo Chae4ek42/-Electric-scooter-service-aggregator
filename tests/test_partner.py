@@ -513,13 +513,25 @@ class TestPartnerKeyboards:
     def test_draft_edit_kb_has_new_fields(self):
         from partner_bot.ui.keyboards import draft_edit_kb
 
-        kb = draft_edit_kb()
-        texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        assert "Категории апгрейда" in texts
-        assert "Рабочие дни" in texts
-        assert "Орг.-правовая форма" in texts
-        assert "Налогообложение" in texts
-        assert "Банковские реквизиты" in texts
+        # upgrade type shows upgrade categories
+        kb_upgrade = draft_edit_kb(service_type="upgrade")
+        texts_upgrade = [btn.text for row in kb_upgrade.inline_keyboard for btn in row]
+        assert "Категории апгрейда" in texts_upgrade
+        assert "Категория ремонта" not in texts_upgrade
+
+        # repair type shows repair category, not upgrade
+        kb_repair = draft_edit_kb(service_type="repair")
+        texts_repair = [btn.text for row in kb_repair.inline_keyboard for btn in row]
+        assert "Категория ремонта" in texts_repair
+        assert "Категории апгрейда" not in texts_repair
+
+        # common fields always present
+        for kb in (kb_upgrade, kb_repair):
+            texts = [btn.text for row in kb.inline_keyboard for btn in row]
+            assert "Рабочие дни" in texts
+            assert "Орг.-правовая форма" in texts
+            assert "Налогообложение" in texts
+            assert "Банковские реквизиты" in texts
 
     def test_order_detail_awaiting(self):
         from partner_bot.ui.keyboards import partner_order_detail_kb

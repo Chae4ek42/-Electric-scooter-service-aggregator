@@ -1,5 +1,6 @@
 # Google Sheets
-google_sheet_id: "1ZozqkpDXKwTetoUprf5rgIq77l7quBibFISoSMIoGG0"
+google_sheet_id: "1n7ghxXP9WkLySTMdeA6Iz_NX4iMb4zKMDPTV-2j7D6Q" #dev
+# google_sheet_id: "1ZozqkpDXKwTetoUprf5rgIq77l7quBibFISoSMIoGG0" #prod
 
 # Инфраструктура
 redis_url: "redis://redis:6379/0"
