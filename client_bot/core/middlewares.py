@@ -15,9 +15,9 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 
 import redis.asyncio as aioredis
 
-from bot.core.config import REDIS_URL, THROTTLE_RATE
-from bot.core.database import async_session
-from bot.domain.models import UserAction
+from client_bot.core.config import REDIS_URL, THROTTLE_RATE
+from client_bot.core.database import async_session
+from client_bot.domain.models import UserAction
 
 logger = logging.getLogger(__name__)
 

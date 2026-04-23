@@ -10,14 +10,14 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
-from bot.core.config import PARTNER_BOT_TOKEN, REDIS_URL
-from bot.core.middlewares import (
+from client_bot.core.config import PARTNER_BOT_TOKEN, REDIS_URL
+from client_bot.core.middlewares import (
     ActionLoggerMiddleware,
     ErrorMiddleware,
     ThrottlingMiddleware,
 )
-from bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
-from bot.services.seed import init_db
+from client_bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
+from client_bot.services.seed import init_db
 
 from partner_bot.handlers.common import router as common_router
 from partner_bot.handlers.registration import router as registration_router
@@ -42,8 +42,8 @@ async def _pause_reopen_loop() -> None:
     """Auto-reopen services whose pause_until has passed."""
     import datetime
     from sqlalchemy import select, update
-    from bot.core.database import async_session
-    from bot.domain.models import Service
+    from client_bot.core.database import async_session
+    from client_bot.domain.models import Service
 
     logger = logging.getLogger(__name__)
     while True:

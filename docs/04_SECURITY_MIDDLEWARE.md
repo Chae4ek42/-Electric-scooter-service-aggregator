@@ -5,8 +5,10 @@
 Middlewares подключаются к `dp.message` и `dp.callback_query` в порядке:
 
 ```
-outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware → хендлер
+outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware → FSMActivityMiddleware → хендлер
 ```
+
+`FSMActivityMiddleware` отслеживает активность в FSM-состояниях и запускает 30-минутное напоминание о незавершённой форме.
 
 ---
 
@@ -16,17 +18,17 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 
 **Что логируется:**
 
-| Поле | Описание |
-|---|---|
-| `user_id` | Telegram ID пользователя |
-| `state` | Текущее FSM-состояние |
-| `action_type` | `command` / `text_input` / `button_click` / `location` / `contact` / `photo` / `document` |
-| `payload` | Текст / callback_data (max 500 симв.) |
-| `status` | `success` / `error` / `flood_attempt` |
-| `error_context` | Traceback при ошибке |
-| `bot_response` | Текст первого ответа бота (max 500 симв.) |
-| `bot_response_type` | `text` или `inline` (тип клавиатуры в ответе) |
-| `timestamp` | Время записи |
+| Поле                | Описание                                                                                  |
+| ------------------- | ----------------------------------------------------------------------------------------- |
+| `user_id`           | Telegram ID пользователя                                                                  |
+| `state`             | Текущее FSM-состояние                                                                     |
+| `action_type`       | `command` / `text_input` / `button_click` / `location` / `contact` / `photo` / `document` |
+| `payload`           | Текст / callback_data (max 500 симв.)                                                     |
+| `status`            | `success` / `error` / `flood_attempt`                                                     |
+| `error_context`     | Traceback при ошибке                                                                      |
+| `bot_response`      | Текст первого ответа бота (max 500 симв.)                                                 |
+| `bot_response_type` | `text` или `inline` (тип клавиатуры в ответе)                                             |
+| `timestamp`         | Время записи                                                                              |
 
 **Перехват ответов бота:** `_ResponseCapture` временно оборачивает `Bot.send_message` и `Bot.edit_message_text` через `unittest.mock.patch.object`. Обёртки устанавливаются перед вызовом хендлера и снимаются в `finally`.
 
@@ -44,8 +46,8 @@ outer → ErrorMiddleware → ThrottlingMiddleware → ActionLoggerMiddleware �
 - Минимальный интервал: `throttle_rate` из `config.yaml` (по умолчанию 0.2 сек).
 - При перезапуске бота throttle-данные сохраняются.
 - При нарушении:
-  1. Запрос игнорируется.
-  2. В `user_actions` пишется `status="flood_attempt"`.
+    1. Запрос игнорируется.
+    2. В `user_actions` пишется `status="flood_attempt"`.
 
 **Реализовано:** ✅
 

@@ -10,10 +10,10 @@ from aiogram.fsm.context import FSMContext
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from bot.core.config import ADMIN_USERNAMES
-from bot.core.database import async_session
-from bot.domain.models import MetroStation, Service, ServiceCategory, User
-from bot.domain.schemas import (
+from client_bot.core.config import ADMIN_USERNAMES
+from client_bot.core.database import async_session
+from client_bot.domain.models import MetroStation, Service, ServiceCategory, User
+from client_bot.domain.schemas import (
     AddressInput,
     BankAccountInput,
     BankNameInput,
@@ -26,10 +26,10 @@ from bot.domain.schemas import (
     ServiceNameInput,
     WorkHoursInput,
 )
-from bot.domain.states import RegistrationFSM
-from bot.services.metro_search import best_metro_match, top_metro_matches
-from bot.services.sheets_writer import add_service_row
-from bot.texts import TYPE_RU, Btn, PARTNER_MENU_TEXTS, Partner
+from client_bot.domain.states import RegistrationFSM
+from client_bot.services.metro_search import best_metro_match, top_metro_matches
+from client_bot.services.sheets_writer import add_service_row
+from client_bot.texts import TYPE_RU, Btn, PARTNER_MENU_TEXTS, Partner
 from partner_bot.handlers.common import _draft_complete, _format_draft, _get_owner
 from partner_bot.ui.keyboards import (
     BACK_BTN,

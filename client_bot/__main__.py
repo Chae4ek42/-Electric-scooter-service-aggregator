@@ -12,17 +12,17 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 import datetime
 
-from bot.core.config import BOT_TOKEN, REDIS_URL
-from bot.handlers.admin import router as admin_router
-from bot.handlers.common import router as common_router
-from bot.handlers.order import router as order_router
-from bot.core.middlewares import (
+from client_bot.core.config import CLIENT_BOT_TOKEN, REDIS_URL
+from client_bot.handlers.admin import router as admin_router
+from client_bot.handlers.common import router as common_router
+from client_bot.handlers.order import router as order_router
+from client_bot.core.middlewares import (
     ActionLoggerMiddleware,
     ErrorMiddleware,
     ThrottlingMiddleware,
 )
-from bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
-from bot.services.seed import init_db
+from client_bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
+from client_bot.services.seed import init_db
 
 
 def _setup_logging() -> None:
@@ -39,8 +39,8 @@ def _setup_logging() -> None:
 async def _payment_expire_loop() -> None:
     """Автоотмена заявок awaiting_payment старше 1 часа."""
     from sqlalchemy import update
-    from bot.core.database import async_session
-    from bot.domain.models import Order
+    from client_bot.core.database import async_session
+    from client_bot.domain.models import Order
 
     logger = logging.getLogger(__name__)
     while True:
@@ -87,7 +87,7 @@ async def main() -> None:
     await init_db()
 
     bot = Bot(
-        token=BOT_TOKEN,
+        token=CLIENT_BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 

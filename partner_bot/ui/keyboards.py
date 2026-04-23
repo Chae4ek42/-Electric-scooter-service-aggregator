@@ -10,7 +10,7 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
-from bot.texts import Btn
+from client_bot.texts import Btn
 
 BACK_BTN = InlineKeyboardButton(text="Назад", callback_data="back")
 
@@ -99,7 +99,7 @@ def reg_service_type_kb() -> InlineKeyboardMarkup:
     )
 
 
-_REPAIR_CATS = ["Электрика", "Механика"]
+_REPAIR_CATS = ["Электрика", "Механика", "Электрика + механика"]
 
 
 def reg_category_kb() -> InlineKeyboardMarkup:
@@ -433,6 +433,14 @@ def partner_order_detail_kb(
                 InlineKeyboardButton(
                     text="Готов к выдаче",
                     callback_data=f"pord:ready:{order_id}",
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Изменить цену",
+                    callback_data=f"pord:update_price:{order_id}",
                 )
             ]
         )

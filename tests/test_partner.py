@@ -16,25 +16,25 @@ from pydantic import ValidationError
 
 class TestServiceNameInput:
     def test_valid(self):
-        from bot.domain.schemas import ServiceNameInput
+        from client_bot.domain.schemas import ServiceNameInput
 
         r = ServiceNameInput(text="Ремонт Pro")
         assert r.text == "Ремонт Pro"
 
     def test_too_short(self):
-        from bot.domain.schemas import ServiceNameInput
+        from client_bot.domain.schemas import ServiceNameInput
 
         with pytest.raises(ValidationError):
             ServiceNameInput(text="РП")
 
     def test_digits_only(self):
-        from bot.domain.schemas import ServiceNameInput
+        from client_bot.domain.schemas import ServiceNameInput
 
         with pytest.raises(ValidationError):
             ServiceNameInput(text="12345")
 
     def test_max_length(self):
-        from bot.domain.schemas import ServiceNameInput
+        from client_bot.domain.schemas import ServiceNameInput
 
         with pytest.raises(ValidationError):
             ServiceNameInput(text="A" * 201)
@@ -42,13 +42,13 @@ class TestServiceNameInput:
 
 class TestAddressInput:
     def test_valid(self):
-        from bot.domain.schemas import AddressInput
+        from client_bot.domain.schemas import AddressInput
 
         r = AddressInput(text="Москва, ул. Ленина, д. 10")
         assert "Ленина" in r.text
 
     def test_too_short(self):
-        from bot.domain.schemas import AddressInput
+        from client_bot.domain.schemas import AddressInput
 
         with pytest.raises(ValidationError):
             AddressInput(text="Москва")
@@ -56,25 +56,25 @@ class TestAddressInput:
 
 class TestPhoneInput:
     def test_valid_plus(self):
-        from bot.domain.schemas import PhoneInput
+        from client_bot.domain.schemas import PhoneInput
 
         r = PhoneInput(text="+7 999 123-45-67")
         assert r.text.startswith("+7")
 
     def test_valid_no_plus(self):
-        from bot.domain.schemas import PhoneInput
+        from client_bot.domain.schemas import PhoneInput
 
         r = PhoneInput(text="89991234567")
         assert r.text == "89991234567"
 
     def test_invalid_letters(self):
-        from bot.domain.schemas import PhoneInput
+        from client_bot.domain.schemas import PhoneInput
 
         with pytest.raises(ValidationError):
             PhoneInput(text="phone abc")
 
     def test_too_short(self):
-        from bot.domain.schemas import PhoneInput
+        from client_bot.domain.schemas import PhoneInput
 
         with pytest.raises(ValidationError):
             PhoneInput(text="123")
@@ -82,25 +82,25 @@ class TestPhoneInput:
 
 class TestTelegramHandleInput:
     def test_valid_with_at(self):
-        from bot.domain.schemas import TelegramHandleInput
+        from client_bot.domain.schemas import TelegramHandleInput
 
         r = TelegramHandleInput(text="@my_handle")
         assert r.text == "my_handle"
 
     def test_valid_without_at(self):
-        from bot.domain.schemas import TelegramHandleInput
+        from client_bot.domain.schemas import TelegramHandleInput
 
         r = TelegramHandleInput(text="my_handle")
         assert r.text == "my_handle"
 
     def test_too_short(self):
-        from bot.domain.schemas import TelegramHandleInput
+        from client_bot.domain.schemas import TelegramHandleInput
 
         with pytest.raises(ValidationError):
             TelegramHandleInput(text="ab")
 
     def test_special_chars(self):
-        from bot.domain.schemas import TelegramHandleInput
+        from client_bot.domain.schemas import TelegramHandleInput
 
         with pytest.raises(ValidationError):
             TelegramHandleInput(text="my handle!")
@@ -108,25 +108,25 @@ class TestTelegramHandleInput:
 
 class TestWorkHoursInput:
     def test_valid_dash(self):
-        from bot.domain.schemas import WorkHoursInput
+        from client_bot.domain.schemas import WorkHoursInput
 
         r = WorkHoursInput(text="09:00-21:00")
         assert r.text == "09:00-21:00"
 
     def test_valid_endash(self):
-        from bot.domain.schemas import WorkHoursInput
+        from client_bot.domain.schemas import WorkHoursInput
 
         r = WorkHoursInput(text="09:00\u201321:00")
         assert "09:00" in r.text
 
     def test_invalid_format(self):
-        from bot.domain.schemas import WorkHoursInput
+        from client_bot.domain.schemas import WorkHoursInput
 
         with pytest.raises(ValidationError):
             WorkHoursInput(text="9-21")
 
     def test_invalid_text(self):
-        from bot.domain.schemas import WorkHoursInput
+        from client_bot.domain.schemas import WorkHoursInput
 
         with pytest.raises(ValidationError):
             WorkHoursInput(text="круглосуточно")
@@ -134,25 +134,25 @@ class TestWorkHoursInput:
 
 class TestDiagnosticsPriceInput:
     def test_zero(self):
-        from bot.domain.schemas import DiagnosticsPriceInput
+        from client_bot.domain.schemas import DiagnosticsPriceInput
 
         r = DiagnosticsPriceInput(text="0")
         assert r.text == "0"
 
     def test_positive(self):
-        from bot.domain.schemas import DiagnosticsPriceInput
+        from client_bot.domain.schemas import DiagnosticsPriceInput
 
         r = DiagnosticsPriceInput(text="500")
         assert r.text == "500"
 
     def test_negative(self):
-        from bot.domain.schemas import DiagnosticsPriceInput
+        from client_bot.domain.schemas import DiagnosticsPriceInput
 
         with pytest.raises(ValidationError):
             DiagnosticsPriceInput(text="-100")
 
     def test_text(self):
-        from bot.domain.schemas import DiagnosticsPriceInput
+        from client_bot.domain.schemas import DiagnosticsPriceInput
 
         with pytest.raises(ValidationError):
             DiagnosticsPriceInput(text="бесплатно")
@@ -160,19 +160,19 @@ class TestDiagnosticsPriceInput:
 
 class TestRejectReasonInput:
     def test_valid(self):
-        from bot.domain.schemas import RejectReasonInput
+        from client_bot.domain.schemas import RejectReasonInput
 
         r = RejectReasonInput(text="Нет запчастей на данную модель")
         assert "запчастей" in r.text
 
     def test_too_short(self):
-        from bot.domain.schemas import RejectReasonInput
+        from client_bot.domain.schemas import RejectReasonInput
 
         with pytest.raises(ValidationError):
             RejectReasonInput(text="Не")
 
     def test_too_long(self):
-        from bot.domain.schemas import RejectReasonInput
+        from client_bot.domain.schemas import RejectReasonInput
 
         with pytest.raises(ValidationError):
             RejectReasonInput(text="X" * 501)
@@ -183,19 +183,19 @@ class TestRejectReasonInput:
 
 class TestBankAccountInput:
     def test_valid(self):
-        from bot.domain.schemas import BankAccountInput
+        from client_bot.domain.schemas import BankAccountInput
 
         r = BankAccountInput(text="40702810938000012345")
         assert len(r.text) == 20
 
     def test_too_short(self):
-        from bot.domain.schemas import BankAccountInput
+        from client_bot.domain.schemas import BankAccountInput
 
         with pytest.raises(ValidationError):
             BankAccountInput(text="1234567890")
 
     def test_letters(self):
-        from bot.domain.schemas import BankAccountInput
+        from client_bot.domain.schemas import BankAccountInput
 
         with pytest.raises(ValidationError):
             BankAccountInput(text="4070281093800001234a")
@@ -203,19 +203,19 @@ class TestBankAccountInput:
 
 class TestBikInput:
     def test_valid(self):
-        from bot.domain.schemas import BikInput
+        from client_bot.domain.schemas import BikInput
 
         r = BikInput(text="044525225")
         assert len(r.text) == 9
 
     def test_too_short(self):
-        from bot.domain.schemas import BikInput
+        from client_bot.domain.schemas import BikInput
 
         with pytest.raises(ValidationError):
             BikInput(text="04452")
 
     def test_too_long(self):
-        from bot.domain.schemas import BikInput
+        from client_bot.domain.schemas import BikInput
 
         with pytest.raises(ValidationError):
             BikInput(text="0445252251")
@@ -223,13 +223,13 @@ class TestBikInput:
 
 class TestCorrAccountInput:
     def test_valid(self):
-        from bot.domain.schemas import CorrAccountInput
+        from client_bot.domain.schemas import CorrAccountInput
 
         r = CorrAccountInput(text="30101810400000000225")
         assert len(r.text) == 20
 
     def test_invalid(self):
-        from bot.domain.schemas import CorrAccountInput
+        from client_bot.domain.schemas import CorrAccountInput
 
         with pytest.raises(ValidationError):
             CorrAccountInput(text="301018104")
@@ -237,13 +237,13 @@ class TestCorrAccountInput:
 
 class TestBankNameInput:
     def test_valid(self):
-        from bot.domain.schemas import BankNameInput
+        from client_bot.domain.schemas import BankNameInput
 
         r = BankNameInput(text="ПАО Сбербанк")
         assert "Сбербанк" in r.text
 
     def test_too_short(self):
-        from bot.domain.schemas import BankNameInput
+        from client_bot.domain.schemas import BankNameInput
 
         with pytest.raises(ValidationError):
             BankNameInput(text="ПА")
@@ -251,13 +251,13 @@ class TestBankNameInput:
 
 class TestOrgNameInput:
     def test_valid(self):
-        from bot.domain.schemas import OrgNameInput
+        from client_bot.domain.schemas import OrgNameInput
 
         r = OrgNameInput(text="ИП Звездилин Сергей Леонидович")
         assert "Звездилин" in r.text
 
     def test_too_short(self):
-        from bot.domain.schemas import OrgNameInput
+        from client_bot.domain.schemas import OrgNameInput
 
         with pytest.raises(ValidationError):
             OrgNameInput(text="ИП")
@@ -265,25 +265,25 @@ class TestOrgNameInput:
 
 class TestInnInput:
     def test_valid_10(self):
-        from bot.domain.schemas import InnInput
+        from client_bot.domain.schemas import InnInput
 
         r = InnInput(text="7707083893")
         assert len(r.text) == 10
 
     def test_valid_12(self):
-        from bot.domain.schemas import InnInput
+        from client_bot.domain.schemas import InnInput
 
         r = InnInput(text="770708389312")
         assert len(r.text) == 12
 
     def test_invalid_11(self):
-        from bot.domain.schemas import InnInput
+        from client_bot.domain.schemas import InnInput
 
         with pytest.raises(ValidationError):
             InnInput(text="77070838931")
 
     def test_letters(self):
-        from bot.domain.schemas import InnInput
+        from client_bot.domain.schemas import InnInput
 
         with pytest.raises(ValidationError):
             InnInput(text="770708389a")
@@ -294,7 +294,7 @@ class TestInnInput:
 
 class TestPartnerModels:
     def test_service_has_owner_fields(self):
-        from bot.domain.models import Service
+        from client_bot.domain.models import Service
 
         cols = {c.name for c in Service.__table__.columns}
         expected = {
@@ -330,21 +330,21 @@ class TestPartnerModels:
         assert expected.issubset(cols), f"Missing: {expected - cols}"
 
     def test_service_new_fields(self):
-        from bot.domain.models import Service
+        from client_bot.domain.models import Service
 
         cols = {c.name for c in Service.__table__.columns}
         assert "upgrade_categories" in cols
         assert "working_days" in cols
 
     def test_service_owner_settings_table(self):
-        from bot.domain.models import ServiceOwnerSettings
+        from client_bot.domain.models import ServiceOwnerSettings
 
         cols = {c.name for c in ServiceOwnerSettings.__table__.columns}
         assert "notif_new_order" in cols
         assert "notif_cancel" in cols
 
     def test_sheets_retry_queue_table(self):
-        from bot.domain.models import SheetsRetryQueue
+        from client_bot.domain.models import SheetsRetryQueue
 
         cols = {c.name for c in SheetsRetryQueue.__table__.columns}
         assert "operation" in cols
@@ -352,7 +352,7 @@ class TestPartnerModels:
         assert "attempts" in cols
 
     def test_order_partner_fields(self):
-        from bot.domain.models import Order
+        from client_bot.domain.models import Order
 
         cols = {c.name for c in Order.__table__.columns}
         assert "partner_comment" in cols
@@ -366,7 +366,7 @@ class TestPartnerModels:
 
 class TestPartnerStates:
     def test_registration_fsm(self):
-        from bot.domain.states import RegistrationFSM
+        from client_bot.domain.states import RegistrationFSM
 
         expected = [
             "reg_name",
@@ -390,18 +390,18 @@ class TestPartnerStates:
             assert hasattr(RegistrationFSM, s), f"Missing state: {s}"
 
     def test_no_old_category_state(self):
-        from bot.domain.states import RegistrationFSM
+        from client_bot.domain.states import RegistrationFSM
 
         assert not hasattr(RegistrationFSM, "reg_service_category")
 
     def test_partner_profile_fsm(self):
-        from bot.domain.states import PartnerProfileFSM
+        from client_bot.domain.states import PartnerProfileFSM
 
         assert hasattr(PartnerProfileFSM, "edit_field_select")
         assert hasattr(PartnerProfileFSM, "edit_field_value")
 
     def test_partner_order_fsm(self):
-        from bot.domain.states import PartnerOrderFSM
+        from client_bot.domain.states import PartnerOrderFSM
 
         assert hasattr(PartnerOrderFSM, "reject_reason")
 
@@ -631,14 +631,14 @@ class TestPartnerKeyboards:
 
 class TestAdminPartnerKeyboards:
     def test_admin_main_has_partners(self):
-        from bot.ui.keyboards import admin_main_kb
+        from client_bot.ui.keyboards import admin_main_kb
 
         kb = admin_main_kb()
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
         assert "Заявки партнёров" in texts
 
     def test_admin_partner_detail_pending(self):
-        from bot.ui.keyboards import admin_partner_detail_kb
+        from client_bot.ui.keyboards import admin_partner_detail_kb
 
         kb = admin_partner_detail_kb(1, "pending")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
@@ -646,14 +646,14 @@ class TestAdminPartnerKeyboards:
         assert "В главное меню" in texts
 
     def test_admin_partner_detail_active(self):
-        from bot.ui.keyboards import admin_partner_detail_kb
+        from client_bot.ui.keyboards import admin_partner_detail_kb
 
         kb = admin_partner_detail_kb(1, "active")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
         assert "К списку" in texts
 
     def test_admin_partner_detail_suspended(self):
-        from bot.ui.keyboards import admin_partner_detail_kb
+        from client_bot.ui.keyboards import admin_partner_detail_kb
 
         kb = admin_partner_detail_kb(1, "suspended")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
@@ -690,7 +690,7 @@ class TestHandlerImports:
         assert router.name == "partner_notifications"
 
     def test_sheets_writer(self):
-        from bot.services.sheets_writer import (
+        from client_bot.services.sheets_writer import (
             add_service_row,
             update_service_row,
             set_service_available,
@@ -706,12 +706,12 @@ class TestHandlerImports:
 
 class TestPartnerConfig:
     def test_partner_bot_token_exists(self):
-        from bot.core.config import PARTNER_BOT_TOKEN
+        from client_bot.core.config import PARTNER_BOT_TOKEN
 
         assert isinstance(PARTNER_BOT_TOKEN, str)
 
     def test_google_sa_path_exists(self):
-        from bot.core.config import GOOGLE_SA_PATH
+        from client_bot.core.config import GOOGLE_SA_PATH
 
         assert isinstance(GOOGLE_SA_PATH, str)
 
@@ -721,19 +721,19 @@ class TestPartnerConfig:
 
 class TestHydroPriceField:
     def test_service_has_hydroisolation_price(self):
-        from bot.domain.models import Service
+        from client_bot.domain.models import Service
 
         s = Service.__table__
         assert "hydroisolation_price" in s.columns.keys()
 
     def test_order_has_total_cost(self):
-        from bot.domain.models import Order
+        from client_bot.domain.models import Order
 
         t = Order.__table__
         assert "total_cost" in t.columns.keys()
 
     def test_owner_has_draft_hydro_price(self):
-        from bot.domain.models import Service
+        from client_bot.domain.models import Service
 
         t = Service.__table__
         assert "draft_hydro_price" in t.columns.keys()
@@ -744,14 +744,14 @@ class TestHydroPriceField:
 
 class TestConfigCleanup:
     def test_no_partner_bot_name_in_config(self):
-        import bot.core.config as cfg
+        import client_bot.core.config as cfg
 
         assert not hasattr(
             cfg, "PARTNER_BOT_NAME"
         ), "PARTNER_BOT_NAME should be removed"
 
     def test_sheets_columns_is_hardcoded_list(self):
-        from bot.core.config import SHEETS_COLUMNS
+        from client_bot.core.config import SHEETS_COLUMNS
 
         assert isinstance(SHEETS_COLUMNS, list)
         assert len(SHEETS_COLUMNS) >= 15
@@ -761,7 +761,7 @@ class TestConfigCleanup:
         assert "цена гидроизоляции" in lower
 
     def test_sheets_tab_constants(self):
-        from bot.core.config import (
+        from client_bot.core.config import (
             SHEETS_TAB_SERVICES,
             SHEETS_TAB_ORDERS,
             SHEETS_TAB_CLIENTS,
@@ -789,28 +789,28 @@ class TestPartnerCommonNoBotName:
 
 class TestSheetsWriterNewFunctions:
     def test_sync_orders_function_exists(self):
-        from bot.services.sheets_writer import sync_all_orders_to_sheet
+        from client_bot.services.sheets_writer import sync_all_orders_to_sheet
 
         assert callable(sync_all_orders_to_sheet)
 
     def test_sync_clients_function_exists(self):
-        from bot.services.sheets_writer import sync_all_clients_to_sheet
+        from client_bot.services.sheets_writer import sync_all_clients_to_sheet
 
         assert callable(sync_all_clients_to_sheet)
 
     def test_ensure_worksheet_function_exists(self):
-        from bot.services.sheets_writer import _ensure_worksheet
+        from client_bot.services.sheets_writer import _ensure_worksheet
 
         assert callable(_ensure_worksheet)
 
     def test_order_headers_defined(self):
-        from bot.services.sheets_writer import _ORDER_HEADERS
+        from client_bot.services.sheets_writer import _ORDER_HEADERS
 
         assert isinstance(_ORDER_HEADERS, list)
         assert "ID" in _ORDER_HEADERS
 
     def test_client_headers_defined(self):
-        from bot.services.sheets_writer import _CLIENT_HEADERS
+        from client_bot.services.sheets_writer import _CLIENT_HEADERS
 
         assert isinstance(_CLIENT_HEADERS, list)
         assert "TG ID" in _CLIENT_HEADERS
@@ -821,12 +821,12 @@ class TestSheetsWriterNewFunctions:
 
 class TestSyncEngine:
     def test_sync_engine_exists(self):
-        from bot.core.database import sync_engine
+        from client_bot.core.database import sync_engine
 
         assert sync_engine is not None
 
     def test_sync_engine_url_no_aiosqlite(self):
-        from bot.core.database import sync_engine
+        from client_bot.core.database import sync_engine
 
         assert "aiosqlite" not in str(sync_engine.url)
 
@@ -850,7 +850,7 @@ class TestAdminBadRequestFix:
 
 class TestVideoFix:
     def test_welcome_video_has_dimensions(self):
-        import bot.handlers.common as cmod
+        import client_bot.handlers.common as cmod
 
         src = open(cmod.__file__, encoding="utf-8").read()
         assert "width=" in src
@@ -862,26 +862,26 @@ class TestVideoFix:
 
 class TestAutoPayment:
     def test_order_handler_has_asyncio(self):
-        import bot.handlers.order as omod
+        import client_bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "import asyncio" in src
         assert "asyncio.sleep(10)" in src
 
     def test_auto_pay_diagnostics_task(self):
-        import bot.handlers.order as omod
+        import client_bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "_auto_pay_diagnostics" in src
 
     def test_auto_pay_final_task(self):
-        import bot.handlers.order as omod
+        import client_bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "_auto_pay_final" in src
 
     def test_no_payment_stub_text(self):
-        import bot.handlers.order as omod
+        import client_bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "Система оплаты находится в разработке" not in src
@@ -893,19 +893,19 @@ class TestAutoPayment:
 
 class TestDiagnosticsText:
     def test_diagnostics_included_text(self):
-        import bot.handlers.order as omod
+        import client_bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "Диагностика входит в стоимость ремонта" in src
 
     def test_diagnostics_not_included_text(self):
-        import bot.handlers.order as omod
+        import client_bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "диагностика не входит" in src
 
     def test_refund_policy_text(self):
-        import bot.handlers.order as omod
+        import client_bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "вернем ваши деньги" in src
@@ -916,7 +916,7 @@ class TestDiagnosticsText:
 
 class TestYandexRatingDisplay:
     def test_rating_shown_in_confirm(self):
-        import bot.handlers.order as omod
+        import client_bot.handlers.order as omod
 
         src = open(omod.__file__, encoding="utf-8").read()
         assert "svc_rating" in src
@@ -925,24 +925,24 @@ class TestYandexRatingDisplay:
 
 class TestPartnerOrderFSMStates:
     def test_has_set_total_cost(self):
-        from bot.domain.states import PartnerOrderFSM
+        from client_bot.domain.states import PartnerOrderFSM
 
         assert hasattr(PartnerOrderFSM, "set_total_cost")
 
     def test_has_reject_reason(self):
-        from bot.domain.states import PartnerOrderFSM
+        from client_bot.domain.states import PartnerOrderFSM
 
         assert hasattr(PartnerOrderFSM, "reject_reason")
 
     def test_not_duplicated(self):
-        from bot.domain.states import PartnerOrderFSM
+        from client_bot.domain.states import PartnerOrderFSM
 
         assert PartnerOrderFSM.set_total_cost is not PartnerOrderFSM.reject_reason
 
 
 class TestRegistrationHydroPrice:
     def test_reg_hydro_price_state(self):
-        from bot.domain.states import RegistrationFSM
+        from client_bot.domain.states import RegistrationFSM
 
         assert hasattr(RegistrationFSM, "reg_hydro_price")
 
@@ -972,7 +972,10 @@ class TestPartnerOrderDetailKbCost:
 
 class TestFSMReminderImport:
     def test_import(self):
-        from bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
+        from client_bot.services.fsm_reminder import (
+            FSMActivityMiddleware,
+            fsm_reminder_loop,
+        )
 
         assert callable(FSMActivityMiddleware)
         assert callable(fsm_reminder_loop)
@@ -988,7 +991,7 @@ class TestMetroTextUpdated:
 
 class TestConfirmKbHasBack:
     def test_confirm_has_back(self):
-        from bot.ui.keyboards import confirm_kb
+        from client_bot.ui.keyboards import confirm_kb
 
         kb = confirm_kb()
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
@@ -997,14 +1000,14 @@ class TestConfirmKbHasBack:
 
 class TestSupportKb:
     def test_has_tech_support_button(self):
-        from bot.ui.keyboards import support_kb
+        from client_bot.ui.keyboards import support_kb
 
         kb = support_kb("@testuser")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
         assert "Техническая поддержка" in texts
 
     def test_has_cooperation_button(self):
-        from bot.ui.keyboards import support_kb
+        from client_bot.ui.keyboards import support_kb
 
         kb = support_kb("@testuser", "@coopuser")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
@@ -1012,14 +1015,14 @@ class TestSupportKb:
         assert "Вопросы по сотрудничеству" in texts
 
     def test_no_cooperation_without_param(self):
-        from bot.ui.keyboards import support_kb
+        from client_bot.ui.keyboards import support_kb
 
         kb = support_kb("@testuser")
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
         assert "Вопросы по сотрудничеству" not in texts
 
     def test_urls_correct(self):
-        from bot.ui.keyboards import support_kb
+        from client_bot.ui.keyboards import support_kb
 
         kb = support_kb("@sup", "@coop")
         buttons = [btn for row in kb.inline_keyboard for btn in row]
@@ -1029,7 +1032,7 @@ class TestSupportKb:
 
 class TestClientMainMenuKb:
     def test_has_support_button(self):
-        from bot.ui.keyboards import main_menu_kb
+        from client_bot.ui.keyboards import main_menu_kb
 
         kb = main_menu_kb()
         texts = [btn.text for row in kb.keyboard for btn in row]
@@ -1039,19 +1042,19 @@ class TestClientMainMenuKb:
 
 class TestCooperationUserConfig:
     def test_exists(self):
-        from bot.core.config import COOPERATION_USER
+        from client_bot.core.config import COOPERATION_USER
 
         assert isinstance(COOPERATION_USER, str)
 
 
 class TestWelcomeText:
     def test_welcome_contains_service_map(self):
-        from bot.handlers.common import _WELCOME_TEXT
+        from client_bot.handlers.common import _WELCOME_TEXT
 
         assert "Service Map" in _WELCOME_TEXT
 
     def test_welcome_video_path(self):
-        from bot.handlers.common import _WELCOME_VIDEO
+        from client_bot.handlers.common import _WELCOME_VIDEO
 
         assert _WELCOME_VIDEO.name == "client_start.mp4"
 
@@ -1075,7 +1078,7 @@ class TestPartnerStatusLabels:
 
 class TestOrderNewFields:
     def test_estimate_fields(self):
-        from bot.domain.models import Order
+        from client_bot.domain.models import Order
 
         t = Order.__table__
         assert "estimate_cost" in t.columns.keys()
@@ -1084,7 +1087,7 @@ class TestOrderNewFields:
         assert "estimate_description" in t.columns.keys()
 
     def test_client_feedback_fields(self):
-        from bot.domain.models import Order
+        from client_bot.domain.models import Order
 
         t = Order.__table__
         assert "client_visited" in t.columns.keys()
@@ -1095,7 +1098,7 @@ class TestOrderNewFields:
 
 class TestNewFSMStates:
     def test_partner_estimate_states(self):
-        from bot.domain.states import PartnerOrderFSM
+        from client_bot.domain.states import PartnerOrderFSM
 
         assert hasattr(PartnerOrderFSM, "estimate_cost")
         assert hasattr(PartnerOrderFSM, "estimate_items")
@@ -1104,26 +1107,26 @@ class TestNewFSMStates:
         assert hasattr(PartnerOrderFSM, "estimate_confirm")
 
     def test_partner_refused_state(self):
-        from bot.domain.states import PartnerOrderFSM
+        from client_bot.domain.states import PartnerOrderFSM
 
         assert hasattr(PartnerOrderFSM, "client_refused_reason")
 
     def test_client_dispute_state(self):
-        from bot.domain.states import ClientOrderFSM
+        from client_bot.domain.states import ClientOrderFSM
 
         assert hasattr(ClientOrderFSM, "dispute_reason")
 
 
 class TestClientNotificationKbs:
     def test_visited_kb(self):
-        from bot.ui.keyboards import client_visited_kb
+        from client_bot.ui.keyboards import client_visited_kb
 
         kb = client_visited_kb(42)
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
         assert "Были ли вы в сервисе?" in texts
 
     def test_visited_confirm_kb(self):
-        from bot.ui.keyboards import client_visited_confirm_kb
+        from client_bot.ui.keyboards import client_visited_confirm_kb
 
         kb = client_visited_confirm_kb(42)
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
@@ -1132,7 +1135,7 @@ class TestClientNotificationKbs:
         assert "Назад" in texts
 
     def test_confirm_estimate_kb(self):
-        from bot.ui.keyboards import client_confirm_estimate_kb
+        from client_bot.ui.keyboards import client_confirm_estimate_kb
 
         kb = client_confirm_estimate_kb(42)
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
@@ -1141,7 +1144,7 @@ class TestClientNotificationKbs:
         assert "Назад" in texts
 
     def test_ready_kb(self):
-        from bot.ui.keyboards import client_ready_kb
+        from client_bot.ui.keyboards import client_ready_kb
 
         kb = client_ready_kb(42)
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
@@ -1149,7 +1152,7 @@ class TestClientNotificationKbs:
         assert "Оспорить" in texts
 
     def test_pay_confirm_kb(self):
-        from bot.ui.keyboards import client_pay_confirm_kb
+        from client_bot.ui.keyboards import client_pay_confirm_kb
 
         kb = client_pay_confirm_kb(42)
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
@@ -1167,7 +1170,7 @@ class TestStatusMaps:
         assert "disputed" in _STATUS_RU
 
     def test_admin_status_map(self):
-        from bot.handlers.admin import _STATUS_RU
+        from client_bot.handlers.admin import _STATUS_RU
 
         assert "ready_for_pickup" in _STATUS_RU
         assert "client_refused" in _STATUS_RU
@@ -1177,7 +1180,7 @@ class TestStatusMaps:
 
 class TestAdminFilterKb:
     def test_has_new_statuses(self):
-        from bot.ui.keyboards import admin_filter_kb
+        from client_bot.ui.keyboards import admin_filter_kb
 
         kb = admin_filter_kb()
         data = [btn.callback_data for row in kb.inline_keyboard for btn in row]
@@ -1189,7 +1192,7 @@ class TestAdminFilterKb:
 class TestFormatDraftHidesEmpty:
     def test_no_hydro_price_when_no_hydro(self):
         from partner_bot.handlers.common import _format_draft
-        from bot.domain.models import Service
+        from client_bot.domain.models import Service
 
         svc = Service(name="test", service_type="repair", telegram_id=123)
         svc.draft_hydroisolation = False
@@ -1199,7 +1202,7 @@ class TestFormatDraftHidesEmpty:
 
     def test_shows_hydro_price_when_hydro(self):
         from partner_bot.handlers.common import _format_draft
-        from bot.domain.models import Service
+        from client_bot.domain.models import Service
 
         svc = Service(name="test", service_type="repair", telegram_id=123)
         svc.draft_hydroisolation = True
@@ -1217,3 +1220,141 @@ class TestPartnerFilterKb:
         data = [btn.callback_data for row in kb.inline_keyboard for btn in row]
         assert any("in_progress" in d for d in data)
         assert any("ready_for_pickup" in d for d in data)
+
+
+# ── Электрика + механика category ─────────────────────────────
+
+
+class TestRepairCategoryElektrikaMekhanika:
+    def test_repair_cats_has_three_options(self):
+        from partner_bot.ui.keyboards import _REPAIR_CATS
+
+        assert len(_REPAIR_CATS) == 3
+        assert "Электрика + механика" in _REPAIR_CATS
+
+    def test_reg_category_kb_has_combined(self):
+        from partner_bot.ui.keyboards import reg_category_kb
+
+        kb = reg_category_kb()
+        texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        assert "Электрика + механика" in texts
+        assert "Электрика" in texts
+        assert "Механика" in texts
+
+    def test_reg_category_kb_callback_data(self):
+        from partner_bot.ui.keyboards import reg_category_kb
+
+        kb = reg_category_kb()
+        cbs = [
+            btn.callback_data
+            for row in kb.inline_keyboard
+            for btn in row
+            if btn.callback_data
+        ]
+        assert any("Электрика + механика" in cb for cb in cbs)
+
+
+# ── Price change FSM states ─────────────────────────────────────
+
+
+class TestPriceChangeFSMStates:
+    def test_has_update_price_cost(self):
+        from client_bot.domain.states import PartnerOrderFSM
+
+        assert hasattr(PartnerOrderFSM, "update_price_cost")
+
+    def test_has_update_price_reason(self):
+        from client_bot.domain.states import PartnerOrderFSM
+
+        assert hasattr(PartnerOrderFSM, "update_price_reason")
+
+    def test_states_are_distinct(self):
+        from client_bot.domain.states import PartnerOrderFSM
+
+        assert (
+            PartnerOrderFSM.update_price_cost is not PartnerOrderFSM.update_price_reason
+        )
+
+
+# ── Price change model fields ───────────────────────────────────
+
+
+class TestPriceChangeOrderFields:
+    def test_order_has_price_change_reason(self):
+        from client_bot.domain.models import Order
+
+        t = Order.__table__
+        assert "price_change_reason" in t.columns.keys()
+
+    def test_order_has_price_updated_at(self):
+        from client_bot.domain.models import Order
+
+        t = Order.__table__
+        assert "price_updated_at" in t.columns.keys()
+
+
+# ── Price change keyboard button ─────────────────────────────────
+
+
+class TestPriceChangeKeyboard:
+    def test_in_progress_has_update_price_button(self):
+        from partner_bot.ui.keyboards import partner_order_detail_kb
+
+        kb = partner_order_detail_kb(99, "in_progress")
+        texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        assert "Изменить цену" in texts
+
+    def test_in_progress_update_price_callback(self):
+        from partner_bot.ui.keyboards import partner_order_detail_kb
+
+        kb = partner_order_detail_kb(99, "in_progress")
+        cbs = [
+            btn.callback_data
+            for row in kb.inline_keyboard
+            for btn in row
+            if btn.callback_data
+        ]
+        assert any("pord:update_price:99" in cb for cb in cbs)
+
+    def test_accepted_has_no_update_price_button(self):
+        from partner_bot.ui.keyboards import partner_order_detail_kb
+
+        kb = partner_order_detail_kb(99, "accepted")
+        texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        assert "Изменить цену" not in texts
+
+    def test_awaiting_payment_has_no_update_price_button(self):
+        from partner_bot.ui.keyboards import partner_order_detail_kb
+
+        kb = partner_order_detail_kb(99, "awaiting_payment", "client_user")
+        texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        assert "Изменить цену" not in texts
+
+
+# ── Price change handler presence ────────────────────────────────
+
+
+class TestPriceChangeHandlers:
+    def test_update_price_handlers_exist(self):
+        import partner_bot.handlers.orders as omod
+        import inspect
+
+        src = inspect.getsource(omod)
+        assert "update_price_start" in src
+        assert "update_price_cost_input" in src
+        assert "update_price_reason_input" in src
+
+    def test_handler_checks_in_progress_status(self):
+        import partner_bot.handlers.orders as omod
+        import inspect
+
+        src = inspect.getsource(omod)
+        # The handler should reject orders not in_progress
+        assert 'order.status != "in_progress"' in src
+
+    def test_handler_notifies_client(self):
+        import partner_bot.handlers.orders as omod
+        import inspect
+
+        src = inspect.getsource(omod)
+        assert "Failed to notify client about price update" in src

@@ -7,9 +7,9 @@ import logging
 from aiogram import F, Router, types
 from sqlalchemy import select
 
-from bot.core.database import async_session
-from bot.domain.models import ServiceOwnerSettings
-from bot.texts import Btn, Partner
+from client_bot.core.database import async_session
+from client_bot.domain.models import ServiceOwnerSettings
+from client_bot.texts import Btn, Partner
 from partner_bot.handlers.common import _get_owner
 from partner_bot.ui.keyboards import notif_settings_kb
 

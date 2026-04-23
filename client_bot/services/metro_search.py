@@ -8,7 +8,7 @@ from __future__ import annotations
 import difflib
 from typing import Sequence
 
-from bot.domain.models import MetroStation
+from client_bot.domain.models import MetroStation
 
 
 def best_metro_match(

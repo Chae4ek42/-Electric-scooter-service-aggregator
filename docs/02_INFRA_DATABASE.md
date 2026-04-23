@@ -4,28 +4,29 @@
 
 ### Каталог (справочники)
 
-| Таблица | Ключевые поля |
-|---|---|
-| `brands` | `id`, `name` |
-| `models` | `id`, `brand_id` (FK), `name` |
-| `service_categories` | `id`, `name` (Механика / Электрика) |
-| `services` | `id`, `category_id` (FK, nullable), `name`, `service_type`, `is_available`, `address`, `yandex_rating`, `nearest_metro`, `phone`, `telegram_handle`, `partnership_status`, `main_brand_scooter`, `open_time`, `close_time`, `has_hydroisolation`, `diagnostics_price`, `diagnostics_included`, `upgrade_categories`, `working_days`, `pause_until`, `registration_complete` (Boolean), `telegram_id` (BigInteger, unique, nullable), `status`, `registered_at`, `approved_at`, `approved_by`, `draft_*` (22 поля анкеты) |
-| `metro_stations` | `id`, `name`, `line`, `lat` (nullable), `lon` (nullable) |
+| Таблица              | Ключевые поля                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `brands`             | `id`, `name`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `models`             | `id`, `brand_id` (FK), `name`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `service_categories` | `id`, `name` (Механика / Электрика / Электрика + механика)                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `services`           | `id`, `category_id` (FK, nullable), `name`, `service_type`, `is_available`, `address`, `yandex_rating`, `nearest_metro`, `phone`, `telegram_handle`, `partnership_status`, `main_brand_scooter`, `open_time`, `close_time`, `has_hydroisolation`, `diagnostics_price`, `diagnostics_included`, `upgrade_categories`, `working_days`, `pause_until`, `registration_complete` (Boolean), `telegram_id` (BigInteger, unique, nullable), `status`, `registered_at`, `approved_at`, `approved_by`, `draft_*` (22 поля анкеты) |
+| `metro_stations`     | `id`, `name`, `line`, `lat` (nullable), `lon` (nullable)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 **`service_type`**: `'repair'` — только ремонт, `'upgrade'` — только апгрейд, `'complex'` — оба типа.
 
 **`is_available`**: `Boolean`, `default=True`. Синхронизируется из колонки «Доступен» в Google Sheets. Все запросы к списку сервисов фильтруют `is_available.is_(True)`.
 **`registration_complete`**: `Boolean`, `default=False`. Сервис виден клиентам только при `registration_complete = True`. Устанавливается в `True` при импорте из Google Sheets и при одобрении анкеты партнёра админом.
+
 > Удалённые поля: `price`, `top_service`. Данные о сервисах в seed не вносятся — всё из Google Sheets.
 
 ### Пользователи и заявки
 
-| Таблица | Ключевые поля |
-|---|---|
-| `users` | `id` (TG BigInteger), `username`, `full_name`, `created_at` |
-| `orders` | `id`, `user_id` (FK), `service_id` (FK, **nullable**), `model_id` (FK, **nullable**), `model_custom_name`, `brand_custom_name`, `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `total_cost`, `partner_comment`, `reject_reason`, `estimate_cost`, `estimate_items`, `estimate_deadline`, `estimate_description`, `client_visited`, `client_confirmed_estimate`, `dispute_reason`, `refusal_reason`, `accepted_at`, `completed_at`, `status`, `created_at` |
-| `service_owner_settings` | `owner_id` (PK, FK → services.id), `notif_new_order`, `notif_cancel` |
-| `sheets_retry_queue` | `id`, `service_id` (FK), `operation`, `payload_json`, `attempts`, `last_attempt_at`, `created_at` |
+| Таблица                  | Ключевые поля                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `users`                  | `id` (TG BigInteger), `username`, `full_name`, `created_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `orders`                 | `id`, `user_id` (FK), `service_id` (FK, **nullable**), `model_id` (FK, **nullable**), `model_custom_name`, `brand_custom_name`, `metro_station`, `scheduled_date`, `scheduled_time`, `problem_description`, `upgrade_category`, `diagnostics_price`, `total_cost`, `partner_comment`, `reject_reason`, `estimate_cost`, `estimate_items`, `estimate_deadline`, `estimate_description`, `client_visited`, `client_confirmed_estimate`, `dispute_reason`, `refusal_reason`, `accepted_at`, `completed_at`, `status`, `created_at` |
+| `service_owner_settings` | `owner_id` (PK, FK → services.id), `notif_new_order`, `notif_cancel`                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `sheets_retry_queue`     | `id`, `service_id` (FK), `operation`, `payload_json`, `attempts`, `last_attempt_at`, `created_at`                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 **Статусы заявки:**
 
@@ -44,6 +45,7 @@ no_center  (сервис-центр не найден, service_id = NULL)
 **`service_id`** nullable — если подходящий сервис-центр не найден, заявка создаётся со статусом `no_center` и `service_id = NULL`.
 
 **Поля жизненного цикла:**
+
 - `estimate_cost` (Float) — стоимость в смете партнёра
 - `estimate_items` (Text) — перечень работ
 - `estimate_deadline` (String) — срок выполнения
@@ -52,6 +54,8 @@ no_center  (сервис-центр не найден, service_id = NULL)
 - `client_confirmed_estimate` (Boolean, nullable) — подтвердил ли клиент смету
 - `dispute_reason` (Text) — причина оспаривания
 - `refusal_reason` (Text) — причина отказа клиента
+- `price_change_reason` (Text) — причина изменения цены сервисом в процессе ремонта
+- `price_updated_at` (DateTime) — дата/время последнего изменения цены
 
 `model_id` nullable — поддерживает кнопку «Другое»: в этом случае имя хранится в `model_custom_name`, `model_id` — на строку-плейсхолдер «Другое» (или NULL).
 
@@ -66,43 +70,44 @@ no_center  (сервис-центр не найден, service_id = NULL)
 ## Инициализация БД (`bot/services/seed.py`)
 
 `init_db()` выполняет три шага:
+
 1. `Base.metadata.create_all` — создаёт все таблицы
 2. Inline-миграция — `ALTER TABLE ... ADD COLUMN` через `aiosqlite` (если столбцы отсутствуют)
 3. `seed_database()` — наполняет справочники, если пустые
 
 **Текущие данные seed:**
 
-| Сущность | Количество |
-|---|---|
-| Бренды | 15 |
-| Модели | ~111 (по 6–13 на бренд + «Другое») |
-| Категории сервисов | 2 (Механика, Электрика) |
-| Станции метро | 266 |
-| Сервисные центры | **Только из Google Sheets**, в seed не вносятся |
+| Сущность           | Количество                                      |
+| ------------------ | ----------------------------------------------- |
+| Бренды             | 15                                              |
+| Модели             | ~111 (по 6–13 на бренд + «Другое»)              |
+| Категории сервисов | 3 (Механика, Электрика, Электрика + механика)   |
+| Станции метро      | 266                                             |
+| Сервисные центры   | **Только из Google Sheets**, в seed не вносятся |
 
 ---
 
 ## Валидация данных (`bot/domain/schemas.py`)
 
-| Схема | Поле | Правило |
-|---|---|---|
-| `MetroTextInput` | `text` | 2–100 символов |
-| `ProblemDescription` | `text` | 3–1000 символов |
-| `ModelNameInput` | `text` | 2–150 символов, хотя бы одна буква |
-| `BrandNameInput` | `text` | 2–100 символов, хотя бы одна буква |
-| `ServiceNameInput` | `text` | 3–200 символов, хотя бы одна буква |
-| `AddressInput` | `text` | 10–400 символов |
-| `PhoneInput` | `text` | regex `\+?[\d\- ]{7,20}` |
-| `TelegramHandleInput` | `text` | `@?[a-zA-Z0-9_]{5,32}`, срезает `@` |
-| `WorkHoursInput` | `text` | HH:MM-HH:MM |
-| `DiagnosticsPriceInput` | `text` | целое число ≥ 0 |
-| `RejectReasonInput` | `text` | 3–500 символов |
-| `BankAccountInput` | `text` | ровно 20 цифр |
-| `BankNameInput` | `text` | 3–200 символов |
-| `BikInput` | `text` | ровно 9 цифр |
-| `CorrAccountInput` | `text` | ровно 20 цифр |
-| `OrgNameInput` | `text` | 3–300 символов |
-| `InnInput` | `text` | 10 или 12 цифр |
+| Схема                   | Поле   | Правило                             |
+| ----------------------- | ------ | ----------------------------------- |
+| `MetroTextInput`        | `text` | 2–100 символов                      |
+| `ProblemDescription`    | `text` | 3–1000 символов                     |
+| `ModelNameInput`        | `text` | 2–150 символов, хотя бы одна буква  |
+| `BrandNameInput`        | `text` | 2–100 символов, хотя бы одна буква  |
+| `ServiceNameInput`      | `text` | 3–200 символов, хотя бы одна буква  |
+| `AddressInput`          | `text` | 10–400 символов                     |
+| `PhoneInput`            | `text` | regex `\+?[\d\- ]{7,20}`            |
+| `TelegramHandleInput`   | `text` | `@?[a-zA-Z0-9_]{5,32}`, срезает `@` |
+| `WorkHoursInput`        | `text` | HH:MM-HH:MM                         |
+| `DiagnosticsPriceInput` | `text` | целое число ≥ 0                     |
+| `RejectReasonInput`     | `text` | 3–500 символов                      |
+| `BankAccountInput`      | `text` | ровно 20 цифр                       |
+| `BankNameInput`         | `text` | 3–200 символов                      |
+| `BikInput`              | `text` | ровно 9 цифр                        |
+| `CorrAccountInput`      | `text` | ровно 20 цифр                       |
+| `OrgNameInput`          | `text` | 3–300 символов                      |
+| `InnInput`              | `text` | 10 или 12 цифр                      |
 
 При ошибке пользователь получает человеческое сообщение и остаётся в том же FSM-состоянии.
 
@@ -150,37 +155,58 @@ https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&she
 
 ### Настройка порядка столбцов
 
-Порядок и набор столбцов задаётся через переменную `SHEETS_COLUMNS` в `.env`:
+Порядок и набор столбцов задаётся через `sheets.columns` в **`config.yaml`** (не в `.env`):
 
-```env
-SHEETS_COLUMNS=Название,Рейтинг Я.Карты,Телефон,Telegram,Адрес,Метро ближ.,Специализация,Основной бренд самокатов,Статус,Доступен,Категория,Открытие,Закрытие,Гидроизоляция,Диагностика,Входит в стоимость
+```yaml
+sheets:
+    columns:
+        - Название
+        - Рейтинг Я.Карты
+        - Телефон
+        - Telegram
+        - Адрес
+        - Метро ближ.
+        - Специализация
+        - Основной бренд самокатов
+        - Статус
+        - Доступен
+        - Категория
+        - Открытие
+        - Закрытие
+        - Гидроизоляция
+        - Цена гидроизоляции
+        - Диагностика
+        - Входит в стоимость
+        - Категории апгрейда
+        - Рабочие дни
+        - Завершена
 ```
 
-Если `SHEETS_COLUMNS` не задан — используется значение по умолчанию из `config.py`.
+Если `config.yaml` отсутствует — бот не стартует (`FileNotFoundError`). Если поле `sheets.columns` не задано — используется список по умолчанию из `SheetsConfig` (20 колонок, см. выше).
 При записи в таблицу строка формируется в порядке `SHEETS_COLUMNS`.
 При чтении столбцы ищутся по заголовкам (порядок не важен), но при расхождении с
 реальной таблицей выводится предупреждение `SYNC_COLUMNS_MISMATCH`.
 
 **Лист «Сервисы» — читаемые столбцы:**
 
-| Столбец в таблице | Поле модели | Примечание |
-|---|---|---|
-| Название | `name` | Ключ upsert |
-| Рейтинг Я.Карты | `yandex_rating` | `float`, запятая → точка |
-| Телефон | `phone` | При записи префиксируется `'` для предотвращения интерпретации как формулы (#ERROR!). При чтении значения `#...` игнорируются. |
-| Telegram | `telegram_handle` | |
-| Адрес | `address` | |
-| Метро ближ. | `nearest_metro` | |
-| Специализация | `service_type` | ремонт/апгрейд/комплекс|
-| Основной бренд самокатов | `main_brand_scooter` | Текст |
-| Статус | `partnership_status` | |
-| Доступен | `is_available` | да/yes/1/true → `True` |
-| Категория | `category_id` | FK на `service_categories` |
-| Открытие | `open_time` | Формат HH:MM |
-| Закрытие | `close_time` | Формат HH:MM |
-| Гидроизоляция | `has_hydroisolation` | Да/Нет → `Boolean` |
-| Диагностика | `diagnostics_price` | `float`, стоимость диагностики |
-| Входит в стоимость | `diagnostics_included` | Да/Нет → `Boolean` |
+| Столбец в таблице        | Поле модели            | Примечание                                                                                                                     |
+| ------------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Название                 | `name`                 | Ключ upsert                                                                                                                    |
+| Рейтинг Я.Карты          | `yandex_rating`        | `float`, запятая → точка                                                                                                       |
+| Телефон                  | `phone`                | При записи префиксируется `'` для предотвращения интерпретации как формулы (#ERROR!). При чтении значения `#...` игнорируются. |
+| Telegram                 | `telegram_handle`      |                                                                                                                                |
+| Адрес                    | `address`              |                                                                                                                                |
+| Метро ближ.              | `nearest_metro`        |                                                                                                                                |
+| Специализация            | `service_type`         | ремонт/апгрейд/комплекс                                                                                                        |
+| Основной бренд самокатов | `main_brand_scooter`   | Текст                                                                                                                          |
+| Статус                   | `partnership_status`   |                                                                                                                                |
+| Доступен                 | `is_available`         | да/yes/1/true → `True`                                                                                                         |
+| Категория                | `category_id`          | FK на `service_categories`                                                                                                     |
+| Открытие                 | `open_time`            | Формат HH:MM                                                                                                                   |
+| Закрытие                 | `close_time`           | Формат HH:MM                                                                                                                   |
+| Гидроизоляция            | `has_hydroisolation`   | Да/Нет → `Boolean`                                                                                                             |
+| Диагностика              | `diagnostics_price`    | `float`, стоимость диагностики                                                                                                 |
+| Входит в стоимость       | `diagnostics_included` | Да/Нет → `Boolean`                                                                                                             |
 
 **Upsert-логика:**
 
@@ -192,11 +218,11 @@ SHEETS_COLUMNS=Название,Рейтинг Я.Карты,Телефон,Tele
 
 **Поведение при ошибках:**
 
-| Тип ошибки | Поведение |
-|---|---|
+| Тип ошибки                                       | Поведение                                      |
+| ------------------------------------------------ | ---------------------------------------------- |
 | `TimeoutError`, `aiohttp.ClientError`, `OSError` | WARNING в лог, бот запускается с данными из БД |
-| Таблица доступна, но 0 записей | `ValueError` — бот не запускается |
-| `GOOGLE_SHEET_ID` пуст | Синхронизация молча пропускается |
+| Таблица доступна, но 0 записей                   | `ValueError` — бот не запускается              |
+| `GOOGLE_SHEET_ID` пуст                           | Синхронизация молча пропускается               |
 
 Фоновая синхронизация — `_sheets_sync_loop()` в `__main__.py`, интервал `SHEETS_SYNC_INTERVAL` сек (300 по умолчанию). Любая ошибка в фоновом цикле логируется и не останавливает бот.
 
@@ -221,6 +247,7 @@ result: RankingResult = await rank_services(ctx, session, limit=1)
 ```
 
 **Фильтрация:**
+
 - `service_type`: `'repair'` → `IN ('repair', 'complex')`, `'upgrade'` → `IN ('upgrade', 'complex')`
 - `is_available IS TRUE`
 - Незаконченные анкеты исключаются: `telegram_id IS NULL OR status = 'активный'`
@@ -231,14 +258,14 @@ result: RankingResult = await rank_services(ctx, session, limit=1)
 
 **Скор = 0.6 × proximity + 0.4 × rating:**
 
-| proximity (BFS) | Скор |
-|---|---|
-| dist=0 (та же станция) | 1.00 |
+| proximity (BFS)         | Скор |
+| ----------------------- | ---- |
+| dist=0 (та же станция)  | 1.00 |
 | dist=1 (прямой переход) | 0.85 |
-| dist=2 | 0.65 |
-| dist=3 | 0.45 |
-| dist≥4 или None | 0.25 |
-| нет данных о метро | 0.50 |
+| dist=2                  | 0.65 |
+| dist=3                  | 0.45 |
+| dist≥4 или None         | 0.25 |
+| нет данных о метро      | 0.50 |
 
 rating = `min(yandex_rating, 5.0) / 5.0`. При отсутствии рейтинга = 0.5 (нейтрально).
 
@@ -248,19 +275,19 @@ rating = `min(yandex_rating, 5.0) / 5.0`. При отсутствии рейти
 
 ## Конфигурация (`bot/core/config.py`)
 
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `BOT_TOKEN` | **обязательно** | Токен Telegram Bot API |
-| `DATABASE_URL` | `sqlite+aiosqlite:///esas.db` | URL подключения к БД |
-| `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @) |
-| `SUPPORT_USER` | `@i_jusp` | Контакт техподдержки |
-| `GOOGLE_SHEET_ID` | `""` | ID публичной Google Таблицы |
-| `SHEETS_SYNC_INTERVAL` | `300` | Интервал фоновой синхронизации, сек || `SHEETS_COLUMNS` | *(16 столбцов)* | Порядок столбцов листа «Сервисы» (через запятую) || `THROTTLE_RATE` | `0.2` | Мин. интервал между запросами, сек |
-| `REDIS_URL` | `redis://localhost:6379/0` | URL Redis для FSM storage и throttling |
-| `CALENDAR_DAYS` | `14` | Дней вперёд в календаре |
-| `WORK_HOUR_START` | `8` | Начало рабочего дня (моск. вр.) |
-| `WORK_HOUR_END` | `22` | Конец рабочего дня (моск. вр.) |
-| `TIME_SLOT_MINUTES` | `60` | Шаг тайм-слота, мин |
+| Переменная             | По умолчанию                  | Описание                                         |
+| ---------------------- | ----------------------------- | ------------------------------------------------ | --- | ---------------- | --------------- | ------------------------------------------------ | --- | --------------- | ----- | ---------------------------------- |
+| `BOT_TOKEN`            | **обязательно**               | Токен Telegram Bot API                           |
+| `DATABASE_URL`         | `sqlite+aiosqlite:///esas.db` | URL подключения к БД                             |
+| `ADMIN_USERNAMES`      | `""`                          | Username-ы администраторов через запятую (без @) |
+| `SUPPORT_USER`         | `@i_jusp`                     | Контакт техподдержки                             |
+| `GOOGLE_SHEET_ID`      | `""`                          | ID публичной Google Таблицы                      |
+| `SHEETS_SYNC_INTERVAL` | `300`                         | Интервал фоновой синхронизации, сек              |     | `SHEETS_COLUMNS` | _(16 столбцов)_ | Порядок столбцов листа «Сервисы» (через запятую) |     | `THROTTLE_RATE` | `0.2` | Мин. интервал между запросами, сек |
+| `REDIS_URL`            | `redis://localhost:6379/0`    | URL Redis для FSM storage и throttling           |
+| `CALENDAR_DAYS`        | `14`                          | Дней вперёд в календаре                          |
+| `WORK_HOUR_START`      | `8`                           | Начало рабочего дня (моск. вр.)                  |
+| `WORK_HOUR_END`        | `22`                          | Конец рабочего дня (моск. вр.)                   |
+| `TIME_SLOT_MINUTES`    | `60`                          | Шаг тайм-слота, мин                              |
 
 FSM-хранилище — `RedisStorage` (из `aiogram.fsm.storage.redis`). Все FSM-состояния и throttle-таймстемпы сохраняются в Redis и переживают перезапуск бота. Конфигурируется через `REDIS_URL`.
 
@@ -268,10 +295,10 @@ FSM-хранилище — `RedisStorage` (из `aiogram.fsm.storage.redis`). В
 https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet={Лист}
 ```
 
-| Лист | Столбцы | Назначение |
-|---|---|---|
-| Услуги | Название, Тип (ремонт/апгрейд/оба), Категория, Активна (ДА/НЕТ) | Upsert в `services` |
-| Настройки | Ключ, Значение | Runtime-параметры конфига |
+| Лист      | Столбцы                                                         | Назначение                |
+| --------- | --------------------------------------------------------------- | ------------------------- |
+| Услуги    | Название, Тип (ремонт/апгрейд/оба), Категория, Активна (ДА/НЕТ) | Upsert в `services`       |
+| Настройки | Ключ, Значение                                                  | Runtime-параметры конфига |
 
 Ключи «Настройки»: `WORK_HOUR_START`, `WORK_HOUR_END`, `CALENDAR_DAYS`, `SLOT_STEP_MINUTES`, `SUPPORT_USER`.
 
@@ -282,15 +309,15 @@ https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&she
 
 ## Конфигурация (`bot/core/config.py`)
 
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `BOT_TOKEN` | **обязательно** | Токен Telegram Bot API |
-| `DATABASE_URL` | `sqlite+aiosqlite:///esas.db` | URL подключения к БД |
-| `ADMIN_USERNAMES` | `""` | Username-ы администраторов через запятую (без @) |
-| `SUPPORT_USER` | `@support` | Контакт техподдержки |
-| `GOOGLE_SHEET_ID` | `""` | ID публичной Google Таблицы |
-| `SHEETS_SYNC_INTERVAL` | `300` | Интервал синхронизации, сек |
-| `SHEETS_COLUMNS` | *(16 столбцов)* | Порядок столбцов листа «Сервисы» через запятую |
+| Переменная             | По умолчанию                  | Описание                                         |
+| ---------------------- | ----------------------------- | ------------------------------------------------ |
+| `BOT_TOKEN`            | **обязательно**               | Токен Telegram Bot API                           |
+| `DATABASE_URL`         | `sqlite+aiosqlite:///esas.db` | URL подключения к БД                             |
+| `ADMIN_USERNAMES`      | `""`                          | Username-ы администраторов через запятую (без @) |
+| `SUPPORT_USER`         | `@support`                    | Контакт техподдержки                             |
+| `GOOGLE_SHEET_ID`      | `""`                          | ID публичной Google Таблицы                      |
+| `SHEETS_SYNC_INTERVAL` | `300`                         | Интервал синхронизации, сек                      |
+| `SHEETS_COLUMNS`       | _(16 столбцов)_               | Порядок столбцов листа «Сервисы» через запятую   |
 
 FSM-хранилище — `RedisStorage` (все FSM-состояния и throttle-таймстемпы переживают перезапуск).
 

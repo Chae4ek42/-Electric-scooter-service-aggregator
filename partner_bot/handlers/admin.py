@@ -13,12 +13,12 @@ from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import func, select
 
-from bot.core.config import ADMIN_USERNAMES
-from bot.core.database import async_session
-from bot.core.formatting import e
-from bot.domain.models import Service
-from bot.services.sheets_writer import update_service_row
-from bot.texts import TYPE_RU, PARTNER_STATUS_RU, Btn, Partner
+from client_bot.core.config import ADMIN_USERNAMES
+from client_bot.core.database import async_session
+from client_bot.core.formatting import e
+from client_bot.domain.models import Service
+from client_bot.services.sheets_writer import update_service_row
+from client_bot.texts import TYPE_RU, PARTNER_STATUS_RU, Btn, Partner
 from partner_bot.ui.keyboards import (
     padm_main_kb,
     padm_partner_detail_kb,

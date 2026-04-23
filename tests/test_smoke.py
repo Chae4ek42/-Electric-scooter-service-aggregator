@@ -17,8 +17,8 @@ from sqlalchemy import select, func
 
 
 async def test_all() -> None:
-    from bot.core.database import async_session, engine
-    from bot.domain.models import (
+    from client_bot.core.database import async_session, engine
+    from client_bot.domain.models import (
         Base,
         Brand,
         MetroStation,
@@ -29,7 +29,7 @@ async def test_all() -> None:
         User,
         UserAction,
     )
-    from bot.services.seed import init_db
+    from client_bot.services.seed import init_db
 
     print("=" * 60)
     print("ESAS Bot — Module Smoke Tests")
@@ -67,7 +67,10 @@ async def test_all() -> None:
         # 4. Service categories
         cats = (await session.execute(select(ServiceCategory))).scalars().all()
         print(f"\n[4] Service categories: {[c.name for c in cats]}")
-        assert len(cats) == 2
+        cat_names = {c.name for c in cats}
+        assert "Механика" in cat_names
+        assert "Электрика" in cat_names
+        assert "Электрика + механика" in cat_names
         print("    ✅ Categories OK")
 
         # 5. Services
@@ -107,7 +110,7 @@ async def test_all() -> None:
 
     # 7. Metro fuzzy search
     print("\n[7] Testing metro fuzzy search …")
-    from bot.services.metro_search import best_metro_match, top_metro_matches
+    from client_bot.services.metro_search import best_metro_match, top_metro_matches
 
     async with async_session() as session:
         stations = (await session.execute(select(MetroStation))).scalars().all()
@@ -142,7 +145,7 @@ async def test_all() -> None:
 
     # 8. Keyboards
     print("\n[8] Testing keyboard builders …")
-    from bot.ui.keyboards import (
+    from client_bot.ui.keyboards import (
         calendar_kb,
         confirm_kb,
         location_method_kb,
@@ -160,7 +163,7 @@ async def test_all() -> None:
 
     cal = calendar_kb()
     # Today may or may not be included (depends on Moscow time vs WORK_HOUR_END)
-    from bot.core.config import CALENDAR_DAYS
+    from client_bot.core.config import CALENDAR_DAYS
 
     total_cal_btns = sum(len(row) for row in cal.inline_keyboard)
     # 14 date buttons (no today) + 1 back = 15  OR  15 date buttons (with today) + 1 back = 16
@@ -179,7 +182,7 @@ async def test_all() -> None:
 
     # 9. FSM states
     print("\n[9] Testing FSM states …")
-    from bot.domain.states import OrderFSM
+    from client_bot.domain.states import OrderFSM
 
     states = [
         OrderFSM.service_type,
@@ -203,7 +206,7 @@ async def test_all() -> None:
     # 10. Pydantic schemas
     print("\n[10] Testing Pydantic schemas …")
     from pydantic import ValidationError
-    from bot.domain.schemas import MetroTextInput, ProblemDescription
+    from client_bot.domain.schemas import MetroTextInput, ProblemDescription
 
     # Valid
     assert MetroTextInput(text="Арбатская").text == "Арбатская"
@@ -298,7 +301,7 @@ async def test_all() -> None:
 
     # 13. Service owner-related columns
     print("\n[13] Testing Service owner columns …")
-    from bot.domain.models import Service as SVC
+    from client_bot.domain.models import Service as SVC
 
     svc_cols = {c.name for c in SVC.__table__.columns}
     assert "status" in svc_cols, "Service must have 'status' column"
@@ -316,7 +319,7 @@ async def test_all() -> None:
 
     # 14. Redis config
     print("\n[14] Testing Redis config …")
-    from bot.core.config import REDIS_URL
+    from client_bot.core.config import REDIS_URL
 
     assert REDIS_URL.startswith("redis://"), f"REDIS_URL = '{REDIS_URL}'"
     print(f"    REDIS_URL = {REDIS_URL}")
@@ -324,7 +327,7 @@ async def test_all() -> None:
 
     # 15. ThrottlingMiddleware has Redis support
     print("\n[15] Testing ThrottlingMiddleware (Redis with fallback) …")
-    from bot.core.middlewares import ThrottlingMiddleware
+    from client_bot.core.middlewares import ThrottlingMiddleware
 
     mw = ThrottlingMiddleware()
     assert hasattr(mw, "_KEY_PREFIX"), "ThrottlingMiddleware missing _KEY_PREFIX"
@@ -334,7 +337,7 @@ async def test_all() -> None:
 
     # 16. SHEETS_COLUMNS config
     print("\n[16] Testing SHEETS_COLUMNS config …")
-    from bot.core.config import SHEETS_COLUMNS
+    from client_bot.core.config import SHEETS_COLUMNS
 
     assert isinstance(SHEETS_COLUMNS, list), "SHEETS_COLUMNS must be a list"
     assert len(SHEETS_COLUMNS) >= 10, f"Expected ≥10 columns, got {len(SHEETS_COLUMNS)}"
@@ -354,7 +357,7 @@ async def test_all() -> None:
 
     # 18. sheets_writer uses SHEETS_COLUMNS
     print("\n[18] Testing sheets_writer column mapping …")
-    from bot.services.sheets_writer import _FIELD_GETTERS, _service_to_row
+    from client_bot.services.sheets_writer import _FIELD_GETTERS, _service_to_row
 
     for col in SHEETS_COLUMNS:
         assert col.strip().lower() in _FIELD_GETTERS, f"No getter for column '{col}'"

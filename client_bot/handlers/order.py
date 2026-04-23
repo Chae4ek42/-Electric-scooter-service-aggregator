@@ -12,11 +12,11 @@ from aiogram.fsm.context import FSMContext
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from bot.core.config import ADMIN_USERNAMES, SUPPORT_USER, COOPERATION_USER
-from bot.core.formatting import e
-from bot.core.database import async_session
-from bot.texts import Btn, Client, ORDER_STATUS_RU
-from bot.ui.keyboards import (
+from client_bot.core.config import ADMIN_USERNAMES, SUPPORT_USER, COOPERATION_USER
+from client_bot.core.formatting import e
+from client_bot.core.database import async_session
+from client_bot.texts import Btn, Client, ORDER_STATUS_RU
+from client_bot.ui.keyboards import (
     brands_kb,
     calendar_kb,
     client_confirm_estimate_kb,
@@ -38,16 +38,16 @@ from bot.ui.keyboards import (
     time_slots_kb,
     upgrade_category_kb,
 )
-from bot.services.metro_search import best_metro_match, top_metro_matches
-from bot.services.ranking import RankingContext, rank_services
-from bot.domain.models import Brand, MetroStation, Model, Order, Service, User
-from bot.domain.schemas import (
+from client_bot.services.metro_search import best_metro_match, top_metro_matches
+from client_bot.services.ranking import RankingContext, rank_services
+from client_bot.domain.models import Brand, MetroStation, Model, Order, Service, User
+from client_bot.domain.schemas import (
     BrandNameInput,
     MetroTextInput,
     ModelNameInput,
     ProblemDescription,
 )
-from bot.domain.states import ClientOrderFSM, OrderFSM
+from client_bot.domain.states import ClientOrderFSM, OrderFSM
 
 logger = logging.getLogger(__name__)
 router = Router(name="order")
@@ -358,7 +358,7 @@ async def handle_metro_text(message: types.Message, state: FSMContext) -> None:
         )
     else:
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-        from bot.ui.keyboards import BACK_BTN
+        from client_bot.ui.keyboards import BACK_BTN
 
         buttons = []
         for st, score in matches:
@@ -1211,14 +1211,14 @@ def _notify_partner(order: Order, text: str) -> None:
     import asyncio
 
     async def _send():
-        from bot.core.config import PARTNER_BOT_TOKEN
+        from client_bot.core.config import PARTNER_BOT_TOKEN
         from aiogram import Bot
 
         partner_bot = Bot(token=PARTNER_BOT_TOKEN)
         try:
             # Find partner telegram_id
             async with async_session() as session:
-                from bot.domain.models import ServiceOwner
+                from client_bot.domain.models import ServiceOwner
 
                 owner = (
                     await session.execute(
@@ -1592,11 +1592,11 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
 
     # Notify all admins
     try:
-        from bot.core.config import BOT_TOKEN
+        from client_bot.core.config import CLIENT_BOT_TOKEN
 
         from aiogram import Bot
 
-        bot = Bot(token=BOT_TOKEN)
+        bot = Bot(token=CLIENT_BOT_TOKEN)
         client_info = f"@{user_obj.username}" if user_obj and user_obj.username else ""
         client_name = user_obj.full_name if user_obj else ""
         admin_text = (
@@ -1609,7 +1609,7 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
             f"Предоплата: {prepayment:.0f} руб."
         )
         async with async_session() as session:
-            from bot.domain.models import ServiceOwner
+            from client_bot.domain.models import ServiceOwner
 
             for admin_username in ADMIN_USERNAMES:
                 # Try to find admin's user_id

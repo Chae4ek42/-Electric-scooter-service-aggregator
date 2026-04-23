@@ -59,6 +59,8 @@ class PartnerOrderFSM(StatesGroup):
     estimate_deadline = State()
     estimate_description = State()
     estimate_confirm = State()
+    update_price_cost = State()
+    update_price_reason = State()
 
 
 class ClientOrderFSM(StatesGroup):

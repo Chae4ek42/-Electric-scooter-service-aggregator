@@ -25,8 +25,8 @@ from typing import Any
 import aiohttp
 from sqlalchemy import select
 
-from bot.core.database import async_session
-from bot.domain.models import Service, ServiceCategory
+from client_bot.core.database import async_session
+from client_bot.domain.models import Service, ServiceCategory
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +77,14 @@ def _col(row: dict[str, str], key: str, default: str = "") -> str:
 
 
 def _is_available() -> bool:
-    from bot.core.config import GOOGLE_SHEET_ID
+    from client_bot.core.config import GOOGLE_SHEET_ID
 
     return bool(GOOGLE_SHEET_ID)
 
 
 def _fetch_via_sa(sheet_id: str, sheet_name: str) -> list[dict[str, Any]] | None:
     """Try reading via Service Account. Returns None if SA not configured."""
-    from bot.core.config import GOOGLE_SA_PATH
+    from client_bot.core.config import GOOGLE_SA_PATH
 
     if not GOOGLE_SA_PATH:
         return None
@@ -107,7 +107,7 @@ def _fetch_via_sa(sheet_id: str, sheet_name: str) -> list[dict[str, Any]] | None
         try:
             ws = sh.worksheet(sheet_name)
         except gspread.exceptions.WorksheetNotFound:
-            from bot.core.config import SHEETS_COLUMNS
+            from client_bot.core.config import SHEETS_COLUMNS
 
             logger.warning(
                 "SYNC_SHEET_MISSING | sheet=%s | action=creating with %d columns",
@@ -173,7 +173,11 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
         logger.debug("Sheets sync пропущен (GOOGLE_SHEET_ID не задан)")
         return 0
 
-    from bot.core.config import GOOGLE_SHEET_ID, SHEETS_COLUMNS, SHEETS_TAB_SERVICES
+    from client_bot.core.config import (
+        GOOGLE_SHEET_ID,
+        SHEETS_COLUMNS,
+        SHEETS_TAB_SERVICES,
+    )
 
     if first_run:
         logger.info(
@@ -407,7 +411,7 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
 
 async def run_full_sync(*, first_run: bool = False) -> None:
     import asyncio
-    from bot.services.sheets_writer import (
+    from client_bot.services.sheets_writer import (
         sync_all_clients_to_sheet,
         sync_all_orders_to_sheet,
     )

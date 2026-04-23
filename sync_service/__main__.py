@@ -1,14 +1,12 @@
-"""ESAS Sync Service — standalone Google Sheets ↔ DB synchronisation."""
-
 from __future__ import annotations
 
 import asyncio
 import logging
 import sys
 
-from bot.core.config import SHEETS_SYNC_INTERVAL
-from bot.services.seed import init_db
-from bot.services.sheets_sync import run_full_sync
+from client_bot.core.config import SHEETS_SYNC_INTERVAL
+from client_bot.services.seed import init_db
+from client_bot.services.sheets_sync import run_full_sync
 
 
 def _setup_logging() -> None:

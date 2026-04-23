@@ -9,10 +9,10 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 
-from bot.core.config import ADMIN_USERNAMES
-from bot.core.database import async_session
-from bot.domain.models import Service, User
-from bot.domain.states import (
+from client_bot.core.config import ADMIN_USERNAMES
+from client_bot.core.database import async_session
+from client_bot.domain.models import Service, User
+from client_bot.domain.states import (
     RegistrationFSM,
 )
 from partner_bot.ui.keyboards import (
@@ -32,8 +32,8 @@ from partner_bot.ui.keyboards import (
     reg_yes_no_kb,
 )
 
-from bot.core.formatting import e
-from bot.texts import (
+from client_bot.core.formatting import e
+from client_bot.texts import (
     TYPE_RU,
     PARTNER_STATUS_RU,
     Btn,
@@ -80,7 +80,7 @@ def _draft_complete(owner: Service) -> bool:
     ]
     if owner.draft_service_type == "upgrade":
         required.append(owner.draft_upgrade_categories)
-    if owner.draft_service_type == "repair":
+    if owner.draft_service_type in ("repair", "complex"):
         required.append(owner.draft_category)
     return all(required)
 
@@ -256,8 +256,8 @@ async def show_profile(message: types.Message) -> None:
 
 @router.message(F.text == Btn.SUPPORT)
 async def cmd_support(message: types.Message, state: FSMContext) -> None:
-    from bot.core.config import SUPPORT_USER, COOPERATION_USER
-    from bot.ui.keyboards import support_kb
+    from client_bot.core.config import SUPPORT_USER, COOPERATION_USER
+    from client_bot.ui.keyboards import support_kb
 
     current = await state.get_state()
     if current is not None:

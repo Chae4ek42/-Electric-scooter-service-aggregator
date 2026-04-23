@@ -11,11 +11,11 @@ from aiogram.fsm.context import FSMContext
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from bot.core.database import async_session
-from bot.core.formatting import e
-from bot.domain.models import Order, Service
-from bot.domain.schemas import RejectReasonInput
-from bot.domain.states import PartnerOrderFSM
+from client_bot.core.database import async_session
+from client_bot.core.formatting import e
+from client_bot.domain.models import Order, Service
+from client_bot.domain.schemas import RejectReasonInput
+from client_bot.domain.states import PartnerOrderFSM
 from partner_bot.handlers.common import _get_owner
 from partner_bot.ui.keyboards import (
     partner_order_detail_kb,
@@ -278,10 +278,10 @@ async def accept_order(callback: types.CallbackQuery, state: FSMContext) -> None
     try:
         svc_name = owner.name or ""
         svc_address = owner.address or ""
-        from bot.core.config import BOT_TOKEN
+        from client_bot.core.config import CLIENT_BOT_TOKEN
         from aiogram import Bot
 
-        client_bot = Bot(token=BOT_TOKEN)
+        client_bot = Bot(token=CLIENT_BOT_TOKEN)
         await client_bot.send_message(
             order.user_id,
             f"Ваша заявка #{order_id} принята сервисом {svc_name}.\n"
@@ -364,10 +364,10 @@ async def reject_order_reason(message: types.Message, state: FSMContext) -> None
 
     # Notify client
     try:
-        from bot.core.config import BOT_TOKEN
+        from client_bot.core.config import CLIENT_BOT_TOKEN
         from aiogram import Bot
 
-        client_bot = Bot(token=BOT_TOKEN)
+        client_bot = Bot(token=CLIENT_BOT_TOKEN)
         await client_bot.send_message(
             order.user_id,
             f"Ваша заявка #{order_id} была отклонена сервисом.\n" f"Причина: {v.text}",
@@ -449,11 +449,11 @@ async def client_refused_reason(message: types.Message, state: FSMContext) -> No
 
     # Notify client
     try:
-        from bot.core.config import BOT_TOKEN
+        from client_bot.core.config import CLIENT_BOT_TOKEN
         from aiogram import Bot
-        from bot.ui.keyboards import client_visited_kb
+        from client_bot.ui.keyboards import client_visited_kb
 
-        client_bot = Bot(token=BOT_TOKEN)
+        client_bot = Bot(token=CLIENT_BOT_TOKEN)
         await client_bot.send_message(
             user_id,
             f"❌ Заявка #{order_id}\n\n"
@@ -665,11 +665,11 @@ async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> 
 
     # Notify client
     try:
-        from bot.core.config import BOT_TOKEN
+        from client_bot.core.config import CLIENT_BOT_TOKEN
         from aiogram import Bot
-        from bot.ui.keyboards import client_confirm_estimate_kb
+        from client_bot.ui.keyboards import client_confirm_estimate_kb
 
-        client_bot = Bot(token=BOT_TOKEN)
+        client_bot = Bot(token=CLIENT_BOT_TOKEN)
         est_lines = [
             f"🔧 Заявка #{order_id} — принята в работу\n",
             f"Устройство: {model_str}",
@@ -753,11 +753,11 @@ async def order_ready(callback: types.CallbackQuery) -> None:
 
     # Notify client
     try:
-        from bot.core.config import BOT_TOKEN
+        from client_bot.core.config import CLIENT_BOT_TOKEN
         from aiogram import Bot
-        from bot.ui.keyboards import client_ready_kb
+        from client_bot.ui.keyboards import client_ready_kb
 
-        client_bot = Bot(token=BOT_TOKEN)
+        client_bot = Bot(token=CLIENT_BOT_TOKEN)
         await client_bot.send_message(
             user_id,
             f"✅ Заявка #{order_id} — готов к выдаче!\n\n"
@@ -873,10 +873,10 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
 
     # Notify client
     try:
-        from bot.core.config import BOT_TOKEN
+        from client_bot.core.config import CLIENT_BOT_TOKEN
         from aiogram import Bot
 
-        client_bot = Bot(token=BOT_TOKEN)
+        client_bot = Bot(token=CLIENT_BOT_TOKEN)
         await client_bot.send_message(
             order.user_id,
             f"По вашей заявке #{order_id} определена итоговая стоимость: "
@@ -887,6 +887,120 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
         await client_bot.session.close()
     except Exception:
         logger.exception("Failed to notify client about total cost")
+
+
+# ── Update price (in_progress) ────────────────────────────────
+
+
+@router.callback_query(F.data.startswith("pord:update_price:"))
+async def update_price_start(callback: types.CallbackQuery, state: FSMContext) -> None:
+    owner = await _require_active_owner(callback)
+    if not owner:
+        return
+    order_id = int(callback.data.split(":")[2])
+
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.service_id != owner.id:
+            await callback.answer("Заявка не найдена.", show_alert=True)
+            return
+        if order.status != "in_progress":
+            await callback.answer(
+                "Изменение цены доступно только для заявок в работе.", show_alert=True
+            )
+            return
+
+    await state.update_data(update_price_order_id=order_id)
+    await state.set_state(PartnerOrderFSM.update_price_cost)
+    await callback.message.answer("Введите новую стоимость ремонта (число, руб.):")
+    await callback.answer()
+
+
+@router.message(PartnerOrderFSM.update_price_cost, F.text)
+async def update_price_cost_input(message: types.Message, state: FSMContext) -> None:
+    raw = message.text.strip().replace(",", ".").replace(" ", "")
+    try:
+        new_cost = float(raw)
+        if new_cost <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        await message.answer("Введите корректное число (например: 4200):")
+        return
+
+    await state.update_data(update_price_new_cost=new_cost)
+    await state.set_state(PartnerOrderFSM.update_price_reason)
+    await message.answer("Укажите причину изменения цены (минимум 5 символов):")
+
+
+@router.message(PartnerOrderFSM.update_price_reason, F.text)
+async def update_price_reason_input(message: types.Message, state: FSMContext) -> None:
+    reason = message.text.strip()
+    if len(reason) < 5:
+        await message.answer("Причина слишком короткая. Пожалуйста, опишите подробнее:")
+        return
+
+    data = await state.get_data()
+    order_id = data.get("update_price_order_id")
+    new_cost = data.get("update_price_new_cost")
+    if not order_id or new_cost is None:
+        await state.clear()
+        return
+
+    owner = await _require_active_owner(message)
+    if not owner:
+        await state.clear()
+        return
+
+    old_cost: float | None = None
+    user_id: int | None = None
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.service_id != owner.id:
+            await message.answer("Заявка не найдена.")
+            await state.clear()
+            return
+        old_cost = order.total_cost
+        user_id = order.user_id
+        order.total_cost = new_cost
+        order.price_change_reason = reason
+        order.price_updated_at = datetime.datetime.now(datetime.timezone.utc)
+        await session.commit()
+
+    await state.clear()
+    old_str = f"{old_cost:.0f} руб." if old_cost is not None else "не указана"
+    await message.answer(
+        f"Цена заявки #{order_id} обновлена.\n"
+        f"Было: {old_str} → Стало: {new_cost:.0f} руб."
+    )
+    logger.info(
+        "partner %s updated price for order #%s: %s → %s (reason: %s)",
+        message.from_user.id,
+        order_id,
+        old_cost,
+        new_cost,
+        reason,
+    )
+
+    # Notify client
+    try:
+        from client_bot.core.config import CLIENT_BOT_TOKEN
+        from aiogram import Bot
+
+        client_bot = Bot(token=CLIENT_BOT_TOKEN)
+        await client_bot.send_message(
+            user_id,
+            f"Стоимость вашей заявки #{order_id} была изменена сервисом.\n"
+            f"Было: {old_str}\n"
+            f"Стало: {new_cost:.0f} руб.\n"
+            f"Причина: {e(reason)}",
+        )
+        await client_bot.session.close()
+    except Exception:
+        logger.exception("Failed to notify client about price update")
 
 
 # ── History ───────────────────────────────────────────────────

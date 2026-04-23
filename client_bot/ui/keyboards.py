@@ -13,13 +13,13 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from bot.core.config import (
+from client_bot.core.config import (
     CALENDAR_DAYS,
     WORK_HOUR_END,
     WORK_HOUR_START,
     TIME_SLOT_MINUTES,
 )
-from bot.texts import Btn
+from client_bot.texts import Btn
 
 _MOSCOW_TZ = zoneinfo.ZoneInfo("Europe/Moscow")
 

@@ -215,6 +215,10 @@ class Order(Base):
     )
     dispute_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     refusal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_change_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_updated_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     accepted_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

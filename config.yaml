@@ -1,15 +1,10 @@
-# Google Sheets
-google_sheet_id: "1n7ghxXP9WkLySTMdeA6Iz_NX4iMb4zKMDPTV-2j7D6Q" #dev
-# google_sheet_id: "1ZozqkpDXKwTetoUprf5rgIq77l7quBibFISoSMIoGG0" #prod
-
 # Инфраструктура
 redis_url: "redis://redis:6379/0"
 database_url: "sqlite+aiosqlite:///data/esas.db"
-google_sa_path: "service-account-key.json"
 
 # Контакты поддержки
 support_user: "@i_jusp" #Техподдержка
-cooperation_user: "@sergzvezdilin" #Не техническая поддержка
+cooperation_user: "@sergzvezdilin" #Нетехническая поддержка
 
 # Администраторы (без @)
 admin_usernames:
@@ -57,7 +52,7 @@ calendar:
 # Антифлуд
 throttle_rate: 0.2 # мин. интервал между запросами (сек)
 
-# FSM-напоминание о незавершённой форме
+# FSM-напоминание о незавершённой
 fsm_reminder:
     timeout: 1800 # секунды до напоминания (30 мин)
     check_interval: 60 # секунды между проверками

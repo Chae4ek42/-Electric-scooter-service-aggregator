@@ -9,11 +9,11 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import FSInputFile
 
-from bot.core.config import ADMIN_USERNAMES, SUPPORT_USER, COOPERATION_USER
-from bot.ui.keyboards import main_menu_kb, support_kb
-from bot.core.database import async_session
-from bot.domain.models import User
-from bot.texts import Btn, Client
+from client_bot.core.config import ADMIN_USERNAMES, SUPPORT_USER, COOPERATION_USER
+from client_bot.ui.keyboards import main_menu_kb, support_kb
+from client_bot.core.database import async_session
+from client_bot.domain.models import User
+from client_bot.texts import Btn, Client
 from sqlalchemy import select
 
 router = Router(name="common")

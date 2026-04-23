@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from bot.core.config import (
+from client_bot.core.config import (
     GOOGLE_SA_PATH,
     GOOGLE_SHEET_ID,
     SHEETS_COLUMNS,
@@ -17,7 +17,7 @@ from bot.core.config import (
     SHEETS_TAB_ORDERS,
     SHEETS_TAB_SERVICES,
 )
-from bot.domain.models import Service
+from client_bot.domain.models import Service
 
 logger = logging.getLogger(__name__)
 
@@ -208,9 +208,9 @@ def sync_all_orders_to_sheet() -> bool:
         return False
     try:
         from sqlalchemy import select as sa_select
-        from bot.core.database import sync_engine
+        from client_bot.core.database import sync_engine
         from sqlalchemy.orm import Session, joinedload
-        from bot.domain.models import Brand, Model as ModelModel, Order, User
+        from client_bot.domain.models import Brand, Model as ModelModel, Order, User
 
         gc = _get_client()
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
@@ -304,9 +304,9 @@ def sync_all_clients_to_sheet() -> bool:
     try:
         from sqlalchemy import func as sa_func
         from sqlalchemy import select as sa_select
-        from bot.core.database import sync_engine
+        from client_bot.core.database import sync_engine
         from sqlalchemy.orm import Session
-        from bot.domain.models import Order, User
+        from client_bot.domain.models import Order, User
 
         gc = _get_client()
         sh = gc.open_by_key(GOOGLE_SHEET_ID)

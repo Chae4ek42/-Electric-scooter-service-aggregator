@@ -13,11 +13,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import func, select
 
-from bot.core.config import ADMIN_USERNAMES
-from bot.core.database import async_session
-from bot.core.formatting import e
-from bot.texts import TYPE_RU, ORDER_STATUS_RU, Btn, Client
-from bot.ui.keyboards import (
+from client_bot.core.config import ADMIN_USERNAMES
+from client_bot.core.database import async_session
+from client_bot.core.formatting import e
+from client_bot.texts import TYPE_RU, ORDER_STATUS_RU, Btn, Client
+from client_bot.ui.keyboards import (
     ADMIN_PAGE_SIZE,
     admin_filter_kb,
     admin_main_kb,
@@ -26,7 +26,7 @@ from bot.ui.keyboards import (
     admin_partner_detail_kb,
     main_menu_kb,
 )
-from bot.domain.models import (
+from client_bot.domain.models import (
     Brand,
     MetroStation,
     Model,

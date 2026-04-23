@@ -17,7 +17,7 @@ from aiogram.types import (
     TelegramObject,
 )
 
-from bot.core.config import app_config
+from client_bot.core.config import app_config
 
 logger = logging.getLogger(__name__)
 

@@ -24,8 +24,8 @@ from typing import Protocol, Sequence, runtime_checkable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.domain.models import MetroStation, Service, ServiceCategory
-from bot.services.metro_graph import metro_transfer_distance
+from client_bot.domain.models import MetroStation, Service, ServiceCategory
+from client_bot.services.metro_graph import metro_transfer_distance
 
 logger = logging.getLogger(__name__)
 
@@ -325,8 +325,10 @@ async def rank_services(
         )
 
         if ctx.malfunction_category:
+            # Сервисы с "Электрика + механика" подходят для любой из двух категорий
             stmt = stmt.join(Service.category_rel).where(
-                ServiceCategory.name == ctx.malfunction_category
+                (ServiceCategory.name == ctx.malfunction_category)
+                | (ServiceCategory.name == "Электрика + механика")
             )
 
     services = (await session.execute(stmt)).scalars().all()

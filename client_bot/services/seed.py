@@ -8,8 +8,8 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from bot.core.database import async_session, engine
-from bot.domain.models import Base, Brand, MetroStation, Model, ServiceCategory
+from client_bot.core.database import async_session, engine
+from client_bot.domain.models import Base, Brand, MetroStation, Model, ServiceCategory
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +460,7 @@ async def seed_database() -> None:
         ).scalar()
         if not existing_cat:
             try:
-                for cat_name in ("Механика", "Электрика"):
+                for cat_name in ("Механика", "Электрика", "Электрика + механика"):
                     session.add(ServiceCategory(name=cat_name))
                 await session.flush()
                 logger.info("Seeded service categories")
@@ -758,6 +758,32 @@ async def init_db() -> None:
                     f"ALTER TABLE user_actions ADD COLUMN {col_name} {col_type}"
                 )
                 logger.info("Migration: added user_actions.%s", col_name)
+
+        # Migrate new order fields for price change
+        cursor = await raw_conn.execute("PRAGMA table_info('orders')")
+        order_cols2 = {row[1] for row in await cursor.fetchall()}
+        for col_def in (
+            ("price_change_reason", "TEXT"),
+            ("price_updated_at", "TEXT"),
+        ):
+            col_name, col_type = col_def
+            if col_name not in order_cols2:
+                await raw_conn.execute(
+                    f"ALTER TABLE orders ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info("Migration: added orders.%s", col_name)
+
+        # Seed "Электрика + механика" category for existing databases
+        cursor = await raw_conn.execute(
+            "SELECT COUNT(*) FROM service_categories WHERE name = 'Электрика + механика'"
+        )
+        row = await cursor.fetchone()
+        if row and row[0] == 0:
+            await raw_conn.execute(
+                "INSERT INTO service_categories (name) VALUES ('Электрика + механика')"
+            )
+            logger.info("Migration: seeded service category 'Электрика + механика'")
+        await raw_conn.commit()
 
     await seed_database()
 

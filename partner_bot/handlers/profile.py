@@ -8,10 +8,10 @@ from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 
-from bot.core.config import ADMIN_USERNAMES
-from bot.core.database import async_session
-from bot.domain.models import Service
-from bot.domain.schemas import (
+from client_bot.core.config import ADMIN_USERNAMES
+from client_bot.core.database import async_session
+from client_bot.domain.models import Service
+from client_bot.domain.schemas import (
     AddressInput,
     BankAccountInput,
     BankNameInput,
@@ -25,10 +25,10 @@ from bot.domain.schemas import (
     TelegramHandleInput,
     WorkHoursInput,
 )
-from bot.domain.states import PartnerProfileFSM
-from bot.services.sheets_writer import set_service_available, update_service_row
-from bot.core.formatting import e
-from bot.texts import Btn, Partner, PARTNER_MENU_TEXTS
+from client_bot.domain.states import PartnerProfileFSM
+from client_bot.services.sheets_writer import set_service_available, update_service_row
+from client_bot.core.formatting import e
+from client_bot.texts import Btn, Partner, PARTNER_MENU_TEXTS
 from partner_bot.handlers.common import _get_owner, _sort_days, _TYPE_RU
 from partner_bot.ui.keyboards import (
     bank_edit_fields_kb,
