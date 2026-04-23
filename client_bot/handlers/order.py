@@ -39,8 +39,18 @@ from client_bot.ui.keyboards import (
     upgrade_category_kb,
 )
 from client_bot.services.metro_search import best_metro_match, top_metro_matches
+from client_bot.services.notifications import send_by_token, send_with_retry
+from client_bot.services.order_lifecycle import (
+    ACTOR_CLIENT,
+    ACTOR_SYSTEM,
+    transition_order_status,
+)
+from client_bot.services.payment_policy import PaymentPolicy
 from client_bot.services.ranking import RankingContext, rank_services
 from client_bot.domain.models import Brand, MetroStation, Model, Order, Service, User
+from client_bot.domain.order_rules import (
+    money,
+)
 from client_bot.domain.schemas import (
     BrandNameInput,
     MetroTextInput,
@@ -435,13 +445,11 @@ async def pick_date(callback: types.CallbackQuery, state: FSMContext) -> None:
 # 9. CALENDAR -- TIME -> ranking -> confirm
 
 
-@router.callback_query(OrderFSM.calendar_time, F.data.startswith("time:"))
-async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
-    parts = callback.data.split(":")
-    if len(parts) < 3:
-        await callback.answer("Ошибка формата времени", show_alert=True)
-        return
-    time_str = f"{parts[1]}:{parts[2]}"
+async def _process_time_choice(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    time_str: str,
+) -> None:
     await state.update_data(scheduled_time=time_str)
     data = await state.get_data()
 
@@ -449,7 +457,6 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
     diagnostics_price: float | None = None
     diagnostics_included: bool = False
     hydroisolation_price: str | None = None
-    svc_name: str = ""
     svc_rating: float | None = None
     model = None
 
@@ -465,26 +472,37 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
             upgrade_category=data.get("upgrade_category"),
             user_metro=data.get("metro_station"),
             scheduled_time=time_str,
+            scheduled_date=data.get("scheduled_date"),
         )
         result = await rank_services(ctx, session, limit=1)
 
         logger.info(
-            "user=%s ranking: matches=%d time_fallback=%s suggested=%s",
+            "user=%s ranking: matches=%d time_fallback=%s suggested_date=%s suggested_time=%s",
             callback.from_user.id,
             len(result.matches),
             result.time_fallback,
+            result.suggested_date,
             result.suggested_time,
         )
 
         if result.time_fallback and result.suggested_time:
             from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+            if result.suggested_date:
+                suggested_label = f"{result.suggested_date} {result.suggested_time}"
+                suggested_cb = (
+                    f"time_suggest:{result.suggested_date}:{result.suggested_time}"
+                )
+            else:
+                suggested_label = result.suggested_time
+                suggested_cb = f"time:{result.suggested_time}"
+
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text=f"Записаться на {result.suggested_time}",
-                            callback_data=f"time:{result.suggested_time}",
+                            text=f"Записаться на {suggested_label}",
+                            callback_data=suggested_cb,
                         )
                     ],
                     [
@@ -495,10 +513,17 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
                     ],
                 ]
             )
+
+            selected_date = data.get("scheduled_date")
+            selected_slot = (
+                f"на {e(selected_date)} в {e(time_str)}"
+                if selected_date
+                else f"в {e(time_str)}"
+            )
             await _safe_edit_or_answer(
                 callback,
-                f"К сожалению, в {e(time_str)} подходящие сервисы не работают.\n"
-                f"Ближайшее доступное время: <b>{e(result.suggested_time)}</b>",
+                f"К сожалению, {selected_slot} подходящие сервисы не работают.\n"
+                f"Ближайший доступный слот: <b>{e(suggested_label)}</b>",
                 kb,
             )
             return
@@ -509,17 +534,17 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
             diagnostics_price = best.service.diagnostics_price
             diagnostics_included = best.service.diagnostics_included
             hydroisolation_price = best.service.hydroisolation_price
-            svc_name = best.service.name or ""
             svc_rating = best.service.yandex_rating
 
     if service_id is None:
         logger.warning(
-            "user=%s no services found: type=%s malf=%s upcat=%s metro=%s time=%s",
+            "user=%s no services found: type=%s malf=%s upcat=%s metro=%s date=%s time=%s",
             callback.from_user.id,
             data.get("service_type"),
             data.get("malfunction_category"),
             data.get("upgrade_category"),
             data.get("metro_station"),
+            data.get("scheduled_date"),
             time_str,
         )
         # Сохраняем заявку со статусом «не найден центр»
@@ -639,6 +664,31 @@ async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
     await _safe_edit_or_answer(callback, summary, confirm_kb())
 
 
+@router.callback_query(OrderFSM.calendar_time, F.data.startswith("time:"))
+async def pick_time(callback: types.CallbackQuery, state: FSMContext) -> None:
+    parts = callback.data.split(":")
+    if len(parts) < 3:
+        await callback.answer("Ошибка формата времени", show_alert=True)
+        return
+    time_str = f"{parts[1]}:{parts[2]}"
+    await _process_time_choice(callback, state, time_str)
+
+
+@router.callback_query(OrderFSM.calendar_time, F.data.startswith("time_suggest:"))
+async def pick_suggested_time(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+) -> None:
+    parts = callback.data.split(":")
+    if len(parts) < 4:
+        await callback.answer("Ошибка формата времени", show_alert=True)
+        return
+    date_str = parts[1]
+    time_str = f"{parts[2]}:{parts[3]}"
+    await state.update_data(scheduled_date=date_str)
+    await _process_time_choice(callback, state, time_str)
+
+
 # 10. CONFIRM
 
 
@@ -711,7 +761,14 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
                 await s.execute(select(Order).where(Order.id == order_id))
             ).scalar_one_or_none()
             if o and o.status == "awaiting_payment":
-                o.status = "paid"
+                await transition_order_status(
+                    s,
+                    o,
+                    "paid",
+                    actor=f"{ACTOR_SYSTEM}:mock_payment",
+                    reason="auto_mock_payment",
+                    metadata={"flow": "order_confirm"},
+                )
                 o.payment_id = f"AUTO-DIAG-{order_id}"
                 await s.commit()
                 logger.info("auto-payment completed for order #%s", order_id)
@@ -795,7 +852,14 @@ async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> N
                 await s.execute(select(Order).where(Order.id == order_id))
             ).scalar_one_or_none()
             if o and o.status == "awaiting_payment":
-                o.status = "paid"
+                await transition_order_status(
+                    s,
+                    o,
+                    "paid",
+                    actor=f"{ACTOR_SYSTEM}:mock_payment",
+                    reason="auto_mock_payment",
+                    metadata={"flow": "payment_proceed"},
+                )
                 o.payment_id = f"AUTO-PAY-{order_id}"
                 await s.commit()
                 logger.info("auto-payment completed for order #%s", order_id)
@@ -853,8 +917,14 @@ async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> No
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if order and order.status not in ("cancelled", "completed"):
-            order.status = "cancelled"
+        if order and order.status in ("awaiting_payment", "paid", "accepted"):
+            await transition_order_status(
+                session,
+                order,
+                "cancelled",
+                actor=ACTOR_CLIENT,
+                reason="payment_cancel",
+            )
             await session.commit()
             logger.info(
                 "user=%s cancelled order #%s via payment",
@@ -1184,7 +1254,13 @@ async def orders_select(callback: types.CallbackQuery) -> None:
             if order.status not in ("awaiting_payment", "accepted"):
                 await callback.answer("Эту заявку нельзя отменить.", show_alert=True)
                 return
-            order.status = "cancelled"
+            await transition_order_status(
+                session,
+                order,
+                "cancelled",
+                actor=ACTOR_CLIENT,
+                reason="orders_list_cancel",
+            )
             await session.commit()
             logger.info("user=%s cancelled order #%s", callback.from_user.id, order_id)
             await callback.message.answer(f"Заявка №{order_id} отменена.")
@@ -1212,19 +1288,17 @@ def _notify_partner(order: Order, text: str) -> None:
 
     async def _send():
         from client_bot.core.config import PARTNER_BOT_TOKEN
-        from aiogram import Bot
 
-        partner_bot = Bot(token=PARTNER_BOT_TOKEN)
         try:
-            # Find partner telegram_id
+            # Find partner owner linked to service
             async with async_session() as session:
-                from client_bot.domain.models import ServiceOwner
+                from client_bot.domain.models import ServiceDraft
 
                 owner = (
                     await session.execute(
-                        select(ServiceOwner).where(
-                            ServiceOwner.service_id == order.service_id
-                        )
+                        select(ServiceDraft)
+                        .where(ServiceDraft.service_id == order.service_id)
+                        .where(ServiceDraft.status == "активный")
                     )
                 ).scalar_one_or_none()
                 if not owner:
@@ -1234,11 +1308,16 @@ def _notify_partner(order: Order, text: str) -> None:
                         order.service_id,
                     )
                     return
-                await partner_bot.send_message(owner.telegram_id, text)
+                await send_by_token(
+                    PARTNER_BOT_TOKEN,
+                    owner.owner_user_id,
+                    text,
+                    dedupe_key=f"partner_notify:{order.id}:{text[:80]}",
+                )
                 logger.info(
                     "PARTNER_NOTIFY | order=%s | partner=%s",
                     order.id,
-                    owner.telegram_id,
+                    owner.owner_user_id,
                 )
         except Exception:
             logger.exception(
@@ -1246,8 +1325,6 @@ def _notify_partner(order: Order, text: str) -> None:
                 order.id,
                 order.service_id,
             )
-        finally:
-            await partner_bot.session.close()
 
     asyncio.create_task(_send())
 
@@ -1410,13 +1487,16 @@ async def pay_final(callback: types.CallbackQuery) -> None:
         if order.status != "ready_for_pickup":
             await callback.answer("Невозможно.", show_alert=True)
             return
-        total = order.total_cost or order.estimate_cost or 0
-        prepayment = 0.0
-        if order.upgrade_category == "Гидроизоляция":
-            prepayment = 500.0
-        elif order.diagnostics_price:
-            prepayment = order.diagnostics_price
-        remainder = max(0.0, total - prepayment)
+        total = money(order.total_cost or order.estimate_cost or 0)
+        prepayment = PaymentPolicy.prepayment(
+            order.upgrade_category,
+            order.diagnostics_price,
+        )
+        remainder = PaymentPolicy.remainder(
+            total,
+            order.upgrade_category,
+            order.diagnostics_price,
+        )
 
     await callback.message.answer(
         f"Подтвердите оплату заявки #{order_id}\n\n" f"К оплате: {remainder:.0f} руб.",
@@ -1456,12 +1536,18 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
             ).scalar_one_or_none()
             if not o or o.status != "ready_for_pickup":
                 return
-            o.status = "completed"
+            await transition_order_status(
+                s,
+                o,
+                "completed",
+                actor=f"{ACTOR_CLIENT}:mock_final_payment",
+                reason="final_mock_payment",
+            )
             o.completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
             o.payment_id = f"AUTO-FINAL-{order_id}"
             await s.commit()
             svc_name = o.service.name if o.service else ""
-            total = o.total_cost or o.estimate_cost or 0
+            total = money(o.total_cost or o.estimate_cost or 0)
             model_str = _client_model_name(o)
 
         logger.info("auto final payment for order #%s", order_id)
@@ -1567,18 +1653,23 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
             await message.answer("Заявка не найдена.")
             await state.clear()
             return
-        order.status = "disputed"
+        await transition_order_status(
+            session,
+            order,
+            "disputed",
+            actor=ACTOR_CLIENT,
+            reason="client_dispute",
+        )
         order.dispute_reason = text
         await session.commit()
         svc_name = order.service.name if order.service else ""
         svc_id = order.service_id
         model_str = _client_model_name(order)
-        total = order.total_cost or order.estimate_cost or 0
-        prepayment = 0.0
-        if order.upgrade_category == "Гидроизоляция":
-            prepayment = 500.0
-        elif order.diagnostics_price:
-            prepayment = order.diagnostics_price
+        total = money(order.total_cost or order.estimate_cost or 0)
+        prepayment = PaymentPolicy.prepayment(
+            order.upgrade_category,
+            order.diagnostics_price,
+        )
         user_obj = order.user
 
     await state.clear()
@@ -1609,8 +1700,6 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
             f"Предоплата: {prepayment:.0f} руб."
         )
         async with async_session() as session:
-            from client_bot.domain.models import ServiceOwner
-
             for admin_username in ADMIN_USERNAMES:
                 # Try to find admin's user_id
                 admin_user = (
@@ -1620,7 +1709,12 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
                 ).scalar_one_or_none()
                 if admin_user:
                     try:
-                        await bot.send_message(admin_user.id, admin_text)
+                        await send_with_retry(
+                            bot,
+                            admin_user.id,
+                            admin_text,
+                            dedupe_key=f"admin_dispute:{order_id}:{admin_user.id}",
+                        )
                     except Exception:
                         pass
         await bot.session.close()

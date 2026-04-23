@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import math
 from dataclasses import dataclass
@@ -123,6 +124,9 @@ class RankingContext:
 
     scheduled_time: str | None = None
     """Выбранное пользователем время (HH:MM) — для фильтрации по часам работы"""
+
+    scheduled_date: str | None = None
+    """Выбранная пользователем дата (DD.MM.YYYY) — для фильтрации по рабочим дням"""
 
     user_lat: float | None = None
     user_lon: float | None = None
@@ -242,47 +246,154 @@ class RankingResult:
 
     matches: list[ServiceMatch]
     time_fallback: bool = False
+    suggested_date: str | None = None
     suggested_time: str | None = None
+
+
+_RU_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+_FALLBACK_SEARCH_DAYS = 21
+
+
+def _parse_minutes(time_str: str | None) -> int | None:
+    if not time_str:
+        return None
+    try:
+        hours, minutes = time_str.split(":", 1)
+        h = int(hours)
+        m = int(minutes)
+    except (ValueError, TypeError):
+        return None
+    if h < 0 or h > 23 or m < 0 or m > 59:
+        return None
+    return h * 60 + m
+
+
+def _parse_ru_date(date_str: str | None) -> datetime.date | None:
+    if not date_str:
+        return None
+    try:
+        return datetime.datetime.strptime(date_str, "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def _fmt_minutes(total_minutes: int) -> str:
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def _svc_covers_date(svc: Service, date_str: str | None) -> bool:
+    """Проверяет, работает ли сервис в указанный день недели."""
+    if not date_str or not svc.working_days:
+        return True
+    day = _parse_ru_date(date_str)
+    if day is None:
+        return True
+    allowed = {token.strip() for token in svc.working_days.split(",") if token.strip()}
+    if not allowed:
+        return True
+    return _RU_WEEKDAYS[day.weekday()] in allowed
+
+
+def _svc_covers_slot(svc: Service, date_str: str | None, time_str: str | None) -> bool:
+    return _svc_covers_date(svc, date_str) and _svc_covers_time(svc, time_str)
 
 
 def _svc_covers_time(svc: Service, time_str: str | None) -> bool:
     """Проверяет, работает ли сервис в указанное время."""
     if not time_str or not svc.open_time or not svc.close_time:
         return True
-    try:
-        t = int(time_str.split(":")[0]) * 60 + int(time_str.split(":")[1])
-        o = int(svc.open_time.split(":")[0]) * 60 + int(svc.open_time.split(":")[1])
-        c = int(svc.close_time.split(":")[0]) * 60 + int(svc.close_time.split(":")[1])
-        return o <= t < c
-    except (ValueError, IndexError):
+    t = _parse_minutes(time_str)
+    o = _parse_minutes(svc.open_time)
+    c = _parse_minutes(svc.close_time)
+    if t is None or o is None or c is None:
         return True
+    return o <= t < c
 
 
 def _find_nearest_valid_time(svc: Service, original_time: str) -> str | None:
     """Найти ближайший к original_time слот внутри часов работы сервиса."""
     if not svc.open_time or not svc.close_time:
         return None
-    try:
-        orig_mins = int(original_time.split(":")[0]) * 60 + int(
-            original_time.split(":")[1]
-        )
-        open_mins = int(svc.open_time.split(":")[0]) * 60 + int(
-            svc.open_time.split(":")[1]
-        )
-        close_mins = int(svc.close_time.split(":")[0]) * 60 + int(
-            svc.close_time.split(":")[1]
-        )
-        if orig_mins < open_mins:
-            best = open_mins
-        elif orig_mins >= close_mins:
-            best = close_mins - 60
-        else:
-            return None
-        if best < open_mins:
-            return None
-        return f"{best // 60:02d}:{best % 60:02d}"
-    except (ValueError, IndexError):
+    orig_mins = _parse_minutes(original_time)
+    open_mins = _parse_minutes(svc.open_time)
+    close_mins = _parse_minutes(svc.close_time)
+    if orig_mins is None or open_mins is None or close_mins is None:
         return None
+    if orig_mins < open_mins:
+        best = open_mins
+    elif orig_mins >= close_mins:
+        best = close_mins - 60
+    else:
+        return None
+    if best < open_mins:
+        return None
+    return _fmt_minutes(best)
+
+
+def _find_nearest_valid_slot(
+    svc: Service,
+    original_date: str | None,
+    original_time: str | None,
+) -> tuple[str, str] | None:
+    """Найти ближайший доступный слот дата+время, учитывая рабочие дни и часы."""
+    base_date = _parse_ru_date(original_date)
+    if base_date is None:
+        return None
+
+    requested_mins = _parse_minutes(original_time)
+    open_mins = _parse_minutes(svc.open_time)
+    close_mins = _parse_minutes(svc.close_time)
+
+    for day_offset in range(_FALLBACK_SEARCH_DAYS + 1):
+        day = base_date + datetime.timedelta(days=day_offset)
+        day_str = day.strftime("%d.%m.%Y")
+        if not _svc_covers_date(svc, day_str):
+            continue
+
+        if open_mins is None or close_mins is None:
+            if requested_mins is None:
+                continue
+            return day_str, _fmt_minutes(requested_mins)
+
+        latest_start = close_mins - 60
+        if latest_start < open_mins:
+            continue
+
+        if day_offset == 0 and requested_mins is not None:
+            if requested_mins < open_mins:
+                candidate = open_mins
+            elif requested_mins >= close_mins:
+                candidate = latest_start
+            else:
+                candidate = requested_mins
+        else:
+            candidate = open_mins
+
+        candidate = max(open_mins, min(candidate, latest_start))
+        return day_str, _fmt_minutes(candidate)
+
+    return None
+
+
+def _slot_distance_minutes(
+    base_date: str | None,
+    base_time: str | None,
+    candidate_date: str,
+    candidate_time: str,
+) -> float:
+    base_d = _parse_ru_date(base_date)
+    base_t = _parse_minutes(base_time)
+    cand_d = _parse_ru_date(candidate_date)
+    cand_t = _parse_minutes(candidate_time)
+    if base_d is None or base_t is None or cand_d is None or cand_t is None:
+        return float("inf")
+    base_dt = datetime.datetime.combine(
+        base_d, datetime.time(base_t // 60, base_t % 60)
+    )
+    cand_dt = datetime.datetime.combine(
+        cand_d, datetime.time(cand_t // 60, cand_t % 60)
+    )
+    return abs((cand_dt - base_dt).total_seconds())
 
 
 async def rank_services(
@@ -336,29 +447,60 @@ async def rank_services(
     if not services:
         return RankingResult(matches=[])
 
-    # Фильтрация по времени работы
-    time_compatible = [s for s in services if _svc_covers_time(s, ctx.scheduled_time)]
+    # Фильтрация по рабочему дню и времени
+    slot_compatible = [
+        s
+        for s in services
+        if _svc_covers_slot(s, ctx.scheduled_date, ctx.scheduled_time)
+    ]
 
-    time_fallback = False
-    suggested_time: str | None = None
+    if not slot_compatible:
+        suggested_date: str | None = None
+        suggested_time: str | None = None
 
-    if time_compatible:
-        target_services = time_compatible
-    else:
-        # Все сервисы не подходят по времени — fallback
-        target_services = services
-        time_fallback = True
-        # Найти ближайшее подходящее время у лучшего сервиса
-        if ctx.scheduled_time:
+        if ctx.scheduled_date:
+            candidates: list[tuple[float, float, str, str]] = []
+            for svc in services:
+                slot = _find_nearest_valid_slot(
+                    svc,
+                    ctx.scheduled_date,
+                    ctx.scheduled_time,
+                )
+                if not slot:
+                    continue
+                date_part, time_part = slot
+                distance = _slot_distance_minutes(
+                    ctx.scheduled_date,
+                    ctx.scheduled_time,
+                    date_part,
+                    time_part,
+                )
+                rating_tiebreak = -(svc.yandex_rating or 0.0)
+                candidates.append((distance, rating_tiebreak, date_part, time_part))
+
+            if candidates:
+                candidates.sort(key=lambda item: (item[0], item[1]))
+                suggested_date = candidates[0][2]
+                suggested_time = candidates[0][3]
+        elif ctx.scheduled_time:
             for svc in sorted(
                 services,
                 key=lambda s: s.yandex_rating or 0,
                 reverse=True,
             ):
-                t = _find_nearest_valid_time(svc, ctx.scheduled_time)
-                if t:
-                    suggested_time = t
+                nearest = _find_nearest_valid_time(svc, ctx.scheduled_time)
+                if nearest:
+                    suggested_time = nearest
                     break
+
+        return RankingResult(
+            matches=[],
+            time_fallback=True,
+            suggested_date=suggested_date,
+            suggested_time=suggested_time,
+        )
+
+    target_services = slot_compatible
 
     # Ранжирование
     results: list[ServiceMatch] = []
@@ -381,8 +523,4 @@ async def rank_services(
 
     # Сортировка: при равном скоре — по рейтингу Яндекс Карт
     results.sort(key=lambda m: (m.score, m.service.yandex_rating or 0), reverse=True)
-    return RankingResult(
-        matches=results[:limit],
-        time_fallback=time_fallback,
-        suggested_time=suggested_time,
-    )
+    return RankingResult(matches=results[:limit])

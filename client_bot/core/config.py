@@ -17,6 +17,7 @@ class SheetsConfig(BaseModel):
     tab_services: str
     tab_orders: str
     tab_clients: str
+    tab_bank_details: str = "Реквизиты"
     columns: List[str]
 
 
@@ -44,7 +45,7 @@ class AppConfig(BaseModel):
     redis_url: str
     database_url: str
     google_sa_path: str
-    google_sheet_id: str
+    google_sheet_id: str = ""
     support_user: str
     cooperation_user: str
     admin_usernames: List[str]
@@ -66,8 +67,10 @@ def _load_app_config() -> AppConfig:
 app_config = _load_app_config()
 
 
-CLIENT_BOT_TOKEN: str = os.environ["CLINET_BOT_TOKEN"]
-PARTNER_BOT_TOKEN: str = os.environ["PARTNER_BOT_TOKEN"]
+CLIENT_BOT_TOKEN: str = os.getenv("CLIENT_BOT_TOKEN") or os.getenv(
+    "CLINET_BOT_TOKEN", ""
+)
+PARTNER_BOT_TOKEN: str = os.getenv("PARTNER_BOT_TOKEN", "")
 
 SUPPORT_USER: str = app_config.support_user
 COOPERATION_USER: str = app_config.cooperation_user
@@ -78,13 +81,14 @@ ADMIN_USERNAMES: set[str] = {
 REDIS_URL: str = app_config.redis_url
 DATABASE_URL: str = app_config.database_url
 
-GOOGLE_SHEET_ID: str = os.environ["GOOGLE_SHEET_ID"]
+GOOGLE_SHEET_ID: str = os.getenv("GOOGLE_SHEET_ID", app_config.google_sheet_id)
 GOOGLE_SA_PATH: str = app_config.google_sa_path
 SHEETS_SYNC_INTERVAL: int = app_config.sheets.sync_interval
 SHEETS_COLUMNS: list[str] = app_config.sheets.columns
 SHEETS_TAB_SERVICES: str = app_config.sheets.tab_services
 SHEETS_TAB_ORDERS: str = app_config.sheets.tab_orders
 SHEETS_TAB_CLIENTS: str = app_config.sheets.tab_clients
+SHEETS_TAB_BANK_DETAILS: str = app_config.sheets.tab_bank_details
 
 THROTTLE_RATE: float = app_config.throttle_rate
 CALENDAR_DAYS: int = app_config.calendar.days

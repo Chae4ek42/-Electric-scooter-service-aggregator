@@ -36,6 +36,9 @@ async def main() -> None:
     logger.info("Initialising database …")
     await init_db()
 
+    logger.info("Running integrations health-check (dry-run) …")
+    await run_full_sync(first_run=True, dry_run=True)
+
     logger.info("Running initial sync …")
     await run_full_sync(first_run=True)
 

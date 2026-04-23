@@ -8,10 +8,11 @@ from aiogram import F, Router, types
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
-from client_bot.domain.models import Service, User
+from client_bot.domain.models import ServiceDraft, User
 from client_bot.domain.states import (
     RegistrationFSM,
 )
@@ -60,14 +61,18 @@ def _sort_days(raw: str | None) -> str:
     return ", ".join(d for d in _DAY_ORDER if d in days)
 
 
-async def _get_owner(tg_id: int) -> Service | None:
+async def _get_owner(tg_id: int) -> ServiceDraft | None:
     async with async_session() as session:
         return (
-            await session.execute(select(Service).where(Service.telegram_id == tg_id))
+            await session.execute(
+                select(ServiceDraft)
+                .options(selectinload(ServiceDraft.service))
+                .where(ServiceDraft.owner_user_id == tg_id)
+            )
         ).scalar_one_or_none()
 
 
-def _draft_complete(owner: Service) -> bool:
+def _draft_complete(owner: ServiceDraft) -> bool:
     """Returns True when all main required fields are filled."""
     required = [
         owner.draft_name,
@@ -80,12 +85,15 @@ def _draft_complete(owner: Service) -> bool:
     ]
     if owner.draft_service_type == "upgrade":
         required.append(owner.draft_upgrade_categories)
-    if owner.draft_service_type in ("repair", "complex"):
+    if owner.draft_service_type == "repair":
         required.append(owner.draft_category)
+    if owner.draft_service_type == "complex":
+        required.append(owner.draft_category)
+        required.append(owner.draft_upgrade_categories)
     return all(required)
 
 
-def _format_draft(owner: Service) -> str:
+def _format_draft(owner: ServiceDraft) -> str:
     type_map = TYPE_RU
     _status_ru = PARTNER_STATUS_RU
     type_label = type_map.get(
@@ -97,7 +105,7 @@ def _format_draft(owner: Service) -> str:
         f"Название: {e(owner.draft_name or '(не заполнено)')}",
         f"Тип услуг: {type_label}",
     ]
-    if owner.draft_service_type == "upgrade":
+    if owner.draft_service_type in ("upgrade", "complex"):
         cats = (owner.draft_upgrade_categories or "").replace(
             ",", ", "
         ) or "(не выбрано)"
@@ -124,7 +132,7 @@ def _format_draft(owner: Service) -> str:
     lines.append(f"Входит в стоимость: {'Да' if owner.draft_diag_included else 'Нет'}")
     if owner.draft_legal_form or owner.draft_tax_system or owner.draft_bank_account:
         lines.append("")
-        lines.append("Реквизиты:")
+        lines.append("Банковские реквизиты:")
         if owner.draft_legal_form:
             lines.append(f"  Форма: {e(owner.draft_legal_form)}")
         if owner.draft_tax_system:
@@ -165,7 +173,9 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
     is_admin = uname.lower() in ADMIN_USERNAMES
 
     # Администраторы видят только панель администратора (не партнёрский интерфейс)
-    if is_admin and (owner is None or owner.status != "активный"):
+    if is_admin and (
+        owner is None or owner.status != "активный" or owner.service_id is None
+    ):
         await message.answer(
             Partner.Common.WELCOME_ADMIN,
             reply_markup=admin_only_menu_kb(),
@@ -203,7 +213,10 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
         return
 
     # active
-    greeting = f"Service Map \u2014 {e(owner.name)}"
+    service_name = (
+        owner.service.name if owner.service else owner.draft_name or "Service"
+    )
+    greeting = f"Service Map \u2014 {e(service_name)}"
     await message.answer(
         f"{greeting}\n\nВыберите действие:",
         reply_markup=partner_main_menu_kb(is_admin=is_admin),
@@ -230,26 +243,31 @@ async def show_profile(message: types.Message) -> None:
         await message.answer(f"Статус: {owner.status}")
         return
 
-    wd = _sort_days(owner.working_days)
+    svc = owner.service
+    if not svc:
+        await message.answer("Профиль сервиса пока не сформирован после модерации.")
+        return
+
+    wd = _sort_days(svc.working_days)
     lines = [
-        f"Название: {e(owner.name)}",
-        f"Тип: {_TYPE_RU.get(owner.service_type, owner.service_type)}",
-        f"Адрес: {e(owner.address or '-')}",
-        f"Метро: {e(owner.nearest_metro or '-')}",
-        f"Телефон: {e(owner.phone or '-')}",
-        f"Telegram: {e(owner.telegram_handle or '-')}",
+        f"Название: {e(svc.name)}",
+        f"Тип: {_TYPE_RU.get(svc.service_type, svc.service_type)}",
+        f"Адрес: {e(svc.address or '-')}",
+        f"Метро: {e(svc.nearest_metro or '-')}",
+        f"Телефон: {e(svc.phone or '-')}",
+        f"Telegram: {e(svc.telegram_handle or '-')}",
         f"Рабочие дни: {e(wd or '-')}",
-        f"Время работы: {owner.open_time or '?'}\u2014{owner.close_time or '?'}",
-        f"Гидроизоляция: {'Да' if owner.has_hydroisolation else 'Нет'}",
-        f"Цена гидроизоляции: {e(owner.hydroisolation_price or '-')}",
-        f"Диагностика: {int(owner.diagnostics_price) if owner.diagnostics_price else 0} руб.",
-        f"Входит в стоимость: {'Да' if owner.diagnostics_included else 'Нет'}",
-        f"Рейтинг: {owner.yandex_rating or '-'}",
-        f"Доступен: {'Да' if owner.is_available else 'Нет'}",
+        f"Время работы: {svc.open_time or '?'}\u2014{svc.close_time or '?'}",
+        f"Гидроизоляция: {'Да' if svc.has_hydroisolation else 'Нет'}",
+        f"Цена гидроизоляции: {e(svc.hydroisolation_price or '-')}",
+        f"Диагностика: {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
+        f"Входит в стоимость: {'Да' if svc.diagnostics_included else 'Нет'}",
+        f"Рейтинг: {svc.yandex_rating or '-'}",
+        f"Доступен: {'Да' if svc.is_available else 'Нет'}",
     ]
-    if owner.upgrade_categories:
+    if svc.upgrade_categories:
         lines.append(
-            f"Категории апгрейда: {e(owner.upgrade_categories.replace(',', ', '))}"
+            f"Категории апгрейда: {e(svc.upgrade_categories.replace(',', ', '))}"
         )
     await message.answer("\n".join(lines))
 
@@ -289,8 +307,8 @@ async def cmd_client_mode(message: types.Message, state: FSMContext) -> None:
     await state.clear()
 
     owner = await _get_owner(message.from_user.id)
-    if owner and owner.status == "активный":
-        greeting = f"Service Map \u2014 {e(owner.name)}"
+    if owner and owner.status == "активный" and owner.service is not None:
+        greeting = f"Service Map \u2014 {e(owner.service.name)}"
         await message.answer(
             f"{greeting}\n\nВыберите действие:",
             reply_markup=partner_main_menu_kb(is_admin=is_admin),

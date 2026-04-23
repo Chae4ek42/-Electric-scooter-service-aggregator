@@ -889,15 +889,17 @@ class TestOrderModel:
 
 class TestServiceOwnerModel:
     def test_service_has_status_column(self):
-        from client_bot.domain.models import Service
+        from client_bot.domain.models import ServiceDraft
 
-        cols = {c.name for c in Service.__table__.columns}
+        cols = {c.name for c in ServiceDraft.__table__.columns}
         assert "status" in cols
+        assert "owner_user_id" in cols
+        assert "service_id" in cols
 
     def test_draft_fields_complete(self):
-        from client_bot.domain.models import Service
+        from client_bot.domain.models import ServiceDraft
 
-        cols = {c.name for c in Service.__table__.columns}
+        cols = {c.name for c in ServiceDraft.__table__.columns}
         draft_fields = {
             "draft_name",
             "draft_service_type",
@@ -909,6 +911,7 @@ class TestServiceOwnerModel:
             "draft_open_time",
             "draft_close_time",
             "draft_hydroisolation",
+            "draft_hydro_price",
             "draft_diagnostics_price",
             "draft_diag_included",
             "draft_upgrade_categories",
@@ -1192,15 +1195,24 @@ class TestPartnerKeyboards:
         kb_upgrade = draft_edit_kb(service_type="upgrade")
         texts_upgrade = [btn.text for row in kb_upgrade.inline_keyboard for btn in row]
         assert "Категории апгрейда" in texts_upgrade
+        assert "Категория ремонта" not in texts_upgrade
 
         kb_repair = draft_edit_kb(service_type="repair")
         texts_repair = [btn.text for row in kb_repair.inline_keyboard for btn in row]
         assert "Категория ремонта" in texts_repair
+        assert "Категории апгрейда" not in texts_repair
 
-        for kb in (kb_upgrade, kb_repair):
+        kb_complex = draft_edit_kb(service_type="complex")
+        texts_complex = [btn.text for row in kb_complex.inline_keyboard for btn in row]
+        assert "Категория ремонта" in texts_complex
+        assert "Категории апгрейда" in texts_complex
+
+        for kb in (kb_upgrade, kb_repair, kb_complex):
             texts = [btn.text for row in kb.inline_keyboard for btn in row]
             assert "Рабочие дни" in texts
-            assert "Банковские реквизиты" in texts
+            assert "Орг.-правовая форма" not in texts
+            assert "Налогообложение" not in texts
+            assert "Банковские реквизиты" not in texts
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1398,8 +1410,9 @@ class TestDBIntegration:
         from sqlalchemy import select
         from client_bot.core.database import async_session
         from client_bot.domain.models import Brand
+        from client_bot.services.seed import init_db
 
-        await __import__("bot.services.seed", fromlist=["init_db"]).init_db()
+        await init_db()
         async with async_session() as session:
             brands = (await session.execute(select(Brand))).scalars().all()
             assert len(brands) >= 5

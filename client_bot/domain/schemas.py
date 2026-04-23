@@ -130,7 +130,25 @@ class WorkHoursInput(BaseModel):
         m = re.match(r"^(\d{2}:\d{2})\s*[-\u2013]\s*(\d{2}:\d{2})$", v)
         if not m:
             raise ValueError("Формат: HH:MM-HH:MM (например 09:00-21:00)")
-        return v
+
+        start_raw, end_raw = m.group(1), m.group(2)
+
+        def _to_minutes(part: str) -> int:
+            hh_str, mm_str = part.split(":")
+            hh = int(hh_str)
+            mm = int(mm_str)
+            if not (0 <= hh <= 23):
+                raise ValueError("Часы должны быть в диапазоне 00-23")
+            if not (0 <= mm <= 59):
+                raise ValueError("Минуты должны быть в диапазоне 00-59")
+            return hh * 60 + mm
+
+        start_m = _to_minutes(start_raw)
+        end_m = _to_minutes(end_raw)
+        if start_m >= end_m:
+            raise ValueError("Время открытия должно быть раньше времени закрытия")
+
+        return f"{start_raw}-{end_raw}"
 
 
 class DiagnosticsPriceInput(BaseModel):

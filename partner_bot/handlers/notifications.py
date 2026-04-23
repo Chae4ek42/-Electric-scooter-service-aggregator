@@ -17,36 +17,44 @@ logger = logging.getLogger(__name__)
 router = Router(name="partner_notifications")
 
 
-async def _get_or_create_settings(owner_id: int) -> ServiceOwnerSettings:
+async def _get_or_create_settings(
+    service_id: int, owner_user_id: int
+) -> ServiceOwnerSettings:
     async with async_session() as session:
         settings = (
             await session.execute(
                 select(ServiceOwnerSettings).where(
-                    ServiceOwnerSettings.owner_id == owner_id
+                    ServiceOwnerSettings.service_id == service_id
                 )
             )
         ).scalar_one_or_none()
         if not settings:
-            settings = ServiceOwnerSettings(owner_id=owner_id)
+            settings = ServiceOwnerSettings(
+                service_id=service_id,
+                owner_user_id=owner_user_id,
+            )
             session.add(settings)
             await session.commit()
             settings = (
                 await session.execute(
                     select(ServiceOwnerSettings).where(
-                        ServiceOwnerSettings.owner_id == owner_id
+                        ServiceOwnerSettings.service_id == service_id
                     )
                 )
             ).scalar_one_or_none()
+        elif settings.owner_user_id != owner_user_id:
+            settings.owner_user_id = owner_user_id
+            await session.commit()
     return settings
 
 
 @router.message(F.text == Btn.NOTIF_SETTINGS)
 async def notif_menu(message: types.Message) -> None:
     owner = await _get_owner(message.from_user.id)
-    if not owner or owner.status != "активный":
+    if not owner or owner.status != "активный" or owner.service_id is None:
         await message.answer(Partner.Notifications.ACTIVE_ONLY)
         return
-    settings = await _get_or_create_settings(owner.id)
+    settings = await _get_or_create_settings(owner.service_id, owner.owner_user_id)
     await message.answer(
         Partner.Notifications.HEADER,
         reply_markup=notif_settings_kb(settings.notif_new_order, settings.notif_cancel),
@@ -56,7 +64,7 @@ async def notif_menu(message: types.Message) -> None:
 @router.callback_query(F.data.startswith("notif:toggle:"))
 async def toggle_notif(callback: types.CallbackQuery) -> None:
     owner = await _get_owner(callback.from_user.id)
-    if not owner or owner.status != "активный":
+    if not owner or owner.status != "активный" or owner.service_id is None:
         await callback.answer(Partner.Notifications.UNAVAILABLE, show_alert=True)
         return
 
@@ -65,14 +73,19 @@ async def toggle_notif(callback: types.CallbackQuery) -> None:
         settings = (
             await session.execute(
                 select(ServiceOwnerSettings).where(
-                    ServiceOwnerSettings.owner_id == owner.id
+                    ServiceOwnerSettings.service_id == owner.service_id
                 )
             )
         ).scalar_one_or_none()
         if not settings:
-            settings = ServiceOwnerSettings(owner_id=owner.id)
+            settings = ServiceOwnerSettings(
+                service_id=owner.service_id,
+                owner_user_id=owner.owner_user_id,
+            )
             session.add(settings)
             await session.flush()
+        elif settings.owner_user_id != owner.owner_user_id:
+            settings.owner_user_id = owner.owner_user_id
 
         if field == "new_order":
             settings.notif_new_order = not settings.notif_new_order

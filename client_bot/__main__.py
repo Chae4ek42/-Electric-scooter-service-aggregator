@@ -38,9 +38,9 @@ def _setup_logging() -> None:
 
 async def _payment_expire_loop() -> None:
     """Автоотмена заявок awaiting_payment старше 1 часа."""
-    from sqlalchemy import update
+
     from client_bot.core.database import async_session
-    from client_bot.domain.models import Order
+    from client_bot.services.order_lifecycle import cancel_expired_awaiting_payment
 
     logger = logging.getLogger(__name__)
     while True:
@@ -50,13 +50,10 @@ async def _payment_expire_loop() -> None:
                 tz=datetime.timezone.utc
             ) - datetime.timedelta(hours=1)
             async with async_session() as session:
-                await session.execute(
-                    update(Order)
-                    .where(Order.status == "awaiting_payment")
-                    .where(Order.created_at < cutoff)
-                    .values(status="cancelled")
-                )
-                await session.commit()
+                changed = await cancel_expired_awaiting_payment(session, cutoff)
+                if changed:
+                    await session.commit()
+                    logger.info("Payment expire loop cancelled %s orders", changed)
         except Exception as exc:
             logger.error("Payment expire loop error: %s", exc)
 

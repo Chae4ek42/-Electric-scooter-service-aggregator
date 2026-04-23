@@ -294,12 +294,13 @@ class TestInnInput:
 
 class TestPartnerModels:
     def test_service_has_owner_fields(self):
-        from client_bot.domain.models import Service
+        from client_bot.domain.models import ServiceDraft
 
-        cols = {c.name for c in Service.__table__.columns}
+        cols = {c.name for c in ServiceDraft.__table__.columns}
         expected = {
             "id",
-            "telegram_id",
+            "owner_user_id",
+            "service_id",
             "status",
             "registered_at",
             "approved_at",
@@ -314,6 +315,7 @@ class TestPartnerModels:
             "draft_open_time",
             "draft_close_time",
             "draft_hydroisolation",
+            "draft_hydro_price",
             "draft_diagnostics_price",
             "draft_diag_included",
             "draft_upgrade_categories",
@@ -525,13 +527,45 @@ class TestPartnerKeyboards:
         assert "Категория ремонта" in texts_repair
         assert "Категории апгрейда" not in texts_repair
 
+        # complex type shows both branches
+        kb_complex = draft_edit_kb(service_type="complex")
+        texts_complex = [btn.text for row in kb_complex.inline_keyboard for btn in row]
+        assert "Категория ремонта" in texts_complex
+        assert "Категории апгрейда" in texts_complex
+
         # common fields always present
-        for kb in (kb_upgrade, kb_repair):
+        for kb in (kb_upgrade, kb_repair, kb_complex):
             texts = [btn.text for row in kb.inline_keyboard for btn in row]
             assert "Рабочие дни" in texts
-            assert "Орг.-правовая форма" in texts
-            assert "Налогообложение" in texts
-            assert "Банковские реквизиты" in texts
+            assert "Орг.-правовая форма" not in texts
+            assert "Налогообложение" not in texts
+            assert "Банковские реквизиты" not in texts
+
+    def test_edit_draft_map_excludes_legacy_bank_fields(self):
+        from partner_bot.handlers.registration import _EDIT_DRAFT_MAP
+
+        assert "edit_draft:legal_form" not in _EDIT_DRAFT_MAP
+        assert "edit_draft:tax_system" not in _EDIT_DRAFT_MAP
+        assert "edit_draft:bank" not in _EDIT_DRAFT_MAP
+
+    def test_next_empty_state_complex_requires_both_branches(self):
+        from client_bot.domain.models import ServiceDraft
+        from client_bot.domain.states import RegistrationFSM
+        from partner_bot.handlers.registration import _next_empty_state
+
+        draft = ServiceDraft(
+            owner_user_id=101,
+            status="ожидает",
+            draft_name="Test",
+            draft_service_type="complex",
+        )
+        assert _next_empty_state(draft) == RegistrationFSM.reg_category.state
+
+        draft.draft_category = "Механика"
+        assert _next_empty_state(draft) == RegistrationFSM.reg_upgrade_categories.state
+
+        draft.draft_upgrade_categories = "Окраска"
+        assert _next_empty_state(draft) == RegistrationFSM.reg_address.state
 
     def test_order_detail_awaiting(self):
         from partner_bot.ui.keyboards import partner_order_detail_kb
@@ -733,9 +767,9 @@ class TestHydroPriceField:
         assert "total_cost" in t.columns.keys()
 
     def test_owner_has_draft_hydro_price(self):
-        from client_bot.domain.models import Service
+        from client_bot.domain.models import ServiceDraft
 
-        t = Service.__table__
+        t = ServiceDraft.__table__
         assert "draft_hydro_price" in t.columns.keys()
 
 
@@ -983,7 +1017,7 @@ class TestFSMReminderImport:
 
 class TestMetroTextUpdated:
     def test_new_metro_text_in_order(self):
-        with open("bot/handlers/order.py", encoding="utf-8") as f:
+        with open("client_bot/handlers/order.py", encoding="utf-8") as f:
             src = f.read()
         assert "Подберем самый ближайший сервис" in src
         assert "Как вы хотите указать ближайшую станцию метро?" not in src
@@ -1192,22 +1226,32 @@ class TestAdminFilterKb:
 class TestFormatDraftHidesEmpty:
     def test_no_hydro_price_when_no_hydro(self):
         from partner_bot.handlers.common import _format_draft
-        from client_bot.domain.models import Service
+        from client_bot.domain.models import ServiceDraft
 
-        svc = Service(name="test", service_type="repair", telegram_id=123)
-        svc.draft_hydroisolation = False
-        svc.draft_hydro_price = None
-        result = _format_draft(svc)
+        draft = ServiceDraft(
+            owner_user_id=123,
+            status="ожидает",
+            draft_name="test",
+            draft_service_type="repair",
+            draft_hydroisolation=False,
+            draft_hydro_price=None,
+        )
+        result = _format_draft(draft)
         assert "Цена гидроизоляции" not in result
 
     def test_shows_hydro_price_when_hydro(self):
         from partner_bot.handlers.common import _format_draft
-        from client_bot.domain.models import Service
+        from client_bot.domain.models import ServiceDraft
 
-        svc = Service(name="test", service_type="repair", telegram_id=123)
-        svc.draft_hydroisolation = True
-        svc.draft_hydro_price = "1500"
-        result = _format_draft(svc)
+        draft = ServiceDraft(
+            owner_user_id=123,
+            status="ожидает",
+            draft_name="test",
+            draft_service_type="repair",
+            draft_hydroisolation=True,
+            draft_hydro_price="1500",
+        )
+        result = _format_draft(draft)
         assert "Цена гидроизоляции" in result
         assert "1500" in result
 

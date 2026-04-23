@@ -1,39 +1,17 @@
-"""
-Синхронизация данных из Google Таблицы.
-
-Читает через Service Account (gspread) или CSV-экспорт:
-  https://docs.google.com/spreadsheets/d/{ID}/gviz/tq?tqx=out:csv&sheet={ЛИСТ}
-
-Порядок столбцов задаётся через переменную окружения ``SHEETS_COLUMNS``
-(см. ``bot/core/config.py``).  Маппинг «заголовок → поле модели» описан
-в ``_HEADER_TO_FIELD``.  Столбцы, не указанные в ``SHEETS_COLUMNS``,
-при чтении игнорируются; при записи — не включаются в строку.
-
-Регистр заголовков и значений не важен.
-
-Если GOOGLE_SHEET_ID задан, но синхронизация завершилась с ошибкой
-или загрузила 0 записей — поднимается исключение и бот не запускается.
-"""
+"""Strict synchronization from Google Sheets to DB (Service Account only)."""
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
 from typing import Any
 
-import aiohttp
 from sqlalchemy import select
 
 from client_bot.core.database import async_session
-from client_bot.domain.models import Service, ServiceCategory
+from client_bot.domain.models import Service, ServiceBankDetails, ServiceCategory
 
 logger = logging.getLogger(__name__)
-
-_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/{sheet_id}"
-    "/gviz/tq?tqx=out:csv&sheet={sheet_name}"
-)
+business_logger = logging.getLogger("esas.business.sheets_sync")
 
 _TYPE_MAP: dict[str, str] = {
     "ремонт": "repair",
@@ -41,39 +19,24 @@ _TYPE_MAP: dict[str, str] = {
     "комплекс": "complex",
 }
 
-# Маппинг «заголовок таблицы» → «внутренний ключ» (нижний регистр).
-# Используется в _col() для поиска значений в строке.
-_HEADER_TO_FIELD: dict[str, str] = {
-    "название": "name",
-    "рейтинг я.карты": "yandex_rating",
-    "телефон": "phone",
-    "telegram": "telegram_handle",
-    "адрес": "address",
-    "метро ближ.": "nearest_metro",
-    "специализация": "service_type",
-    "основной бренд самокатов": "main_brand_scooter",
-    "статус": "partnership_status",
-    "доступен": "is_available",
-    "категория": "category",
-    "открытие": "open_time",
-    "закрытие": "close_time",
-    "гидроизоляция": "has_hydroisolation",
-    "цена гидроизоляции": "hydroisolation_price",
-    "диагностика": "diagnostics_price",
-    "входит в стоимость": "diagnostics_included",
-    "категории апгрейда": "upgrade_categories",
-    "рабочие дни": "working_days",
-    "завершена": "registration_complete",
-}
+_BOOL_TRUE = {"да", "yes", "1", "true"}
+_BOOL_FALSE = {"нет", "no", "0", "false"}
+
+_BANK_HEADERS = [
+    "ID",
+    "Форма",
+    "Налогообложение",
+    "Расч. счёт",
+    "Банк",
+    "БИК",
+    "Корр. счёт",
+    "Организация",
+    "ИНН",
+]
 
 
-def _col(row: dict[str, str], key: str, default: str = "") -> str:
-    """Регистронезависимый поиск столбца по имени."""
-    key_lower = key.strip().lower()
-    for k, v in row.items():
-        if k.strip().lower() == key_lower:
-            return str(v).strip()
-    return default
+class SheetValidationError(ValueError):
+    pass
 
 
 def _is_available() -> bool:
@@ -82,93 +45,166 @@ def _is_available() -> bool:
     return bool(GOOGLE_SHEET_ID)
 
 
-def _fetch_via_sa(sheet_id: str, sheet_name: str) -> list[dict[str, Any]] | None:
-    """Try reading via Service Account. Returns None if SA not configured."""
-    from client_bot.core.config import GOOGLE_SA_PATH
+def _col(row: dict[str, str], key: str) -> str | None:
+    key_lower = key.strip().lower()
+    for k, v in row.items():
+        if k.strip().lower() == key_lower:
+            value = str(v).strip()
+            return value or None
+    return None
 
-    if not GOOGLE_SA_PATH:
+
+def _required_str(row: dict[str, str], key: str, row_num: int) -> str:
+    value = _col(row, key)
+    if value is None:
+        raise SheetValidationError(
+            f"Строка {row_num}: отсутствует обязательный столбец '{key}'"
+        )
+    return value
+
+
+def _parse_int(
+    row: dict[str, str], key: str, row_num: int, required: bool = False
+) -> int | None:
+    value = _required_str(row, key, row_num) if required else _col(row, key)
+    if value is None:
         return None
     try:
-        from pathlib import Path
-
-        import gspread
-        from google.oauth2.service_account import Credentials
-
-        sa_path = str(Path(GOOGLE_SA_PATH).resolve())
-        creds = Credentials.from_service_account_file(
-            sa_path,
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive",
-            ],
+        parsed = int(value)
+    except ValueError as exc:
+        raise SheetValidationError(
+            f"Строка {row_num}: столбец '{key}' должен быть целым числом, получено '{value}'"
+        ) from exc
+    if parsed <= 0:
+        raise SheetValidationError(
+            f"Строка {row_num}: столбец '{key}' должен быть > 0, получено '{value}'"
         )
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(sheet_id)
-        try:
-            ws = sh.worksheet(sheet_name)
-        except gspread.exceptions.WorksheetNotFound:
-            from client_bot.core.config import SHEETS_COLUMNS
+    return parsed
 
-            logger.warning(
-                "SYNC_SHEET_MISSING | sheet=%s | action=creating with %d columns",
-                sheet_name,
-                len(SHEETS_COLUMNS),
-            )
-            ws = sh.add_worksheet(title=sheet_name, rows=100, cols=len(SHEETS_COLUMNS))
-            ws.append_row(SHEETS_COLUMNS, value_input_option="USER_ENTERED")
-            return []
-        # get_all_values() устойчив к дублирующимся заголовкам в таблице
-        all_values = ws.get_all_values()
-        if not all_values:
-            return []
-        headers = all_values[0]
-        # При дублях заголовков оставляем первое вхождение
-        seen: set[str] = set()
-        deduped_headers: list[str] = []
-        for h in headers:
-            if h in seen:
-                deduped_headers.append(f"_{h}_dup")
-            else:
-                deduped_headers.append(h)
-                seen.add(h)
-        rows = []
-        for row in all_values[1:]:
-            padded = row + [""] * (len(deduped_headers) - len(row))
-            rows.append(dict(zip(deduped_headers, padded)))
-        return rows
-    except Exception as exc:
-        logger.warning("SA read failed: %s: %s", type(exc).__name__, exc)
+
+def _parse_float(row: dict[str, str], key: str, row_num: int) -> float | None:
+    value = _col(row, key)
+    if value is None:
         return None
+    try:
+        return float(value.replace(",", "."))
+    except ValueError as exc:
+        raise SheetValidationError(
+            f"Строка {row_num}: столбец '{key}' должен быть числом, получено '{value}'"
+        ) from exc
 
 
-async def _fetch_csv(sheet_id: str, sheet_name: str) -> list[dict[str, Any]]:
-    # Try Service Account first (works with private sheets)
-    sa_data = _fetch_via_sa(sheet_id, sheet_name)
-    if sa_data is not None:
-        return sa_data
-    # Fallback: public CSV export
-    url = _CSV_URL.format(sheet_id=sheet_id, sheet_name=sheet_name)
-    async with aiohttp.ClientSession() as http:
-        async with http.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status != 200:
-                raise RuntimeError(
-                    f"HTTP {resp.status} при загрузке листа «{sheet_name}»"
-                )
-            text = await resp.text(encoding="utf-8")
-    reader = csv.DictReader(io.StringIO(text))
-    return [dict(row) for row in reader]
+def _parse_bool(
+    row: dict[str, str],
+    key: str,
+    row_num: int,
+    required: bool = False,
+) -> bool | None:
+    value = _required_str(row, key, row_num) if required else _col(row, key)
+    if value is None:
+        return None
+    raw = value.strip().lower()
+    if raw in _BOOL_TRUE:
+        return True
+    if raw in _BOOL_FALSE:
+        return False
+    raise SheetValidationError(
+        f"Строка {row_num}: столбец '{key}' должен быть Да/Нет, получено '{value}'"
+    )
 
 
-async def sync_services_from_sheet(*, first_run: bool = False) -> int:
-    """
-    Читает лист «Сервисы» и делает upsert по названию сервиса.
-    Неизвестные столбцы таблицы игнорируются.
-    Возвращает количество обновлённых / добавленных строк.
+def _parse_service_type(row: dict[str, str], row_num: int) -> str:
+    raw_type = _required_str(row, "Специализация", row_num).strip().lower()
+    mapped = _TYPE_MAP.get(raw_type)
+    if mapped is None:
+        raise SheetValidationError(
+            f"Строка {row_num}: неизвестная специализация '{raw_type}'"
+        )
+    return mapped
 
-    Raises:
-        RuntimeError: если HTTP-запрос к таблице завершился ошибкой.
-        ValueError:   если в таблице есть строки, но ни одна не загружена.
-    """
+
+def _parse_time(row: dict[str, str], key: str, row_num: int) -> str | None:
+    value = _col(row, key)
+    if value is None:
+        return None
+    parts = value.split(":")
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        raise SheetValidationError(
+            f"Строка {row_num}: столбец '{key}' должен быть в формате HH:MM, получено '{value}'"
+        )
+    hh = int(parts[0])
+    mm = int(parts[1])
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise SheetValidationError(
+            f"Строка {row_num}: столбец '{key}' вне диапазона времени, получено '{value}'"
+        )
+    return f"{hh:02d}:{mm:02d}"
+
+
+def _fetch_via_sa(
+    sheet_id: str,
+    sheet_name: str,
+    *,
+    headers: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    from pathlib import Path
+
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    from client_bot.core.config import GOOGLE_SA_PATH, SHEETS_COLUMNS
+
+    if not GOOGLE_SA_PATH:
+        raise RuntimeError("GOOGLE_SA_PATH не задан: CSV fallback отключён")
+
+    sa_path = str(Path(GOOGLE_SA_PATH).resolve())
+    creds = Credentials.from_service_account_file(
+        sa_path,
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
+    )
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(sheet_id)
+
+    try:
+        ws = sh.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        header_row = headers or SHEETS_COLUMNS
+        logger.warning(
+            "SYNC_SHEET_MISSING | sheet=%s | action=creating with %d columns",
+            sheet_name,
+            len(header_row),
+        )
+        ws = sh.add_worksheet(title=sheet_name, rows=100, cols=max(10, len(header_row)))
+        ws.append_row(header_row, value_input_option="USER_ENTERED")
+        return []
+
+    values = ws.get_all_values()
+    if not values:
+        return []
+
+    headers = values[0]
+    deduped_headers: list[str] = []
+    seen: set[str] = set()
+    for h in headers:
+        if h in seen:
+            deduped_headers.append(f"{h}_dup")
+        else:
+            deduped_headers.append(h)
+            seen.add(h)
+
+    rows: list[dict[str, Any]] = []
+    for row in values[1:]:
+        padded = row + [""] * (len(deduped_headers) - len(row))
+        rows.append(dict(zip(deduped_headers, padded)))
+    return rows
+
+
+async def sync_services_from_sheet(
+    *, first_run: bool = False, dry_run: bool = False
+) -> int:
     if not _is_available():
         logger.debug("Sheets sync пропущен (GOOGLE_SHEET_ID не задан)")
         return 0
@@ -186,245 +222,247 @@ async def sync_services_from_sheet(*, first_run: bool = False) -> int:
             ",".join(SHEETS_COLUMNS),
         )
 
-    # Ошибка сети / HTTP — логируем с типом и пробрасываем (бот не стартует)
-    try:
-        rows = await _fetch_csv(GOOGLE_SHEET_ID, SHEETS_TAB_SERVICES)
-    except Exception as exc:
-        logger.error(
-            "SYNC_FETCH_ERR | error_type=%s | error=%s",
-            type(exc).__name__,
-            exc,
-        )
-        raise
-
+    rows = _fetch_via_sa(GOOGLE_SHEET_ID, SHEETS_TAB_SERVICES)
     if rows:
-        sheet_headers = {k.strip().lower() for k in rows[0].keys()}
+        headers = {h.strip().lower() for h in rows[0].keys()}
         configured = {c.strip().lower() for c in SHEETS_COLUMNS}
-        missing = configured - sheet_headers
-        extra = sheet_headers - configured
+        missing = configured - headers
         if missing:
             logger.warning("SYNC_COLUMNS_MISMATCH | missing_in_sheet=%s", missing)
-        if extra:
-            logger.debug("SYNC_COLUMNS_EXTRA | extra_in_sheet=%s", extra)
-        logger.info(
-            "SYNC_FETCHED | rows=%d | sheet_headers=%d", len(rows), len(sheet_headers)
-        )
 
     added = 0
     updated = 0
-    skipped = 0  # rows with empty «Название» (skipped)
-    unchanged = 0  # rows found in DB but no fields changed
+    unchanged = 0
+    skipped = 0
+
+    seen_ids: set[int] = set()
+
     async with async_session() as session:
         cats = (await session.execute(select(ServiceCategory))).scalars().all()
         cat_cache: dict[str, int] = {c.name: c.id for c in cats}
 
-        for row in rows:
-            # Читаем только ожидаемые столбцы; остальные — игнорируются
-            name = _col(row, "Название")
-            if not name:
+        for index, row in enumerate(rows, start=2):
+            if all((str(v).strip() == "" for v in row.values())):
                 skipped += 1
                 continue
 
-            raw_type = _col(row, "Специализация").lower()
-            stype = _TYPE_MAP.get(raw_type)
-            if not stype and raw_type:
-                logger.warning(
-                    "Лист «Сервисы»: неизвестная специализация «%s» у «%s»",
-                    raw_type,
-                    name,
+            service_id = _parse_int(row, "ID", index, required=True)
+            if service_id in seen_ids:
+                raise SheetValidationError(
+                    f"Строка {index}: дублирующийся ID '{service_id}'"
                 )
+            seen_ids.add(service_id)
 
-            raw_cat = _col(row, "Категория")
-            cat_id: int | None = (
-                cat_cache.get(raw_cat) if raw_cat not in ("-", "") else None
-            )
+            name = _required_str(row, "Название", index)
+            service_type = _parse_service_type(row, index)
+            is_available = _parse_bool(row, "Доступен", index, required=True)
 
-            available = _col(row, "Доступен", "да").lower() in (
-                "да",
-                "yes",
-                "1",
-                "true",
-            )
-
-            address = _col(row, "Адрес") or None
-
-            raw_rating = _col(row, "Рейтинг Я.Карты")
-            yandex_rating: float | None = None
-            if raw_rating:
-                try:
-                    yandex_rating = float(raw_rating.replace(",", "."))
-                except ValueError:
-                    logger.warning(
-                        "Лист «Сервисы»: неверный рейтинг «%s» у «%s»", raw_rating, name
+            category_name = _col(row, "Категория")
+            category_id = None
+            if category_name and category_name not in ("-", "—"):
+                category_id = cat_cache.get(category_name)
+                if category_id is None:
+                    raise SheetValidationError(
+                        f"Строка {index}: неизвестная категория '{category_name}'"
                     )
 
-            nearest_metro = _col(row, "Метро ближ.") or None
-            phone = _col(row, "Телефон") or None
+            yandex_rating = _parse_float(row, "Рейтинг Я.Карты", index)
+            phone = _col(row, "Телефон")
             if phone and phone.startswith("#"):
-                phone = None  # filter Sheets formula errors (#ERROR!, #REF!, etc.)
-            telegram_handle = _col(row, "Telegram") or None
-            raw_status = (_col(row, "Статус") or "").strip().lower()
-            _PARTNER_STATUS_MAP: dict[str, str] = {
-                "partner": "активный",
-                "партнёр": "активный",
-                "партнер": "активный",
-                "активный": "активный",
-                "active": "активный",
-                "приостановлен": "приостановлен",
-                "suspended": "приостановлен",
-                "отклонён": "отклонён",
-                "отклонен": "отклонён",
-                "rejected": "отклонён",
-                "ожидает": "ожидает",
-                "pending": "ожидает",
+                phone = None
+
+            partnership_status = _col(row, "Статус")
+            has_hydroisolation = _parse_bool(row, "Гидроизоляция", index)
+            diagnostics_included = _parse_bool(row, "Входит в стоимость", index)
+            registration_complete = _parse_bool(row, "Завершена", index)
+
+            payload = {
+                "name": name,
+                "service_type": service_type,
+                "is_available": is_available,
+                "category_id": category_id,
+                "address": _col(row, "Адрес"),
+                "yandex_rating": yandex_rating,
+                "nearest_metro": _col(row, "Метро ближ."),
+                "phone": phone,
+                "telegram_handle": _col(row, "Telegram"),
+                "partnership_status": partnership_status,
+                "main_brand_scooter": _col(row, "Основной бренд самокатов"),
+                "open_time": _parse_time(row, "Открытие", index),
+                "close_time": _parse_time(row, "Закрытие", index),
+                "hydroisolation_price": _col(row, "Цена гидроизоляции"),
+                "diagnostics_price": _parse_float(row, "Диагностика", index),
+                "upgrade_categories": _col(row, "Категории апгрейда"),
+                "working_days": _col(row, "Рабочие дни"),
             }
-            partnership_status = _PARTNER_STATUS_MAP.get(raw_status, raw_status) or None
-            main_brand_scooter = _col(row, "Основной бренд самокатов") or None
-
-            open_time = _col(row, "Открытие") or None
-            close_time = _col(row, "Закрытие") or None
-
-            has_hydro = _col(row, "Гидроизоляция", "нет").lower() in (
-                "да",
-                "yes",
-                "1",
-                "true",
-            )
-
-            raw_diag = _col(row, "Диагностика")
-            diagnostics_price: float | None = None
-            if raw_diag:
-                try:
-                    diagnostics_price = float(raw_diag.replace(",", "."))
-                except ValueError:
-                    logger.warning(
-                        "Лист «Сервисы»: неверная стоимость диагностики «%s» у «%s»",
-                        raw_diag,
-                        name,
-                    )
-
-            diag_included = _col(row, "Входит в стоимость", "нет").lower() in (
-                "да",
-                "yes",
-                "1",
-                "true",
-            )
-
-            hydro_price = _col(row, "Цена гидроизоляции") or None
-            upgrade_categories = _col(row, "Категории апгрейда") or None
-            working_days = _col(row, "Рабочие дни") or None
-
-            raw_reg_complete = _col(row, "Завершена", "да").lower()
-            registration_complete = raw_reg_complete in (
-                "да",
-                "yes",
-                "1",
-                "true",
-            )
+            if has_hydroisolation is not None:
+                payload["has_hydroisolation"] = has_hydroisolation
+            if diagnostics_included is not None:
+                payload["diagnostics_included"] = diagnostics_included
+            if registration_complete is not None:
+                payload["registration_complete"] = registration_complete
 
             existing = (
-                await session.execute(select(Service).where(Service.name == name))
+                await session.execute(select(Service).where(Service.id == service_id))
             ).scalar_one_or_none()
 
             if existing:
-                # Обновляем только если реально изменилось
                 changed = False
-                if stype and existing.service_type != stype:
-                    existing.service_type = stype
-                    changed = True
-                for attr, val in [
-                    ("is_available", available),
-                    ("category_id", cat_id),
-                    ("address", address),
-                    ("yandex_rating", yandex_rating),
-                    ("nearest_metro", nearest_metro),
-                    ("phone", phone),
-                    ("telegram_handle", telegram_handle),
-                    ("partnership_status", partnership_status),
-                    ("main_brand_scooter", main_brand_scooter),
-                    ("open_time", open_time),
-                    ("close_time", close_time),
-                    ("has_hydroisolation", has_hydro),
-                    ("hydroisolation_price", hydro_price),
-                    ("diagnostics_price", diagnostics_price),
-                    ("diagnostics_included", diag_included),
-                    ("upgrade_categories", upgrade_categories),
-                    ("working_days", working_days),
-                    ("registration_complete", registration_complete),
-                ]:
-                    if getattr(existing, attr) != val:
-                        setattr(existing, attr, val)
+                for attr, value in payload.items():
+                    if getattr(existing, attr) != value:
+                        setattr(existing, attr, value)
                         changed = True
                 if changed:
                     updated += 1
                 else:
                     unchanged += 1
             else:
-                # Для новых записей без специализации используем тип «комплекс»
-                if not stype:
-                    stype = "complex"
-                session.add(
-                    Service(
-                        name=name,
-                        service_type=stype,
-                        is_available=available,
-                        category_id=cat_id,
-                        address=address,
-                        yandex_rating=yandex_rating,
-                        nearest_metro=nearest_metro,
-                        phone=phone,
-                        telegram_handle=telegram_handle,
-                        partnership_status=partnership_status,
-                        main_brand_scooter=main_brand_scooter,
-                        open_time=open_time,
-                        close_time=close_time,
-                        has_hydroisolation=has_hydro,
-                        hydroisolation_price=hydro_price,
-                        diagnostics_price=diagnostics_price,
-                        diagnostics_included=diag_included,
-                        upgrade_categories=upgrade_categories,
-                        working_days=working_days,
-                        registration_complete=registration_complete,
-                    )
-                )
+                session.add(Service(id=service_id, **payload))
                 added += 1
 
-        await session.commit()
+        if dry_run:
+            await session.rollback()
+        else:
+            await session.commit()
 
     logger.info(
-        "SYNC_RESULT | added=%d | updated=%d | unchanged=%d | skipped=%d",
+        "SYNC_RESULT | services_added=%d | services_updated=%d | services_unchanged=%d | services_skipped=%d",
         added,
         updated,
         unchanged,
         skipped,
     )
-
-    processed = added + updated + unchanged
-    if rows and processed == 0:
-        raise ValueError(
-            f"Sheets sync: таблица содержит {len(rows)} строк(и), "
-            "но ни одна не загружена — проверьте столбцы «Название» и «Специализация»"
+    if dry_run:
+        business_logger.info(
+            "SYNC_DRY_RUN_RESULT | services_added=%d | services_updated=%d",
+            added,
+            updated,
         )
 
     return added + updated
 
 
-async def run_full_sync(*, first_run: bool = False) -> None:
+async def sync_bank_details_from_sheet(*, dry_run: bool = False) -> int:
+    if not _is_available():
+        return 0
+
+    from client_bot.core.config import GOOGLE_SHEET_ID, SHEETS_TAB_BANK_DETAILS
+
+    rows = _fetch_via_sa(
+        GOOGLE_SHEET_ID,
+        SHEETS_TAB_BANK_DETAILS,
+        headers=_BANK_HEADERS,
+    )
+
+    added = 0
+    updated = 0
+    unchanged = 0
+
+    seen_ids: set[int] = set()
+
+    async with async_session() as session:
+        for index, row in enumerate(rows, start=2):
+            if all((str(v).strip() == "" for v in row.values())):
+                continue
+
+            service_id = _parse_int(row, "ID", index, required=True)
+            if service_id in seen_ids:
+                raise SheetValidationError(
+                    f"Строка {index} (реквизиты): дублирующийся ID '{service_id}'"
+                )
+            seen_ids.add(service_id)
+
+            service_exists = (
+                await session.execute(
+                    select(Service.id).where(Service.id == service_id)
+                )
+            ).scalar_one_or_none()
+            if service_exists is None:
+                raise SheetValidationError(
+                    f"Строка {index} (реквизиты): сервис с ID '{service_id}' не найден"
+                )
+
+            payload = {
+                "legal_form": _col(row, "Форма"),
+                "tax_system": _col(row, "Налогообложение"),
+                "bank_account": _col(row, "Расч. счёт"),
+                "bank_name": _col(row, "Банк"),
+                "bik": _col(row, "БИК"),
+                "corr_account": _col(row, "Корр. счёт"),
+                "org_name": _col(row, "Организация"),
+                "inn": _col(row, "ИНН"),
+            }
+
+            bank = (
+                await session.execute(
+                    select(ServiceBankDetails).where(
+                        ServiceBankDetails.service_id == service_id
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if bank is None:
+                session.add(ServiceBankDetails(service_id=service_id, **payload))
+                added += 1
+                continue
+
+            changed = False
+            for attr, value in payload.items():
+                if getattr(bank, attr) != value:
+                    setattr(bank, attr, value)
+                    changed = True
+            if changed:
+                updated += 1
+            else:
+                unchanged += 1
+
+        if dry_run:
+            await session.rollback()
+        else:
+            await session.commit()
+
+    logger.info(
+        "SYNC_RESULT | bank_added=%d | bank_updated=%d | bank_unchanged=%d",
+        added,
+        updated,
+        unchanged,
+    )
+    if dry_run:
+        business_logger.info(
+            "SYNC_DRY_RUN_RESULT | bank_added=%d | bank_updated=%d",
+            added,
+            updated,
+        )
+
+    return added + updated
+
+
+async def run_full_sync(*, first_run: bool = False, dry_run: bool = False) -> None:
     import asyncio
+
     from client_bot.services.sheets_writer import (
         sync_all_clients_to_sheet,
         sync_all_orders_to_sheet,
     )
 
     try:
-        await sync_services_from_sheet(first_run=first_run)
+        synced_services = await sync_services_from_sheet(
+            first_run=first_run,
+            dry_run=dry_run,
+        )
+        synced_bank = await sync_bank_details_from_sheet(dry_run=dry_run)
     except Exception as exc:
+        logger.error("SYNC_ERR | error_type=%s | error=%s", type(exc).__name__, exc)
         if first_run:
-            logger.warning(
-                "SYNC_SKIP | reason=sheet unavailable on first run | error=%s", exc
-            )
-        else:
-            logger.error("SYNC_ERR | error=%s", exc)
+            raise
+        return
+
+    if dry_run:
+        business_logger.info(
+            "SYNC_HEALTH_OK | services_touched=%d | bank_touched=%d",
+            synced_services,
+            synced_bank,
+        )
         return
 
     try:

@@ -12,7 +12,16 @@ from sqlalchemy import select
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
-from client_bot.domain.models import MetroStation, Service, ServiceCategory, User
+from client_bot.domain.models import (
+    MetroStation,
+    Service,
+    ServiceBankDetails,
+    ServiceCategory,
+    ServiceDraft,
+    ServiceOwnerSettings,
+    User,
+)
+from client_bot.domain.order_rules import parse_hydro_price_range
 from client_bot.domain.schemas import (
     AddressInput,
     BankAccountInput,
@@ -28,7 +37,7 @@ from client_bot.domain.schemas import (
 )
 from client_bot.domain.states import RegistrationFSM
 from client_bot.services.metro_search import best_metro_match, top_metro_matches
-from client_bot.services.sheets_writer import add_service_row
+from client_bot.services.sheets_writer import add_service_row, update_service_row
 from client_bot.texts import TYPE_RU, Btn, PARTNER_MENU_TEXTS, Partner
 from partner_bot.handlers.common import _draft_complete, _format_draft, _get_owner
 from partner_bot.ui.keyboards import (
@@ -109,49 +118,55 @@ _STYPE_TEXT = Partner.Registration.STYPE_TEXT
 _CATEGORY_TEXT = Partner.Registration.CATEGORY_TEXT
 
 
-async def _ensure_owner(tg_id: int) -> Service:
+async def _ensure_owner(tg_id: int) -> ServiceDraft:
     async with async_session() as session:
-        svc = (
-            await session.execute(select(Service).where(Service.telegram_id == tg_id))
+        draft = (
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.owner_user_id == tg_id)
+            )
         ).scalar_one_or_none()
-        if svc is None:
+        if draft is None:
             import datetime
 
-            svc = Service(
-                telegram_id=tg_id,
+            draft = ServiceDraft(
+                owner_user_id=tg_id,
                 status="ожидает",
-                name="(не заполнено)",
-                service_type="repair",
-                is_available=False,
                 registered_at=datetime.datetime.now(tz=datetime.timezone.utc),
             )
-            session.add(svc)
+            session.add(draft)
             await session.commit()
-            await session.refresh(svc)
-        return svc
+            await session.refresh(draft)
+        return draft
 
 
 async def _update_draft(tg_id: int, **kwargs) -> None:
     async with async_session() as session:
-        svc = (
-            await session.execute(select(Service).where(Service.telegram_id == tg_id))
+        draft = (
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.owner_user_id == tg_id)
+            )
         ).scalar_one_or_none()
-        if svc:
+        if draft:
             for k, v in kwargs.items():
-                setattr(svc, k, v)
+                setattr(draft, k, v)
             await session.commit()
 
 
-def _next_empty_state(owner: Service) -> str | None:
+def _next_empty_state(owner: ServiceDraft) -> str | None:
     """Find next state that needs filling."""
     if not owner.draft_name:
         return RegistrationFSM.reg_name.state
     if not owner.draft_service_type:
         return RegistrationFSM.reg_service_type.state
+    if owner.draft_service_type == "repair" and not owner.draft_category:
+        return RegistrationFSM.reg_category.state
     if owner.draft_service_type == "upgrade" and not owner.draft_upgrade_categories:
         return RegistrationFSM.reg_upgrade_categories.state
-    if owner.draft_service_type in ("repair", "complex") and not owner.draft_category:
-        return RegistrationFSM.reg_category.state
+    if owner.draft_service_type == "complex":
+        if not owner.draft_category:
+            return RegistrationFSM.reg_category.state
+        if not owner.draft_upgrade_categories:
+            return RegistrationFSM.reg_upgrade_categories.state
     more = [
         ("draft_address", RegistrationFSM.reg_address.state),
         ("draft_metro", RegistrationFSM.reg_metro_search.state),
@@ -197,6 +212,10 @@ async def reg_continue(message: types.Message, state: FSMContext) -> None:
         RegistrationFSM.reg_service_type.state: (
             _STYPE_TEXT,
             reg_service_type_kb(),
+        ),
+        RegistrationFSM.reg_category.state: (
+            _CATEGORY_TEXT,
+            reg_category_kb(),
         ),
         RegistrationFSM.reg_upgrade_categories.state: (
             "Выберите категории апгрейда:",
@@ -277,9 +296,6 @@ _EDIT_DRAFT_MAP = {
         "Стоимость диагностики (руб.):",
     ),
     "edit_draft:diag_included": (RegistrationFSM.reg_diag_included, None),
-    "edit_draft:legal_form": (RegistrationFSM.reg_legal_form, None),
-    "edit_draft:tax_system": (RegistrationFSM.reg_tax_system, None),
-    "edit_draft:bank": (RegistrationFSM.reg_bank_details, None),
 }
 
 
@@ -319,20 +335,6 @@ async def edit_draft_field(callback: types.CallbackQuery, state: FSMContext) -> 
         await state.update_data(selected_days=list(selected))
         await _safe_edit_or_answer(
             callback, "Выберите рабочие дни:", reg_working_days_kb(selected)
-        )
-    elif callback.data == "edit_draft:legal_form":
-        await _safe_edit_or_answer(
-            callback, "Выберите орг.-правовую форму:", reg_legal_form_kb()
-        )
-    elif callback.data == "edit_draft:tax_system":
-        await _safe_edit_or_answer(
-            callback, "Выберите систему налогообложения:", reg_tax_system_kb()
-        )
-    elif callback.data == "edit_draft:bank":
-        await state.update_data(bank_step=0)
-        await _safe_edit_or_answer(
-            callback,
-            "⚠️ Банковские реквизиты\nПо этим реквизитам будут производиться выплаты.\n\nВведите расчётный счёт:",
         )
     else:
         await _safe_edit_or_answer(callback, prompt or "Введите значение:")
@@ -389,7 +391,7 @@ async def reg_service_type(callback: types.CallbackQuery, state: FSMContext) -> 
     clear_kwargs: dict = {"draft_service_type": stype}
     if stype == "upgrade":
         clear_kwargs["draft_category"] = None
-    else:
+    elif stype == "repair":
         clear_kwargs["draft_upgrade_categories"] = None
     await _update_draft(callback.from_user.id, **clear_kwargs)
 
@@ -399,11 +401,25 @@ async def reg_service_type(callback: types.CallbackQuery, state: FSMContext) -> 
         pass  # normal registration flow — proceed below
     # else: keep editing_draft=True, the chained handler will call _after_edit
 
+    owner = await _get_owner(callback.from_user.id)
+
     if stype == "upgrade":
-        await state.update_data(selected_upgrade_cats=[])
+        selected = set((owner.draft_upgrade_categories or "").split(",")) - {""}
+        await state.update_data(selected_upgrade_cats=list(selected))
         await state.set_state(RegistrationFSM.reg_upgrade_categories)
         await _safe_edit_or_answer(
-            callback, "Выберите категории апгрейда:", reg_upgrade_categories_kb(set())
+            callback,
+            "Выберите категории апгрейда:",
+            reg_upgrade_categories_kb(selected),
+        )
+    elif stype == "complex" and owner and owner.draft_category:
+        selected = set((owner.draft_upgrade_categories or "").split(",")) - {""}
+        await state.update_data(selected_upgrade_cats=list(selected))
+        await state.set_state(RegistrationFSM.reg_upgrade_categories)
+        await _safe_edit_or_answer(
+            callback,
+            "Выберите категории апгрейда:",
+            reg_upgrade_categories_kb(selected),
         )
     else:
         # repair / complex → ask category (Электрика / Механика)
@@ -418,6 +434,17 @@ async def reg_service_type(callback: types.CallbackQuery, state: FSMContext) -> 
 async def reg_category(callback: types.CallbackQuery, state: FSMContext) -> None:
     cat = callback.data.split(":")[1]
     await _update_draft(callback.from_user.id, draft_category=cat)
+    owner = await _get_owner(callback.from_user.id)
+    if owner and owner.draft_service_type == "complex":
+        selected = set((owner.draft_upgrade_categories or "").split(",")) - {""}
+        await state.update_data(selected_upgrade_cats=list(selected))
+        await state.set_state(RegistrationFSM.reg_upgrade_categories)
+        await _safe_edit_or_answer(
+            callback,
+            "Выберите категории апгрейда:",
+            reg_upgrade_categories_kb(selected),
+        )
+        return
     if await _after_edit(callback, state):
         return
     await state.set_state(RegistrationFSM.reg_hydroisolation)
@@ -511,7 +538,15 @@ async def reg_hydro_price(message: types.Message, state: FSMContext) -> None:
             "или диапазон (напр. 1000-2000):"
         )
         return
-    await _update_draft(message.from_user.id, draft_hydro_price=text)
+
+    try:
+        low, high = parse_hydro_price_range(text)
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+
+    normalized = f"{low:.0f}" if low == high else f"{low:.0f}-{high:.0f}"
+    await _update_draft(message.from_user.id, draft_hydro_price=normalized)
     if await _after_edit(message, state):
         return
     await state.set_state(RegistrationFSM.reg_address)
@@ -881,48 +916,115 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
         await _safe_edit_or_answer(callback, "Анкета не заполнена полностью.")
         return
 
-    # Copy draft → main fields immediately on submission
+    svc: Service | None = None
     async with async_session() as session:
-        svc = (
+        draft = (
             await session.execute(
-                select(Service).where(Service.telegram_id == callback.from_user.id)
+                select(ServiceDraft).where(
+                    ServiceDraft.owner_user_id == callback.from_user.id
+                )
             )
         ).scalar_one_or_none()
-        if svc:
-            cat_id = None
-            if svc.draft_category:
-                cat = (
-                    await session.execute(
-                        select(ServiceCategory).where(
-                            ServiceCategory.name == svc.draft_category
-                        )
+        if draft is None:
+            await _safe_edit_or_answer(callback, "Анкета не найдена.")
+            return
+
+        cat_id = None
+        if draft.draft_category:
+            cat = (
+                await session.execute(
+                    select(ServiceCategory).where(
+                        ServiceCategory.name == draft.draft_category
                     )
-                ).scalar_one_or_none()
-                if cat:
-                    cat_id = cat.id
+                )
+            ).scalar_one_or_none()
+            if cat:
+                cat_id = cat.id
 
-            svc.name = svc.draft_name or "Без названия"
-            svc.service_type = svc.draft_service_type or "repair"
-            svc.category_id = cat_id
-            svc.address = svc.draft_address
-            svc.nearest_metro = svc.draft_metro
-            svc.phone = svc.draft_phone
-            svc.telegram_handle = svc.draft_telegram
-            svc.open_time = svc.draft_open_time
-            svc.close_time = svc.draft_close_time
-            svc.has_hydroisolation = svc.draft_hydroisolation
-            svc.hydroisolation_price = svc.draft_hydro_price
-            svc.diagnostics_price = svc.draft_diagnostics_price
-            svc.diagnostics_included = svc.draft_diag_included
-            svc.upgrade_categories = svc.draft_upgrade_categories
-            svc.working_days = svc.draft_working_days
-            svc.is_available = False
-            svc.registration_complete = True
-            await session.commit()
-            await session.refresh(svc)
+        if draft.service_id:
+            svc = (
+                await session.execute(
+                    select(Service).where(Service.id == draft.service_id)
+                )
+            ).scalar_one_or_none()
+        else:
+            svc = None
 
-        # Write to Google Sheets (status = "ожидает", is_available = False)
-        if svc:
+        if svc is None:
+            svc = Service(
+                name=draft.draft_name or "Без названия",
+                service_type=draft.draft_service_type or "repair",
+                is_available=False,
+            )
+            session.add(svc)
+            await session.flush()
+
+        svc.name = draft.draft_name or "Без названия"
+        svc.service_type = draft.draft_service_type or "repair"
+        svc.category_id = cat_id
+        svc.address = draft.draft_address
+        svc.nearest_metro = draft.draft_metro
+        svc.phone = draft.draft_phone
+        svc.telegram_handle = draft.draft_telegram
+        svc.open_time = draft.draft_open_time
+        svc.close_time = draft.draft_close_time
+        svc.has_hydroisolation = draft.draft_hydroisolation
+        svc.hydroisolation_price = draft.draft_hydro_price
+        svc.diagnostics_price = draft.draft_diagnostics_price
+        svc.diagnostics_included = draft.draft_diag_included
+        svc.upgrade_categories = draft.draft_upgrade_categories
+        svc.working_days = draft.draft_working_days
+        svc.partnership_status = "ожидает"
+        svc.is_available = False
+        svc.registration_complete = True
+
+        draft.service_id = svc.id
+        draft.status = "ожидает"
+        draft.registration_complete = True
+
+        bank = (
+            await session.execute(
+                select(ServiceBankDetails).where(
+                    ServiceBankDetails.service_id == svc.id
+                )
+            )
+        ).scalar_one_or_none()
+        if bank is None:
+            bank = ServiceBankDetails(service_id=svc.id)
+            session.add(bank)
+        bank.legal_form = draft.draft_legal_form
+        bank.tax_system = draft.draft_tax_system
+        bank.bank_account = draft.draft_bank_account
+        bank.bank_name = draft.draft_bank_name
+        bank.bik = draft.draft_bik
+        bank.corr_account = draft.draft_corr_account
+        bank.org_name = draft.draft_org_name
+        bank.inn = draft.draft_inn
+
+        settings = (
+            await session.execute(
+                select(ServiceOwnerSettings).where(
+                    ServiceOwnerSettings.service_id == svc.id
+                )
+            )
+        ).scalar_one_or_none()
+        if settings is None:
+            session.add(
+                ServiceOwnerSettings(
+                    service_id=svc.id,
+                    owner_user_id=draft.owner_user_id,
+                )
+            )
+        else:
+            settings.owner_user_id = draft.owner_user_id
+
+        await session.commit()
+        await session.refresh(svc)
+
+    if svc:
+        try:
+            update_service_row(svc)
+        except Exception:
             try:
                 add_service_row(svc)
             except Exception:
@@ -1074,6 +1176,37 @@ async def reg_back(callback: types.CallbackQuery, state: FSMContext) -> None:
     if not current:
         await callback.answer()
         return
+
+    owner = await _get_owner(callback.from_user.id)
+    stype = owner.draft_service_type if owner else None
+
+    if current == RegistrationFSM.reg_hydroisolation.state:
+        if stype in ("upgrade", "complex"):
+            await state.set_state(RegistrationFSM.reg_upgrade_categories)
+            selected = set((owner.draft_upgrade_categories or "").split(",")) - {""}
+            await state.update_data(selected_upgrade_cats=list(selected))
+            await _safe_edit_or_answer(
+                callback,
+                "Выберите категории апгрейда:",
+                reg_upgrade_categories_kb(selected),
+            )
+            return
+        if stype == "repair":
+            await state.set_state(RegistrationFSM.reg_category)
+            await _safe_edit_or_answer(callback, _CATEGORY_TEXT, reg_category_kb())
+            return
+
+    if current == RegistrationFSM.reg_upgrade_categories.state:
+        prev = (
+            RegistrationFSM.reg_category
+            if stype == "complex"
+            else RegistrationFSM.reg_service_type
+        )
+        await state.set_state(prev)
+        prompt_info = _STATE_PROMPTS.get(prev.state, ("Назад:", None))
+        await _safe_edit_or_answer(callback, prompt_info[0], prompt_info[1])
+        return
+
     state_strings = [s.state for s in _STATE_ORDER]
     if current in state_strings:
         idx = state_strings.index(current)

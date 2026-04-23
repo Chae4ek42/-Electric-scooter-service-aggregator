@@ -1,8 +1,4 @@
-"""Write-back to Google Sheets via Service Account (gspread + google-auth).
-
-Порядок столбцов берётся из ``SHEETS_COLUMNS`` (config.py / .env).
-Маппинг «заголовок → значение поля» описан в ``_FIELD_GETTERS``.
-"""
+"""Write-back to Google Sheets via Service Account (gspread + google-auth)."""
 
 from __future__ import annotations
 
@@ -13,6 +9,7 @@ from client_bot.core.config import (
     GOOGLE_SA_PATH,
     GOOGLE_SHEET_ID,
     SHEETS_COLUMNS,
+    SHEETS_TAB_BANK_DETAILS,
     SHEETS_TAB_CLIENTS,
     SHEETS_TAB_ORDERS,
     SHEETS_TAB_SERVICES,
@@ -28,8 +25,8 @@ _SCOPES = [
 
 _TYPE_MAP_REV = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
 
-# Маппинг: заголовок (нижний регистр) → функция, возвращающая строковое значение
 _FIELD_GETTERS: dict[str, Callable[[Service], str]] = {
+    "id": lambda s: str(s.id),
     "название": lambda s: s.name or "",
     "рейтинг я.карты": lambda s: str(s.yandex_rating or ""),
     "телефон": lambda s: f"'{s.phone}" if s.phone else "",
@@ -55,129 +52,17 @@ _FIELD_GETTERS: dict[str, Callable[[Service], str]] = {
     "завершена": lambda s: "Да" if s.registration_complete else "Нет",
 }
 
-
-def _is_enabled() -> bool:
-    return bool(GOOGLE_SA_PATH and GOOGLE_SHEET_ID)
-
-
-def _get_client():
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    creds = Credentials.from_service_account_file(GOOGLE_SA_PATH, scopes=_SCOPES)
-    return gspread.authorize(creds)
-
-
-def _service_to_row(svc: Service) -> list[str]:
-    """Формирует строку в порядке SHEETS_COLUMNS."""
-    row: list[str] = []
-    for col in SHEETS_COLUMNS:
-        getter = _FIELD_GETTERS.get(col.strip().lower())
-        row.append(getter(svc) if getter else "")
-    return row
-
-
-def _ensure_worksheet(sh, name: str, headers: list[str]):
-    """Return worksheet with up-to-date header row, creating it if needed."""
-    try:
-        ws = sh.worksheet(name)
-    except Exception:
-        ws = sh.add_worksheet(title=name, rows=100, cols=len(headers))
-        ws.update("A1", [headers], value_input_option="USER_ENTERED")
-        logger.info("SHEETS | created worksheet '%s'", name)
-        return ws
-
-    # Always sync header row so column count stays consistent with SHEETS_COLUMNS
-    existing = ws.row_values(1)
-    if existing != headers:
-        ws.update("A1", [headers], value_input_option="USER_ENTERED")
-        logger.info(
-            "SHEETS | updated headers for '%s': %d→%d cols",
-            name,
-            len(existing),
-            len(headers),
-        )
-    return ws
-
-
-def add_service_row(svc: Service) -> bool:
-    if not _is_enabled():
-        logger.debug("Sheets write disabled")
-        return False
-    try:
-        gc = _get_client()
-        sh = gc.open_by_key(GOOGLE_SHEET_ID)
-        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
-        ws.append_row(
-            _service_to_row(svc),
-            value_input_option="USER_ENTERED",
-            table_range="A1",
-        )
-        logger.info(
-            "SHEETS_WRITE | op=add | service=%s | columns=%d",
-            svc.name,
-            len(SHEETS_COLUMNS),
-        )
-        return True
-    except Exception:
-        logger.exception("SHEETS_WRITE_ERR | op=add | service=%s", svc.name)
-        return False
-
-
-def update_service_row(svc: Service) -> bool:
-    if not _is_enabled():
-        return False
-    try:
-        gc = _get_client()
-        sh = gc.open_by_key(GOOGLE_SHEET_ID)
-        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
-        cell = ws.find(svc.name, in_column=1)
-        if cell is None:
-            return add_service_row(svc)
-        row_data = _service_to_row(svc)
-        end_col = chr(ord("A") + len(row_data) - 1)
-        ws.update(
-            f"A{cell.row}:{end_col}{cell.row}",
-            [row_data],
-            value_input_option="USER_ENTERED",
-        )
-        logger.info(
-            "SHEETS_WRITE | op=update | service=%s | row=%d", svc.name, cell.row
-        )
-        return True
-    except Exception:
-        logger.exception("SHEETS_WRITE_ERR | op=update | service=%s", svc.name)
-        return False
-
-
-def set_service_available(service_name: str, available: bool) -> bool:
-    if not _is_enabled():
-        return False
-    try:
-        gc = _get_client()
-        sh = gc.open_by_key(GOOGLE_SHEET_ID)
-        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
-        cell = ws.find(service_name, in_column=1)
-        if cell is None:
-            logger.warning("Sheets: row not found for %s", service_name)
-            return False
-        headers = ws.row_values(1)
-        col_idx = None
-        for i, h in enumerate(headers):
-            if h.strip().lower() == "доступен":
-                col_idx = i + 1
-                break
-        if col_idx is None:
-            logger.warning("Sheets: column 'Доступен' not found")
-            return False
-        ws.update_cell(cell.row, col_idx, "Да" if available else "Нет")
-        return True
-    except Exception:
-        logger.exception("Sheets write failed (available) for %s", service_name)
-        return False
-
-
-# ── Orders & Clients sheets (write-only, for debugging) ──────
+_BANK_HEADERS = [
+    "ID",
+    "Форма",
+    "Налогообложение",
+    "Расч. счёт",
+    "Банк",
+    "БИК",
+    "Корр. счёт",
+    "Организация",
+    "ИНН",
+]
 
 _ORDER_HEADERS = [
     "ID",
@@ -202,15 +87,208 @@ _CLIENT_HEADERS = [
 ]
 
 
+def _is_enabled() -> bool:
+    return bool(GOOGLE_SA_PATH and GOOGLE_SHEET_ID)
+
+
+def _get_client():
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    creds = Credentials.from_service_account_file(GOOGLE_SA_PATH, scopes=_SCOPES)
+    return gspread.authorize(creds)
+
+
+def _service_to_row(svc: Service) -> list[str]:
+    row: list[str] = []
+    for col in SHEETS_COLUMNS:
+        getter = _FIELD_GETTERS.get(col.strip().lower())
+        row.append(getter(svc) if getter else "")
+    return row
+
+
+def _ensure_worksheet(sh, name: str, headers: list[str]):
+    try:
+        ws = sh.worksheet(name)
+    except Exception:
+        ws = sh.add_worksheet(title=name, rows=100, cols=max(10, len(headers)))
+        ws.update("A1", [headers], value_input_option="USER_ENTERED")
+        logger.info("SHEETS | created worksheet '%s'", name)
+        return ws
+
+    existing = ws.row_values(1)
+    if existing != headers:
+        ws.update("A1", [headers], value_input_option="USER_ENTERED")
+        logger.info(
+            "SHEETS | updated headers for '%s': %d→%d cols",
+            name,
+            len(existing),
+            len(headers),
+        )
+    return ws
+
+
+def _row_range(row: int, width: int) -> str:
+    from gspread.utils import rowcol_to_a1
+
+    return f"{rowcol_to_a1(row, 1)}:{rowcol_to_a1(row, width)}"
+
+
+def _find_row_by_service_id(ws, service_id: int) -> int | None:
+    values = ws.col_values(1)
+    lookup = str(service_id)
+    # row 1 is header
+    for row_index, value in enumerate(values[1:], start=2):
+        if value.strip() == lookup:
+            return row_index
+    return None
+
+
+def add_service_row(svc: Service) -> bool:
+    # Keep public API but ensure id-based upsert semantics.
+    return update_service_row(svc)
+
+
+def update_service_row(svc: Service) -> bool:
+    if not _is_enabled():
+        return False
+    try:
+        gc = _get_client()
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
+
+        row_data = _service_to_row(svc)
+        row_number = _find_row_by_service_id(ws, svc.id)
+        if row_number is None:
+            ws.append_row(row_data, value_input_option="USER_ENTERED", table_range="A1")
+            logger.info(
+                "SHEETS_WRITE | op=add | service_id=%s | service=%s",
+                svc.id,
+                svc.name,
+            )
+            return True
+
+        ws.update(
+            _row_range(row_number, len(row_data)),
+            [row_data],
+            value_input_option="USER_ENTERED",
+        )
+        logger.info(
+            "SHEETS_WRITE | op=update | service_id=%s | row=%d",
+            svc.id,
+            row_number,
+        )
+        return True
+    except Exception:
+        logger.exception("SHEETS_WRITE_ERR | op=update | service_id=%s", svc.id)
+        return False
+
+
+def set_service_available(service_id: int, available: bool) -> bool:
+    if not _is_enabled():
+        return False
+    try:
+        gc = _get_client()
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
+
+        row_number = _find_row_by_service_id(ws, service_id)
+        if row_number is None:
+            logger.warning("Sheets: row not found for service_id=%s", service_id)
+            return False
+
+        headers = ws.row_values(1)
+        col_idx = None
+        for i, h in enumerate(headers, start=1):
+            if h.strip().lower() == "доступен":
+                col_idx = i
+                break
+        if col_idx is None:
+            logger.warning("Sheets: column 'Доступен' not found")
+            return False
+
+        ws.update_cell(row_number, col_idx, "Да" if available else "Нет")
+        return True
+    except Exception:
+        logger.exception(
+            "Sheets write failed (available) for service_id=%s", service_id
+        )
+        return False
+
+
+def update_service_bank_row(service_id: int) -> bool:
+    if not _is_enabled():
+        return False
+
+    try:
+        from client_bot.core.database import sync_engine
+        from client_bot.domain.models import ServiceBankDetails
+        from sqlalchemy.orm import Session
+
+        with Session(sync_engine) as session:
+            bank = (
+                session.query(ServiceBankDetails)
+                .filter(ServiceBankDetails.service_id == service_id)
+                .one_or_none()
+            )
+
+        if bank is None:
+            logger.warning(
+                "SHEETS_BANK | no bank details for service_id=%s", service_id
+            )
+            return False
+
+        row_data = [
+            str(service_id),
+            bank.legal_form or "",
+            bank.tax_system or "",
+            bank.bank_account or "",
+            bank.bank_name or "",
+            bank.bik or "",
+            bank.corr_account or "",
+            bank.org_name or "",
+            bank.inn or "",
+        ]
+
+        gc = _get_client()
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        ws = _ensure_worksheet(sh, SHEETS_TAB_BANK_DETAILS, _BANK_HEADERS)
+
+        row_number = _find_row_by_service_id(ws, service_id)
+        if row_number is None:
+            ws.append_row(row_data, value_input_option="USER_ENTERED", table_range="A1")
+            logger.info("SHEETS_WRITE | op=add_bank | service_id=%s", service_id)
+            return True
+
+        ws.update(
+            _row_range(row_number, len(row_data)),
+            [row_data],
+            value_input_option="USER_ENTERED",
+        )
+        logger.info(
+            "SHEETS_WRITE | op=update_bank | service_id=%s | row=%d",
+            service_id,
+            row_number,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "SHEETS_WRITE_ERR | op=update_bank | service_id=%s", service_id
+        )
+        return False
+
+
 def sync_all_orders_to_sheet() -> bool:
-    """Перезаписывает лист «Заявки» всеми заказами из БД (синхронный)."""
+    """Rewrite the "Заявки" worksheet with all orders from DB."""
     if not _is_enabled():
         return False
     try:
         from sqlalchemy import select as sa_select
-        from client_bot.core.database import sync_engine
         from sqlalchemy.orm import Session, joinedload
-        from client_bot.domain.models import Brand, Model as ModelModel, Order, User
+
+        from client_bot.core.database import sync_engine
+        from client_bot.domain.models import Model as ModelModel
+        from client_bot.domain.models import Order, User
 
         gc = _get_client()
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
@@ -230,6 +308,7 @@ def sync_all_orders_to_sheet() -> bool:
             "disputed": "Оспорена",
             "no_center": "Не найден центр",
         }
+
         with Session(sync_engine) as session:
             orders = (
                 session.execute(
@@ -242,6 +321,7 @@ def sync_all_orders_to_sheet() -> bool:
                 .scalars()
                 .all()
             )
+
             rows = []
             for o in orders:
                 user = session.get(User, o.user_id)
@@ -255,12 +335,14 @@ def sync_all_orders_to_sheet() -> bool:
                 else:
                     brand_str = ""
                     model_str = o.model_custom_name or ""
+
                 category_str = (
                     o.upgrade_category
                     or (svc.category_rel.name if svc and svc.category_rel else "")
                     if svc
                     else (o.upgrade_category or "")
                 )
+
                 rows.append(
                     [
                         o.id,
@@ -275,21 +357,21 @@ def sync_all_orders_to_sheet() -> bool:
                         model_str,
                         category_str,
                         _STATUS_RU.get(o.status, o.status) if o.status else "",
-                        str(
-                            o.created_at.strftime("%d.%m.%Y %H:%M")
-                            if o.created_at
-                            else ""
-                        ),
-                        str(
+                        o.created_at.strftime("%d.%m.%Y %H:%M") if o.created_at else "",
+                        (
                             o.completed_at.strftime("%d.%m.%Y %H:%M")
                             if o.completed_at
                             else ""
                         ),
                     ]
                 )
-        all_data = [_ORDER_HEADERS] + rows
+
         ws.clear()
-        ws.update(range_name="A1", values=all_data, value_input_option="USER_ENTERED")
+        ws.update(
+            range_name="A1",
+            values=[_ORDER_HEADERS] + rows,
+            value_input_option="USER_ENTERED",
+        )
         logger.info("SHEETS_WRITE | op=sync_orders | count=%d", len(rows))
         return True
     except Exception:
@@ -298,14 +380,15 @@ def sync_all_orders_to_sheet() -> bool:
 
 
 def sync_all_clients_to_sheet() -> bool:
-    """Перезаписывает лист «Клиенты» всеми пользователями из БД."""
+    """Rewrite the "Клиенты" worksheet with all users from DB."""
     if not _is_enabled():
         return False
     try:
         from sqlalchemy import func as sa_func
         from sqlalchemy import select as sa_select
-        from client_bot.core.database import sync_engine
         from sqlalchemy.orm import Session
+
+        from client_bot.core.database import sync_engine
         from client_bot.domain.models import Order, User
 
         gc = _get_client()
@@ -344,9 +427,13 @@ def sync_all_clients_to_sheet() -> bool:
                         last.strftime("%d.%m.%Y %H:%M") if last else "",
                     ]
                 )
-        all_data = [_CLIENT_HEADERS] + rows
+
         ws.clear()
-        ws.update(range_name="A1", values=all_data, value_input_option="USER_ENTERED")
+        ws.update(
+            range_name="A1",
+            values=[_CLIENT_HEADERS] + rows,
+            value_input_option="USER_ENTERED",
+        )
         logger.info("SHEETS_WRITE | op=sync_clients | count=%d", len(rows))
         return True
     except Exception:

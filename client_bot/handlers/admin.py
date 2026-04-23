@@ -32,6 +32,7 @@ from client_bot.domain.models import (
     Model,
     Order,
     Service,
+    ServiceDraft,
     ServiceCategory,
     User,
 )
@@ -230,9 +231,8 @@ async def admin_enter(message: types.Message, state: FSMContext) -> None:
         partner_total = (
             await session.execute(
                 select(func.count())
-                .select_from(Service)
-                .where(Service.telegram_id.isnot(None))
-                .where(Service.registration_complete.is_(True))
+                .select_from(ServiceDraft)
+                .where(ServiceDraft.registration_complete.is_(True))
             )
         ).scalar_one()
     stat_lines = [
@@ -265,9 +265,8 @@ async def adm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
         partner_total = (
             await session.execute(
                 select(func.count())
-                .select_from(Service)
-                .where(Service.telegram_id.isnot(None))
-                .where(Service.registration_complete.is_(True))
+                .select_from(ServiceDraft)
+                .where(ServiceDraft.registration_complete.is_(True))
             )
         ).scalar_one()
     stat_lines = [
@@ -470,11 +469,11 @@ _PARTNER_STATUS_RU: dict[str, str] = {
 }
 
 
-def _fmt_partner_short(owner: Service) -> str:
+def _fmt_partner_short(owner: ServiceDraft) -> str:
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
     lines = [
         f"<b>Партнёр #</b><code>{owner.id}</code>",
-        f"<b>TG ID:</b> <code>{owner.telegram_id}</code>",
+        f"<b>TG ID:</b> <code>{owner.owner_user_id}</code>",
         f"<b>Статус:</b> {_PARTNER_STATUS_RU.get(owner.status, owner.status)}",
         f"<b>Название:</b> {e(owner.draft_name or '—')}",
         f"<b>Тип:</b> {type_map.get(owner.draft_service_type or '', owner.draft_service_type or '—')}",
@@ -494,9 +493,9 @@ async def adm_partners_list(cb: types.CallbackQuery) -> None:
         all_owners = (
             (
                 await session.execute(
-                    select(Service)
-                    .where(Service.telegram_id.isnot(None))
-                    .order_by(Service.registered_at.desc())
+                    select(ServiceDraft)
+                    .where(ServiceDraft.registration_complete.is_(True))
+                    .order_by(ServiceDraft.registered_at.desc())
                 )
             )
             .scalars()
@@ -566,7 +565,9 @@ async def adm_partner_detail(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
     if not owner:
         await cb.answer("Партнёр не найден.", show_alert=True)

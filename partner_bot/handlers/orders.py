@@ -13,7 +13,16 @@ from sqlalchemy import func, select
 
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
-from client_bot.domain.models import Order, Service
+from client_bot.domain.models import Order, ServiceDraft
+from client_bot.services.notifications import send_by_token
+from client_bot.services.order_lifecycle import ACTOR_PARTNER, transition_order_status
+from client_bot.services.payment_policy import PaymentPolicy
+from client_bot.domain.order_rules import (
+    ZERO_MONEY,
+    money,
+    money_to_float,
+    parse_hydro_price_range,
+)
 from client_bot.domain.schemas import RejectReasonInput
 from client_bot.domain.states import PartnerOrderFSM
 from partner_bot.handlers.common import _get_owner
@@ -149,10 +158,10 @@ async def _get_partner_orders(
     return list(orders), total_pages
 
 
-async def _require_active_owner(event) -> Service | None:
+async def _require_active_owner(event) -> ServiceDraft | None:
     tg_id = event.from_user.id
     owner = await _get_owner(tg_id)
-    if not owner or owner.status != "активный":
+    if not owner or owner.status != "активный" or owner.service_id is None:
         text = (
             "Вы не зарегистрированы или не одобрены."
             if not owner
@@ -180,8 +189,8 @@ async def incoming_orders(message: types.Message, state: FSMContext) -> None:
             (
                 await session.execute(
                     select(Order)
-                    .where(Order.service_id == owner.id)
-                    .where(Order.status == "awaiting_payment")
+                    .where(Order.service_id == owner.service_id)
+                    .where(Order.status.in_(["awaiting_payment", "paid"]))
                     .order_by(Order.created_at.desc())
                     .limit(20)
                 )
@@ -230,12 +239,12 @@ async def order_detail(callback: types.CallbackQuery, state: FSMContext) -> None
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
 
-    if not order or order.service_id != owner.id:
+    if not order or order.service_id != owner.service_id:
         await callback.answer("Заявка не найдена.", show_alert=True)
         return
 
     client_username = order.user.username if order.user else None
-    show_client = order.status not in ("awaiting_payment",)
+    show_client = order.status not in ("awaiting_payment", "paid")
     text = _fmt_partner_order(order, show_client=show_client)
     kb = partner_order_detail_kb(
         order_id, order.status, client_username if show_client else None
@@ -261,13 +270,19 @@ async def accept_order(callback: types.CallbackQuery, state: FSMContext) -> None
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
-        if order.status != "awaiting_payment":
+        if order.status not in ("awaiting_payment", "paid"):
             await callback.answer("Невозможно принять эту заявку.", show_alert=True)
             return
-        order.status = "accepted"
+        await transition_order_status(
+            session,
+            order,
+            "accepted",
+            actor=ACTOR_PARTNER,
+            reason="partner_accept",
+        )
         order.accepted_at = datetime.datetime.now(tz=datetime.timezone.utc)
         await session.commit()
 
@@ -276,18 +291,17 @@ async def accept_order(callback: types.CallbackQuery, state: FSMContext) -> None
 
     # Notify client
     try:
-        svc_name = owner.name or ""
-        svc_address = owner.address or ""
+        svc_name = order.service.name if order and order.service else ""
+        svc_address = order.service.address if order and order.service else ""
         from client_bot.core.config import CLIENT_BOT_TOKEN
-        from aiogram import Bot
 
-        client_bot = Bot(token=CLIENT_BOT_TOKEN)
-        await client_bot.send_message(
+        await send_by_token(
+            CLIENT_BOT_TOKEN,
             order.user_id,
             f"Ваша заявка #{order_id} принята сервисом {svc_name}.\n"
             f"Адрес: {svc_address}",
+            dedupe_key=f"client_accept:{order_id}:{order.user_id}",
         )
-        await client_bot.session.close()
     except Exception:
         logger.exception("Failed to notify client about acceptance")
 
@@ -348,11 +362,17 @@ async def reject_order_reason(message: types.Message, state: FSMContext) -> None
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await message.answer("Заявка не найдена.")
             await state.clear()
             return
-        order.status = "rejected_by_partner"
+        await transition_order_status(
+            session,
+            order,
+            "rejected_by_partner",
+            actor=ACTOR_PARTNER,
+            reason="partner_reject",
+        )
         order.reject_reason = v.text
         await session.commit()
 
@@ -365,14 +385,13 @@ async def reject_order_reason(message: types.Message, state: FSMContext) -> None
     # Notify client
     try:
         from client_bot.core.config import CLIENT_BOT_TOKEN
-        from aiogram import Bot
 
-        client_bot = Bot(token=CLIENT_BOT_TOKEN)
-        await client_bot.send_message(
+        await send_by_token(
+            CLIENT_BOT_TOKEN,
             order.user_id,
             f"Ваша заявка #{order_id} была отклонена сервисом.\n" f"Причина: {v.text}",
+            dedupe_key=f"client_reject:{order_id}:{order.user_id}",
         )
-        await client_bot.session.close()
     except Exception:
         logger.exception("Failed to notify client about rejection")
 
@@ -392,7 +411,7 @@ async def client_refused_start(
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status != "accepted":
@@ -426,11 +445,17 @@ async def client_refused_reason(message: types.Message, state: FSMContext) -> No
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await message.answer("Заявка не найдена.")
             await state.clear()
             return
-        order.status = "client_refused"
+        await transition_order_status(
+            session,
+            order,
+            "client_refused",
+            actor=ACTOR_PARTNER,
+            reason="partner_mark_client_refused",
+        )
         order.refusal_reason = text
         order.completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
         await session.commit()
@@ -450,11 +475,10 @@ async def client_refused_reason(message: types.Message, state: FSMContext) -> No
     # Notify client
     try:
         from client_bot.core.config import CLIENT_BOT_TOKEN
-        from aiogram import Bot
         from client_bot.ui.keyboards import client_visited_kb
 
-        client_bot = Bot(token=CLIENT_BOT_TOKEN)
-        await client_bot.send_message(
+        await send_by_token(
+            CLIENT_BOT_TOKEN,
             user_id,
             f"❌ Заявка #{order_id}\n\n"
             f"Сервис сообщил, что вы отказались от ремонта.\n"
@@ -462,8 +486,8 @@ async def client_refused_reason(message: types.Message, state: FSMContext) -> No
             f"Устройство: {model_str}\n"
             f"Сервис: {svc_name}",
             reply_markup=client_visited_kb(order_id),
+            dedupe_key=f"client_refused_notice:{order_id}:{user_id}",
         )
-        await client_bot.session.close()
     except Exception:
         logger.exception("Failed to notify client about refusal")
 
@@ -482,7 +506,7 @@ async def start_work(callback: types.CallbackQuery, state: FSMContext) -> None:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status != "accepted":
@@ -499,13 +523,13 @@ async def start_work(callback: types.CallbackQuery, state: FSMContext) -> None:
 async def estimate_cost_input(message: types.Message, state: FSMContext) -> None:
     raw = message.text.strip().replace(",", ".").replace(" ", "")
     try:
-        cost = float(raw)
+        cost = money(raw)
         if cost <= 0:
             raise ValueError
     except (ValueError, TypeError):
         await message.answer("Введите корректное число (например: 3500):")
         return
-    await state.update_data(est_cost=cost)
+    await state.update_data(est_cost=money_to_float(cost))
     await state.set_state(PartnerOrderFSM.estimate_items)
     await message.answer(
         "Укажите позиции ремонта (что будет чиниться):\n"
@@ -565,7 +589,7 @@ async def estimate_desc_input(message: types.Message, state: FSMContext) -> None
 
 async def _show_estimate_confirm(message: types.Message, state: FSMContext) -> None:
     data = await state.get_data()
-    cost = data["est_cost"]
+    cost = money(data["est_cost"])
     items = data["est_items"]
     deadline = data["est_deadline"]
     desc = data.get("est_description")
@@ -618,17 +642,17 @@ async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> 
         await state.clear()
         return
 
-    cost = data["est_cost"]
+    cost = money(data["est_cost"])
     items = data["est_items"]
     deadline = data["est_deadline"]
     desc = data.get("est_description")
 
-    prepayment: float = 0
+    prepayment = ZERO_MONEY
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             await state.clear()
             return
@@ -636,24 +660,52 @@ async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> 
             await callback.answer("Невозможно.", show_alert=True)
             await state.clear()
             return
-        order.status = "in_progress"
-        order.estimate_cost = cost
+
+        hydro_raw = order.service.hydroisolation_price if order.service else None
+        if order.upgrade_category == "Гидроизоляция" and hydro_raw:
+            try:
+                low, high = parse_hydro_price_range(hydro_raw)
+            except ValueError:
+                await callback.answer(
+                    "В профиле сервиса некорректно задана цена гидроизоляции.",
+                    show_alert=True,
+                )
+                return
+            valid, _ = PaymentPolicy.validate_hydro_total(cost, hydro_raw)
+            if not valid:
+                await callback.answer(
+                    f"Цена должна быть в диапазоне {low:.0f}-{high:.0f} руб.",
+                    show_alert=True,
+                )
+                return
+
+        await transition_order_status(
+            session,
+            order,
+            "in_progress",
+            actor=ACTOR_PARTNER,
+            reason="estimate_confirmed",
+        )
+        order.estimate_cost = money_to_float(cost)
         order.estimate_items = items
         order.estimate_deadline = deadline
         order.estimate_description = desc
         if order.total_cost is None:
-            order.total_cost = cost
-        # Determine prepayment
-        if order.upgrade_category == "Гидроизоляция":
-            prepayment = 500.0
-        elif order.diagnostics_price:
-            prepayment = order.diagnostics_price
+            order.total_cost = money_to_float(cost)
+        prepayment = PaymentPolicy.prepayment(
+            order.upgrade_category,
+            order.diagnostics_price,
+        )
         await session.commit()
         user_id = order.user_id
         svc_name = order.service.name if order.service else ""
         model_str = _model_name(order)
 
-    remainder = max(0.0, cost - prepayment)
+    remainder = PaymentPolicy.remainder(
+        cost,
+        order.upgrade_category,
+        order.diagnostics_price,
+    )
     await state.clear()
     await callback.answer("Заявка принята в работу", show_alert=True)
 
@@ -666,10 +718,8 @@ async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> 
     # Notify client
     try:
         from client_bot.core.config import CLIENT_BOT_TOKEN
-        from aiogram import Bot
         from client_bot.ui.keyboards import client_confirm_estimate_kb
 
-        client_bot = Bot(token=CLIENT_BOT_TOKEN)
         est_lines = [
             f"🔧 Заявка #{order_id} — принята в работу\n",
             f"Устройство: {model_str}",
@@ -686,12 +736,14 @@ async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> 
             f"Предоплата: {prepayment:.0f} руб.",
             f"Остаток: {remainder:.0f} руб.",
         ]
-        await client_bot.send_message(
+
+        await send_by_token(
+            CLIENT_BOT_TOKEN,
             user_id,
             "\n".join(est_lines),
             reply_markup=client_confirm_estimate_kb(order_id),
+            dedupe_key=f"client_estimate:{order_id}:{user_id}",
         )
-        await client_bot.session.close()
     except Exception:
         logger.exception("Failed to notify client about estimate")
 
@@ -721,30 +773,40 @@ async def order_ready(callback: types.CallbackQuery) -> None:
         return
     order_id = int(callback.data.split(":")[2])
 
-    prepayment: float = 0
+    prepayment = ZERO_MONEY
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status != "in_progress":
             await callback.answer("Невозможно.", show_alert=True)
             return
-        order.status = "ready_for_pickup"
+        await transition_order_status(
+            session,
+            order,
+            "ready_for_pickup",
+            actor=ACTOR_PARTNER,
+            reason="partner_ready_for_pickup",
+        )
         await session.commit()
         user_id = order.user_id
         svc_name = order.service.name if order.service else ""
         svc_address = order.service.address if order.service else ""
         model_str = _model_name(order)
-        total = order.total_cost or order.estimate_cost or 0
-        if order.upgrade_category == "Гидроизоляция":
-            prepayment = 500.0
-        elif order.diagnostics_price:
-            prepayment = order.diagnostics_price
+        total = money(order.total_cost or order.estimate_cost or 0)
+        prepayment = PaymentPolicy.prepayment(
+            order.upgrade_category,
+            order.diagnostics_price,
+        )
 
-    remainder = max(0.0, total - prepayment)
+    remainder = PaymentPolicy.remainder(
+        total,
+        order.upgrade_category,
+        order.diagnostics_price,
+    )
 
     logger.info(
         "partner %s: order #%s ready_for_pickup", callback.from_user.id, order_id
@@ -754,11 +816,10 @@ async def order_ready(callback: types.CallbackQuery) -> None:
     # Notify client
     try:
         from client_bot.core.config import CLIENT_BOT_TOKEN
-        from aiogram import Bot
         from client_bot.ui.keyboards import client_ready_kb
 
-        client_bot = Bot(token=CLIENT_BOT_TOKEN)
-        await client_bot.send_message(
+        await send_by_token(
+            CLIENT_BOT_TOKEN,
             user_id,
             f"✅ Заявка #{order_id} — готов к выдаче!\n\n"
             f"Устройство: {model_str}\n"
@@ -768,8 +829,8 @@ async def order_ready(callback: types.CallbackQuery) -> None:
             f"Предоплата: {prepayment:.0f} руб.\n"
             f"К оплате: {remainder:.0f} руб.",
             reply_markup=client_ready_kb(order_id),
+            dedupe_key=f"client_ready:{order_id}:{user_id}",
         )
-        await client_bot.session.close()
     except Exception:
         logger.exception("Failed to notify client about ready")
 
@@ -803,7 +864,7 @@ async def set_cost_start(callback: types.CallbackQuery, state: FSMContext) -> No
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status not in ("accepted", "in_progress"):
@@ -820,7 +881,7 @@ async def set_cost_start(callback: types.CallbackQuery, state: FSMContext) -> No
 async def set_cost_value(message: types.Message, state: FSMContext) -> None:
     raw = message.text.strip().replace(",", ".").replace(" ", "")
     try:
-        cost = float(raw)
+        cost = money(raw)
         if cost <= 0:
             raise ValueError
     except (ValueError, TypeError):
@@ -838,25 +899,48 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
         await state.clear()
         return
 
-    prepayment: float = 0
+    prepayment = ZERO_MONEY
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await message.answer("Заявка не найдена.")
             await state.clear()
             return
-        order.total_cost = cost
+
+        hydro_raw = order.service.hydroisolation_price if order.service else None
+        if order.upgrade_category == "Гидроизоляция" and hydro_raw:
+            try:
+                low, high = parse_hydro_price_range(hydro_raw)
+            except ValueError:
+                await message.answer(
+                    "В профиле сервиса некорректно задана цена гидроизоляции."
+                )
+                await state.clear()
+                return
+            valid, _ = PaymentPolicy.validate_hydro_total(cost, hydro_raw)
+            if not valid:
+                await message.answer(
+                    f"Итоговая сумма должна быть в диапазоне {low:.0f}-{high:.0f} руб."
+                )
+                return
+
+        order.total_cost = money_to_float(cost)
         await session.commit()
+        prepayment = PaymentPolicy.prepayment(
+            order.upgrade_category,
+            order.diagnostics_price,
+        )
+        order_upgrade_category = order.upgrade_category
+        order_diagnostics_price = order.diagnostics_price
+        user_id = order.user_id
 
-        # Determine prepayment
-        if order.upgrade_category == "Гидроизоляция":
-            prepayment = 500.0
-        elif order.diagnostics_price:
-            prepayment = order.diagnostics_price
-
-    remainder = max(0.0, cost - prepayment)
+    remainder = PaymentPolicy.remainder(
+        cost,
+        order_upgrade_category,
+        order_diagnostics_price,
+    )
     await state.clear()
     await message.answer(
         f"Итоговая стоимость заявки #{order_id}: {cost:.0f} руб.\n"
@@ -874,17 +958,16 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
     # Notify client
     try:
         from client_bot.core.config import CLIENT_BOT_TOKEN
-        from aiogram import Bot
 
-        client_bot = Bot(token=CLIENT_BOT_TOKEN)
-        await client_bot.send_message(
-            order.user_id,
+        await send_by_token(
+            CLIENT_BOT_TOKEN,
+            user_id,
             f"По вашей заявке #{order_id} определена итоговая стоимость: "
             f"{cost:.0f} руб.\n"
             f"Предоплата: {prepayment:.0f} руб.\n"
             f"Остаток к оплате: {remainder:.0f} руб.",
+            dedupe_key=f"client_total_cost:{order_id}:{user_id}",
         )
-        await client_bot.session.close()
     except Exception:
         logger.exception("Failed to notify client about total cost")
 
@@ -903,7 +986,7 @@ async def update_price_start(callback: types.CallbackQuery, state: FSMContext) -
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await callback.answer("Заявка не найдена.", show_alert=True)
             return
         if order.status != "in_progress":
@@ -922,14 +1005,14 @@ async def update_price_start(callback: types.CallbackQuery, state: FSMContext) -
 async def update_price_cost_input(message: types.Message, state: FSMContext) -> None:
     raw = message.text.strip().replace(",", ".").replace(" ", "")
     try:
-        new_cost = float(raw)
+        new_cost = money(raw)
         if new_cost <= 0:
             raise ValueError
     except (ValueError, TypeError):
         await message.answer("Введите корректное число (например: 4200):")
         return
 
-    await state.update_data(update_price_new_cost=new_cost)
+    await state.update_data(update_price_new_cost=money_to_float(new_cost))
     await state.set_state(PartnerOrderFSM.update_price_reason)
     await message.answer("Укажите причину изменения цены (минимум 5 символов):")
 
@@ -943,10 +1026,11 @@ async def update_price_reason_input(message: types.Message, state: FSMContext) -
 
     data = await state.get_data()
     order_id = data.get("update_price_order_id")
-    new_cost = data.get("update_price_new_cost")
-    if not order_id or new_cost is None:
+    raw_new_cost = data.get("update_price_new_cost")
+    if not order_id or raw_new_cost is None:
         await state.clear()
         return
+    new_cost = money(raw_new_cost)
 
     owner = await _require_active_owner(message)
     if not owner:
@@ -959,19 +1043,37 @@ async def update_price_reason_input(message: types.Message, state: FSMContext) -
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if not order or order.service_id != owner.id:
+        if not order or order.service_id != owner.service_id:
             await message.answer("Заявка не найдена.")
             await state.clear()
             return
+
+        hydro_raw = order.service.hydroisolation_price if order.service else None
+        if order.upgrade_category == "Гидроизоляция" and hydro_raw:
+            try:
+                low, high = parse_hydro_price_range(hydro_raw)
+            except ValueError:
+                await message.answer(
+                    "В профиле сервиса некорректно задана цена гидроизоляции."
+                )
+                await state.clear()
+                return
+            valid, _ = PaymentPolicy.validate_hydro_total(new_cost, hydro_raw)
+            if not valid:
+                await message.answer(
+                    f"Новая цена должна быть в диапазоне {low:.0f}-{high:.0f} руб."
+                )
+                return
+
         old_cost = order.total_cost
         user_id = order.user_id
-        order.total_cost = new_cost
+        order.total_cost = money_to_float(new_cost)
         order.price_change_reason = reason
         order.price_updated_at = datetime.datetime.now(datetime.timezone.utc)
         await session.commit()
 
     await state.clear()
-    old_str = f"{old_cost:.0f} руб." if old_cost is not None else "не указана"
+    old_str = f"{money(old_cost):.0f} руб." if old_cost is not None else "не указана"
     await message.answer(
         f"Цена заявки #{order_id} обновлена.\n"
         f"Было: {old_str} → Стало: {new_cost:.0f} руб."
@@ -988,17 +1090,16 @@ async def update_price_reason_input(message: types.Message, state: FSMContext) -
     # Notify client
     try:
         from client_bot.core.config import CLIENT_BOT_TOKEN
-        from aiogram import Bot
 
-        client_bot = Bot(token=CLIENT_BOT_TOKEN)
-        await client_bot.send_message(
+        await send_by_token(
+            CLIENT_BOT_TOKEN,
             user_id,
             f"Стоимость вашей заявки #{order_id} была изменена сервисом.\n"
             f"Было: {old_str}\n"
             f"Стало: {new_cost:.0f} руб.\n"
             f"Причина: {e(reason)}",
+            dedupe_key=f"client_price_update:{order_id}:{user_id}",
         )
-        await client_bot.session.close()
     except Exception:
         logger.exception("Failed to notify client about price update")
 
@@ -1012,7 +1113,7 @@ async def orders_history(message: types.Message, state: FSMContext) -> None:
     if not owner:
         return
     await state.update_data(history_page=0, history_filter=None)
-    await _show_history(message, owner.id, 0, None)
+    await _show_history(message, owner.service_id, 0, None)
 
 
 async def _show_history(
@@ -1059,7 +1160,7 @@ async def orders_page(callback: types.CallbackQuery, state: FSMContext) -> None:
     page = int(callback.data.split(":")[2])
     data = await state.get_data()
     await state.update_data(history_page=page)
-    await _show_history(callback, owner.id, page, data.get("history_filter"))
+    await _show_history(callback, owner.service_id, page, data.get("history_filter"))
 
 
 @router.callback_query(F.data == "pord:back_list")
@@ -1069,7 +1170,7 @@ async def back_to_list(callback: types.CallbackQuery, state: FSMContext) -> None
         return
     data = await state.get_data()
     page = data.get("history_page", 0)
-    await _show_history(callback, owner.id, page, data.get("history_filter"))
+    await _show_history(callback, owner.service_id, page, data.get("history_filter"))
 
 
 @router.callback_query(F.data.startswith("pord:filter:"))
@@ -1079,7 +1180,7 @@ async def orders_filter(callback: types.CallbackQuery, state: FSMContext) -> Non
         return
     f = callback.data.split(":")[2]
     await state.update_data(history_filter=f if f != "all" else None, history_page=0)
-    await _show_history(callback, owner.id, 0, f if f != "all" else None)
+    await _show_history(callback, owner.service_id, 0, f if f != "all" else None)
 
 
 @router.callback_query(F.data == "noop")

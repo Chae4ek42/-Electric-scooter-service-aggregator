@@ -21,7 +21,11 @@ from client_bot.core.config import (
 )
 from client_bot.texts import Btn
 
-_MOSCOW_TZ = zoneinfo.ZoneInfo("Europe/Moscow")
+try:
+    _MOSCOW_TZ = zoneinfo.ZoneInfo("Europe/Moscow")
+except Exception:
+    # Fallback for environments without system tz database / tzdata package.
+    _MOSCOW_TZ = datetime.timezone(datetime.timedelta(hours=3), name="MSK")
 
 # ── Reply (text) keyboards ───────────────────────────────────
 

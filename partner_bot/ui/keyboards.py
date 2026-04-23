@@ -269,9 +269,9 @@ def draft_edit_kb(service_type: str | None = None) -> InlineKeyboardMarkup:
         ("Название", "edit_draft:name"),
         ("Тип услуг", "edit_draft:service_type"),
     ]
-    if service_type == "upgrade":
+    if service_type in ("upgrade", "complex"):
         fields.append(("Категории апгрейда", "edit_draft:upgrade_cats"))
-    elif service_type in ("repair", "complex"):
+    if service_type in ("repair", "complex"):
         fields.append(("Категория ремонта", "edit_draft:category"))
     fields += [
         ("Гидроизоляция", "edit_draft:hydro"),
@@ -283,9 +283,6 @@ def draft_edit_kb(service_type: str | None = None) -> InlineKeyboardMarkup:
         ("Время работы", "edit_draft:hours"),
         ("Диагностика", "edit_draft:diagnostics"),
         ("Входит в стоимость", "edit_draft:diag_included"),
-        ("Орг.-правовая форма", "edit_draft:legal_form"),
-        ("Налогообложение", "edit_draft:tax_system"),
-        ("Банковские реквизиты", "edit_draft:bank"),
     ]
     rows = [
         [InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in fields
@@ -298,7 +295,7 @@ def draft_edit_kb(service_type: str | None = None) -> InlineKeyboardMarkup:
 
 def partner_order_actions_kb(order_id: int, status: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    if status == "awaiting_payment":
+    if status in ("awaiting_payment", "paid"):
         rows.append(
             [
                 InlineKeyboardButton(
@@ -391,7 +388,7 @@ def partner_order_detail_kb(
     order_id: int, status: str, client_username: str | None = None
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    if status == "awaiting_payment":
+    if status in ("awaiting_payment", "paid"):
         rows.append(
             [
                 InlineKeyboardButton(

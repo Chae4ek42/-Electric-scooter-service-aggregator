@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -97,11 +98,47 @@ class Service(Base):
         Boolean, default=False, nullable=False
     )
 
-    # ── Поля владельца (бывший ServiceOwner) ──────────────────
-    telegram_id: Mapped[int | None] = mapped_column(
-        BigInteger, unique=True, nullable=True
+    category_rel: Mapped["ServiceCategory | None"] = relationship(
+        back_populates="services", lazy="selectin"
     )
-    status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bank_details: Mapped["ServiceBankDetails | None"] = relationship(
+        back_populates="service",
+        uselist=False,
+        lazy="selectin",
+    )
+    owner_settings: Mapped["ServiceOwnerSettings | None"] = relationship(
+        back_populates="service",
+        uselist=False,
+        lazy="selectin",
+    )
+    draft_links: Mapped[list["ServiceDraft"]] = relationship(
+        back_populates="service",
+        lazy="selectin",
+    )
+
+
+class ServiceDraft(Base):
+    __tablename__ = "service_drafts"
+    __table_args__ = (
+        Index(
+            "ix_service_drafts_status_registration_complete",
+            "status",
+            "registration_complete",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    service_id: Mapped[int | None] = mapped_column(
+        ForeignKey("services.id"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), default="ожидает", nullable=False)
     registered_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -110,7 +147,7 @@ class Service(Base):
     )
     approved_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    # Registration draft fields
+    # Draft fields
     draft_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     draft_service_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     draft_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -140,9 +177,41 @@ class Service(Base):
     draft_corr_account: Mapped[str | None] = mapped_column(String(30), nullable=True)
     draft_org_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     draft_inn: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    registration_complete: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
 
-    category_rel: Mapped["ServiceCategory | None"] = relationship(
-        back_populates="services", lazy="selectin"
+    service: Mapped["Service | None"] = relationship(
+        back_populates="draft_links",
+        lazy="selectin",
+    )
+
+
+class ServiceBankDetails(Base):
+    __tablename__ = "service_bank_details"
+
+    service_id: Mapped[int] = mapped_column(
+        ForeignKey("services.id"),
+        primary_key=True,
+    )
+    legal_form: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    tax_system: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bank_account: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    bik: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    corr_account: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    org_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    inn: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    service: Mapped["Service"] = relationship(
+        back_populates="bank_details",
+        lazy="selectin",
     )
 
 
@@ -172,6 +241,20 @@ class User(Base):
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        Index(
+            "ix_orders_service_status_created_at",
+            "service_id",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_orders_user_status_created_at",
+            "user_id",
+            "status",
+            "created_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -233,6 +316,31 @@ class Order(Base):
     user: Mapped["User"] = relationship(back_populates="orders", lazy="selectin")
     service: Mapped["Service"] = relationship(lazy="selectin")
     model: Mapped["Model"] = relationship(lazy="selectin")
+    status_history: Mapped[list["OrderStatusHistory"]] = relationship(
+        back_populates="order",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+
+
+class OrderStatusHistory(Base):
+    __tablename__ = "order_status_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    order: Mapped["Order"] = relationship(
+        back_populates="status_history", lazy="selectin"
+    )
 
 
 class UserAction(Base):
@@ -256,9 +364,15 @@ class UserAction(Base):
 class ServiceOwnerSettings(Base):
     __tablename__ = "service_owner_settings"
 
-    owner_id: Mapped[int] = mapped_column(ForeignKey("services.id"), primary_key=True)
-    notif_new_order: Mapped[bool] = mapped_column(Boolean, default=True)
-    notif_cancel: Mapped[bool] = mapped_column(Boolean, default=True)
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    notif_new_order: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    notif_cancel: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    service: Mapped["Service"] = relationship(
+        back_populates="owner_settings",
+        lazy="selectin",
+    )
 
 
 class SheetsRetryQueue(Base):

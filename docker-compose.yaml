@@ -12,7 +12,7 @@ services:
 
   client-bot:
     build: .
-    command: python -m bot
+    command: python -m client_bot
     restart: unless-stopped
     env_file: .env
     environment:

@@ -454,16 +454,28 @@ async def seed_database() -> None:
                 await session.rollback()
                 logger.info("Seed brands skipped — already inserted by another process")
 
-        # Сервисные категории (справочник: Механика / Электрика)
-        existing_cat = (
-            await session.execute(select(func.count()).select_from(ServiceCategory))
-        ).scalar()
-        if not existing_cat:
+        # Сервисные категории: гарантируем наличие базового справочника.
+        required_categories = ("Механика", "Электрика", "Электрика + механика")
+        existing_categories = set(
+            (
+                await session.execute(
+                    select(ServiceCategory.name).where(
+                        ServiceCategory.name.in_(required_categories)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        missing_categories = [
+            name for name in required_categories if name not in existing_categories
+        ]
+        if missing_categories:
             try:
-                for cat_name in ("Механика", "Электрика", "Электрика + механика"):
+                for cat_name in missing_categories:
                     session.add(ServiceCategory(name=cat_name))
                 await session.flush()
-                logger.info("Seeded service categories")
+                logger.info("Seeded missing service categories: %s", missing_categories)
             except Exception:
                 await session.rollback()
                 logger.info(
@@ -501,18 +513,15 @@ async def _run_migrations(conn: Any) -> None:
 async def init_db() -> None:
     """Create all tables, run migrations, seed initial data."""
     async with engine.begin() as conn:
-        try:
-            await conn.run_sync(Base.metadata.create_all)
-        except Exception as exc:
-            if "already exists" not in str(exc):
-                raise
-        # Inline migrations — запускаем через raw aiosqlite connection
+        await conn.run_sync(Base.metadata.create_all)
+
+        # Inline migrations for legacy SQLite databases.
         raw = await conn.get_raw_connection()
         raw_conn = raw.driver_connection
 
         cursor = await raw_conn.execute("PRAGMA table_info('orders')")
         order_cols = {row[1] for row in await cursor.fetchall()}
-        for col_def in (
+        for col_name, col_type in (
             ("model_custom_name", "TEXT"),
             ("brand_custom_name", "TEXT"),
             ("problem_description", "TEXT"),
@@ -531,18 +540,47 @@ async def init_db() -> None:
             ("client_confirmed_estimate", "INTEGER"),
             ("dispute_reason", "TEXT"),
             ("refusal_reason", "TEXT"),
+            ("price_change_reason", "TEXT"),
+            ("price_updated_at", "TEXT"),
         ):
-            col_name, col_type = col_def
             if col_name not in order_cols:
                 await raw_conn.execute(
                     f"ALTER TABLE orders ADD COLUMN {col_name} {col_type}"
                 )
                 logger.info("Migration: added orders.%s", col_name)
-        await raw_conn.commit()
+
+        await raw_conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_orders_service_status_created_at "
+            "ON orders(service_id, status, created_at)"
+        )
+        await raw_conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_orders_user_status_created_at "
+            "ON orders(user_id, status, created_at)"
+        )
+
+        await raw_conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_status_history (
+                id INTEGER PRIMARY KEY,
+                order_id INTEGER NOT NULL,
+                from_status TEXT NULL,
+                to_status TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                reason TEXT NULL,
+                metadata_json TEXT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(order_id) REFERENCES orders(id)
+            )
+            """
+        )
+        await raw_conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_order_status_history_order_id_created_at "
+            "ON order_status_history(order_id, created_at)"
+        )
 
         cursor = await raw_conn.execute("PRAGMA table_info('services')")
         svc_cols = {row[1] for row in await cursor.fetchall()}
-        for col_def in (
+        for col_name, col_type in (
             ("address", "TEXT"),
             ("yandex_rating", "REAL"),
             ("nearest_metro", "TEXT"),
@@ -551,191 +589,449 @@ async def init_db() -> None:
             ("partnership_status", "TEXT"),
             ("is_available", "INTEGER NOT NULL DEFAULT 1"),
             ("main_brand_scooter", "TEXT"),
+            ("open_time", "TEXT"),
+            ("close_time", "TEXT"),
+            ("has_hydroisolation", "INTEGER NOT NULL DEFAULT 0"),
             ("hydroisolation_price", "TEXT"),
+            ("diagnostics_price", "REAL"),
+            ("diagnostics_included", "INTEGER NOT NULL DEFAULT 0"),
+            ("upgrade_categories", "TEXT"),
+            ("working_days", "TEXT"),
             ("pause_until", "TEXT"),
-            # Owner fields (merged from service_owners)
-            ("telegram_id", "INTEGER"),
-            ("status", "TEXT"),
-            ("registered_at", "TEXT"),
-            ("approved_at", "TEXT"),
-            ("approved_by", "TEXT"),
-            ("draft_name", "TEXT"),
-            ("draft_service_type", "TEXT"),
-            ("draft_category", "TEXT"),
-            ("draft_address", "TEXT"),
-            ("draft_metro", "TEXT"),
-            ("draft_phone", "TEXT"),
-            ("draft_telegram", "TEXT"),
-            ("draft_open_time", "TEXT"),
-            ("draft_close_time", "TEXT"),
-            ("draft_hydroisolation", "INTEGER NOT NULL DEFAULT 0"),
-            ("draft_hydro_price", "TEXT"),
-            ("draft_diagnostics_price", "REAL"),
-            ("draft_diag_included", "INTEGER NOT NULL DEFAULT 0"),
-            ("draft_upgrade_categories", "TEXT"),
-            ("draft_working_days", "TEXT"),
-            ("draft_legal_form", "TEXT"),
-            ("draft_tax_system", "TEXT"),
-            ("draft_bank_account", "TEXT"),
-            ("draft_bank_name", "TEXT"),
-            ("draft_bik", "TEXT"),
-            ("draft_corr_account", "TEXT"),
-            ("draft_org_name", "TEXT"),
-            ("draft_inn", "TEXT"),
             ("registration_complete", "INTEGER NOT NULL DEFAULT 0"),
         ):
-            col_name, col_type = col_def
             if col_name not in svc_cols:
                 await raw_conn.execute(
                     f"ALTER TABLE services ADD COLUMN {col_name} {col_type}"
                 )
                 logger.info("Migration: added services.%s", col_name)
 
-        # Migrate data from service_owners → services (if old table exists)
-        cursor = await raw_conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='service_owners'"
-        )
-        if await cursor.fetchone():
-            cursor = await raw_conn.execute("SELECT * FROM service_owners")
-            old_owners = await cursor.fetchall()
-            col_names = [desc[0] for desc in cursor.description]
-            for row in old_owners:
-                owner = dict(zip(col_names, row))
-                svc_id = owner.get("service_id")
-                tg_id = owner.get("telegram_id")
-                if svc_id:
-                    # Link existing service with owner data
-                    await raw_conn.execute(
-                        "UPDATE services SET telegram_id=?, status=?, registered_at=?, "
-                        "approved_at=?, approved_by=?, draft_name=?, draft_service_type=?, "
-                        "draft_category=?, draft_address=?, draft_metro=?, draft_phone=?, "
-                        "draft_telegram=?, draft_open_time=?, draft_close_time=?, "
-                        "draft_hydroisolation=?, draft_hydro_price=?, "
-                        "draft_diagnostics_price=?, draft_diag_included=?, "
-                        "draft_upgrade_categories=?, draft_working_days=?, "
-                        "draft_legal_form=?, draft_tax_system=?, draft_bank_account=?, "
-                        "draft_bank_name=?, draft_bik=?, draft_corr_account=?, "
-                        "draft_org_name=?, draft_inn=? WHERE id=?",
-                        (
-                            tg_id,
-                            owner.get("status"),
-                            owner.get("registered_at"),
-                            owner.get("approved_at"),
-                            owner.get("approved_by"),
-                            owner.get("draft_name"),
-                            owner.get("draft_service_type"),
-                            owner.get("draft_category"),
-                            owner.get("draft_address"),
-                            owner.get("draft_metro"),
-                            owner.get("draft_phone"),
-                            owner.get("draft_telegram"),
-                            owner.get("draft_open_time"),
-                            owner.get("draft_close_time"),
-                            owner.get("draft_hydroisolation", 0),
-                            owner.get("draft_hydro_price"),
-                            owner.get("draft_diagnostics_price"),
-                            owner.get("draft_diag_included", 0),
-                            owner.get("draft_upgrade_categories"),
-                            owner.get("draft_working_days"),
-                            owner.get("draft_legal_form"),
-                            owner.get("draft_tax_system"),
-                            owner.get("draft_bank_account"),
-                            owner.get("draft_bank_name"),
-                            owner.get("draft_bik"),
-                            owner.get("draft_corr_account"),
-                            owner.get("draft_org_name"),
-                            owner.get("draft_inn"),
-                            svc_id,
-                        ),
-                    )
-                elif tg_id:
-                    # Owner without linked service — create a new service record
-                    await raw_conn.execute(
-                        "INSERT INTO services (name, service_type, is_available, "
-                        "has_hydroisolation, diagnostics_included, "
-                        "telegram_id, status, registered_at, approved_at, approved_by, "
-                        "draft_name, draft_service_type, draft_category, draft_address, "
-                        "draft_metro, draft_phone, draft_telegram, draft_open_time, "
-                        "draft_close_time, draft_hydroisolation, draft_hydro_price, "
-                        "draft_diagnostics_price, draft_diag_included, "
-                        "draft_upgrade_categories, draft_working_days, "
-                        "draft_legal_form, draft_tax_system, draft_bank_account, "
-                        "draft_bank_name, draft_bik, draft_corr_account, "
-                        "draft_org_name, draft_inn) VALUES "
-                        "(?,?,0,0,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            owner.get("draft_name") or "(не заполнено)",
-                            owner.get("draft_service_type") or "repair",
-                            tg_id,
-                            owner.get("status"),
-                            owner.get("registered_at"),
-                            owner.get("approved_at"),
-                            owner.get("approved_by"),
-                            owner.get("draft_name"),
-                            owner.get("draft_service_type"),
-                            owner.get("draft_category"),
-                            owner.get("draft_address"),
-                            owner.get("draft_metro"),
-                            owner.get("draft_phone"),
-                            owner.get("draft_telegram"),
-                            owner.get("draft_open_time"),
-                            owner.get("draft_close_time"),
-                            owner.get("draft_hydroisolation", 0),
-                            owner.get("draft_hydro_price"),
-                            owner.get("draft_diagnostics_price"),
-                            owner.get("draft_diag_included", 0),
-                            owner.get("draft_upgrade_categories"),
-                            owner.get("draft_working_days"),
-                            owner.get("draft_legal_form"),
-                            owner.get("draft_tax_system"),
-                            owner.get("draft_bank_account"),
-                            owner.get("draft_bank_name"),
-                            owner.get("draft_bik"),
-                            owner.get("draft_corr_account"),
-                            owner.get("draft_org_name"),
-                            owner.get("draft_inn"),
-                        ),
-                    )
-            # Update service_owner_settings FK from old owner_id to new service id
-            cursor = await raw_conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='service_owner_settings'"
-            )
-            if await cursor.fetchone():
-                cursor = await raw_conn.execute(
-                    "SELECT owner_id FROM service_owner_settings"
-                )
-                for (old_owner_id,) in await cursor.fetchall():
-                    # Find the service_id the old owner pointed to
-                    cursor2 = await raw_conn.execute(
-                        "SELECT service_id FROM service_owners WHERE id=?",
-                        (old_owner_id,),
-                    )
-                    row2 = await cursor2.fetchone()
-                    if row2 and row2[0]:
-                        await raw_conn.execute(
-                            "UPDATE service_owner_settings SET owner_id=? WHERE owner_id=?",
-                            (row2[0], old_owner_id),
-                        )
-            logger.info("Migration: merged service_owners data into services")
-        await raw_conn.commit()
-
-        # Migrate Service statuses from English to Russian (on services table now)
-        _status_migration = {
-            "pending": "ожидает",
-            "active": "активный",
-            "rejected": "отклонён",
-            "suspended": "приостановлен",
-        }
         cursor = await raw_conn.execute("PRAGMA table_info('services')")
-        svc_cols2 = {row[1] for row in await cursor.fetchall()}
-        if "status" in svc_cols2:
-            for eng, rus in _status_migration.items():
-                await raw_conn.execute(
-                    "UPDATE services SET status = ? WHERE status = ?",
-                    (rus, eng),
+        svc_cols = {row[1] for row in await cursor.fetchall()}
+
+        await raw_conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS service_drafts (
+                id INTEGER PRIMARY KEY,
+                owner_user_id INTEGER NOT NULL UNIQUE,
+                service_id INTEGER NULL,
+                status TEXT NOT NULL DEFAULT 'ожидает',
+                registered_at TEXT NULL,
+                approved_at TEXT NULL,
+                approved_by TEXT NULL,
+                draft_name TEXT NULL,
+                draft_service_type TEXT NULL,
+                draft_category TEXT NULL,
+                draft_address TEXT NULL,
+                draft_metro TEXT NULL,
+                draft_phone TEXT NULL,
+                draft_telegram TEXT NULL,
+                draft_open_time TEXT NULL,
+                draft_close_time TEXT NULL,
+                draft_hydroisolation INTEGER NOT NULL DEFAULT 0,
+                draft_hydro_price TEXT NULL,
+                draft_diagnostics_price REAL NULL,
+                draft_diag_included INTEGER NOT NULL DEFAULT 0,
+                draft_upgrade_categories TEXT NULL,
+                draft_working_days TEXT NULL,
+                draft_legal_form TEXT NULL,
+                draft_tax_system TEXT NULL,
+                draft_bank_account TEXT NULL,
+                draft_bank_name TEXT NULL,
+                draft_bik TEXT NULL,
+                draft_corr_account TEXT NULL,
+                draft_org_name TEXT NULL,
+                draft_inn TEXT NULL,
+                registration_complete INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(service_id) REFERENCES services(id)
+            )
+            """
+        )
+        await raw_conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_service_drafts_status_registration_complete "
+            "ON service_drafts(status, registration_complete)"
+        )
+
+        await raw_conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS service_bank_details (
+                service_id INTEGER PRIMARY KEY,
+                legal_form TEXT NULL,
+                tax_system TEXT NULL,
+                bank_account TEXT NULL,
+                bank_name TEXT NULL,
+                bik TEXT NULL,
+                corr_account TEXT NULL,
+                org_name TEXT NULL,
+                inn TEXT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(service_id) REFERENCES services(id)
+            )
+            """
+        )
+
+        # Legacy migration: services table used to hold draft/owner fields.
+        legacy_cols = {
+            "telegram_id",
+            "status",
+            "registered_at",
+            "approved_at",
+            "approved_by",
+            "draft_name",
+            "draft_service_type",
+            "draft_address",
+            "draft_phone",
+            "draft_open_time",
+            "draft_close_time",
+        }
+        if legacy_cols.issubset(svc_cols):
+            await raw_conn.execute(
+                """
+                INSERT OR IGNORE INTO service_drafts (
+                    owner_user_id,
+                    service_id,
+                    status,
+                    registered_at,
+                    approved_at,
+                    approved_by,
+                    draft_name,
+                    draft_service_type,
+                    draft_category,
+                    draft_address,
+                    draft_metro,
+                    draft_phone,
+                    draft_telegram,
+                    draft_open_time,
+                    draft_close_time,
+                    draft_hydroisolation,
+                    draft_hydro_price,
+                    draft_diagnostics_price,
+                    draft_diag_included,
+                    draft_upgrade_categories,
+                    draft_working_days,
+                    draft_legal_form,
+                    draft_tax_system,
+                    draft_bank_account,
+                    draft_bank_name,
+                    draft_bik,
+                    draft_corr_account,
+                    draft_org_name,
+                    draft_inn,
+                    registration_complete
                 )
-            await raw_conn.commit()
-            logger.info("Migration: converted services.status to Russian")
+                SELECT
+                    telegram_id,
+                    CASE WHEN COALESCE(registration_complete, 0) = 1 THEN id ELSE NULL END,
+                    COALESCE(status, 'ожидает'),
+                    registered_at,
+                    approved_at,
+                    approved_by,
+                    COALESCE(draft_name, name),
+                    COALESCE(draft_service_type, service_type),
+                    draft_category,
+                    COALESCE(draft_address, address),
+                    draft_metro,
+                    COALESCE(draft_phone, phone),
+                    COALESCE(draft_telegram, telegram_handle),
+                    COALESCE(draft_open_time, open_time),
+                    COALESCE(draft_close_time, close_time),
+                    COALESCE(draft_hydroisolation, has_hydroisolation, 0),
+                    COALESCE(draft_hydro_price, hydroisolation_price),
+                    COALESCE(draft_diagnostics_price, diagnostics_price),
+                    COALESCE(draft_diag_included, diagnostics_included, 0),
+                    COALESCE(draft_upgrade_categories, upgrade_categories),
+                    COALESCE(draft_working_days, working_days),
+                    draft_legal_form,
+                    draft_tax_system,
+                    draft_bank_account,
+                    draft_bank_name,
+                    draft_bik,
+                    draft_corr_account,
+                    draft_org_name,
+                    draft_inn,
+                    COALESCE(registration_complete, 0)
+                FROM services
+                WHERE telegram_id IS NOT NULL
+                """
+            )
+
+            if {
+                "draft_legal_form",
+                "draft_tax_system",
+                "draft_bank_account",
+                "draft_bank_name",
+                "draft_bik",
+                "draft_corr_account",
+                "draft_org_name",
+                "draft_inn",
+            }.issubset(svc_cols):
+                await raw_conn.execute(
+                    """
+                    INSERT OR IGNORE INTO service_bank_details (
+                        service_id,
+                        legal_form,
+                        tax_system,
+                        bank_account,
+                        bank_name,
+                        bik,
+                        corr_account,
+                        org_name,
+                        inn
+                    )
+                    SELECT
+                        id,
+                        draft_legal_form,
+                        draft_tax_system,
+                        draft_bank_account,
+                        draft_bank_name,
+                        draft_bik,
+                        draft_corr_account,
+                        draft_org_name,
+                        draft_inn
+                    FROM services
+                    WHERE
+                        COALESCE(draft_bank_account, '') <> '' OR
+                        COALESCE(draft_bank_name, '') <> '' OR
+                        COALESCE(draft_bik, '') <> '' OR
+                        COALESCE(draft_corr_account, '') <> '' OR
+                        COALESCE(draft_org_name, '') <> '' OR
+                        COALESCE(draft_inn, '') <> ''
+                    """
+                )
+
+        # Drop legacy owner/draft columns from services after data migration.
+        # Some old schemas had NOT NULL draft columns without defaults and broke inserts.
+        legacy_service_cols = {
+            "telegram_id",
+            "status",
+            "registered_at",
+            "approved_at",
+            "approved_by",
+            "draft_name",
+            "draft_service_type",
+            "draft_category",
+            "draft_address",
+            "draft_metro",
+            "draft_phone",
+            "draft_telegram",
+            "draft_open_time",
+            "draft_close_time",
+            "draft_hydroisolation",
+            "draft_hydro_price",
+            "draft_diagnostics_price",
+            "draft_diag_included",
+            "draft_upgrade_categories",
+            "draft_working_days",
+            "draft_legal_form",
+            "draft_tax_system",
+            "draft_bank_account",
+            "draft_bank_name",
+            "draft_bik",
+            "draft_corr_account",
+            "draft_org_name",
+            "draft_inn",
+        }
+
+        if legacy_service_cols.intersection(svc_cols):
+
+            def _coalesce_sql(*cols: str, default: str = "NULL") -> str:
+                present = [c for c in cols if c in svc_cols]
+                if not present:
+                    return default
+                expr = present[0]
+                for c in present[1:]:
+                    expr = f"COALESCE({expr}, {c})"
+                if default != "NULL":
+                    expr = f"COALESCE({expr}, {default})"
+                return expr
+
+            await raw_conn.execute("PRAGMA foreign_keys=OFF")
+            await raw_conn.execute("DROP TABLE IF EXISTS services_new")
+            await raw_conn.execute(
+                """
+                CREATE TABLE services_new (
+                    id INTEGER PRIMARY KEY,
+                    category_id INTEGER NULL,
+                    name TEXT NOT NULL,
+                    service_type TEXT NOT NULL,
+                    is_available INTEGER NOT NULL DEFAULT 1,
+                    address TEXT NULL,
+                    yandex_rating REAL NULL,
+                    nearest_metro TEXT NULL,
+                    phone TEXT NULL,
+                    telegram_handle TEXT NULL,
+                    partnership_status TEXT NULL,
+                    open_time TEXT NULL,
+                    close_time TEXT NULL,
+                    has_hydroisolation INTEGER NOT NULL DEFAULT 0,
+                    hydroisolation_price TEXT NULL,
+                    diagnostics_price REAL NULL,
+                    diagnostics_included INTEGER NOT NULL DEFAULT 0,
+                    main_brand_scooter TEXT NULL,
+                    upgrade_categories TEXT NULL,
+                    working_days TEXT NULL,
+                    pause_until TEXT NULL,
+                    registration_complete INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY(category_id) REFERENCES service_categories(id)
+                )
+                """
+            )
+
+            await raw_conn.execute(
+                f"""
+                INSERT INTO services_new (
+                    id,
+                    category_id,
+                    name,
+                    service_type,
+                    is_available,
+                    address,
+                    yandex_rating,
+                    nearest_metro,
+                    phone,
+                    telegram_handle,
+                    partnership_status,
+                    open_time,
+                    close_time,
+                    has_hydroisolation,
+                    hydroisolation_price,
+                    diagnostics_price,
+                    diagnostics_included,
+                    main_brand_scooter,
+                    upgrade_categories,
+                    working_days,
+                    pause_until,
+                    registration_complete
+                )
+                SELECT
+                    id,
+                    category_id,
+                    {_coalesce_sql('name', default="'Без названия'")},
+                    {_coalesce_sql('service_type', default="'repair'")},
+                    {_coalesce_sql('is_available', default='1')},
+                    {_coalesce_sql('address', 'draft_address')},
+                    {_coalesce_sql('yandex_rating')},
+                    {_coalesce_sql('nearest_metro', 'draft_metro')},
+                    {_coalesce_sql('phone', 'draft_phone')},
+                    {_coalesce_sql('telegram_handle', 'draft_telegram')},
+                    {_coalesce_sql('partnership_status', 'status')},
+                    {_coalesce_sql('open_time', 'draft_open_time')},
+                    {_coalesce_sql('close_time', 'draft_close_time')},
+                    {_coalesce_sql('has_hydroisolation', 'draft_hydroisolation', default='0')},
+                    {_coalesce_sql('hydroisolation_price', 'draft_hydro_price')},
+                    {_coalesce_sql('diagnostics_price', 'draft_diagnostics_price')},
+                    {_coalesce_sql('diagnostics_included', 'draft_diag_included', default='0')},
+                    {_coalesce_sql('main_brand_scooter')},
+                    {_coalesce_sql('upgrade_categories', 'draft_upgrade_categories')},
+                    {_coalesce_sql('working_days', 'draft_working_days')},
+                    {_coalesce_sql('pause_until')},
+                    {_coalesce_sql('registration_complete', default='0')}
+                FROM services
+                """
+            )
+
+            await raw_conn.execute("DROP TABLE services")
+            await raw_conn.execute("ALTER TABLE services_new RENAME TO services")
+            await raw_conn.execute("PRAGMA foreign_keys=ON")
+            logger.info(
+                "Migration: rebuilt services table without legacy owner/draft columns"
+            )
+
+            cursor = await raw_conn.execute("PRAGMA table_info('services')")
+            svc_cols = {row[1] for row in await cursor.fetchall()}
+
+        # service_owner_settings schema migration: owner_id -> service_id + owner_user_id.
+        cursor = await raw_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='service_owner_settings'"
+        )
+        settings_exists = await cursor.fetchone()
+        if settings_exists:
+            cursor = await raw_conn.execute(
+                "PRAGMA table_info('service_owner_settings')"
+            )
+            settings_cols = {row[1] for row in await cursor.fetchall()}
+
+            if "service_id" not in settings_cols and "owner_id" in settings_cols:
+                await raw_conn.execute(
+                    """
+                    CREATE TABLE service_owner_settings_new (
+                        service_id INTEGER PRIMARY KEY,
+                        owner_user_id INTEGER NOT NULL UNIQUE,
+                        notif_new_order INTEGER NOT NULL DEFAULT 1,
+                        notif_cancel INTEGER NOT NULL DEFAULT 1,
+                        FOREIGN KEY(service_id) REFERENCES services(id)
+                    )
+                    """
+                )
+                await raw_conn.execute(
+                    """
+                    INSERT OR IGNORE INTO service_owner_settings_new (
+                        service_id,
+                        owner_user_id,
+                        notif_new_order,
+                        notif_cancel
+                    )
+                    SELECT
+                        sos.owner_id,
+                        COALESCE(sd.owner_user_id, sos.owner_id),
+                        COALESCE(sos.notif_new_order, 1),
+                        COALESCE(sos.notif_cancel, 1)
+                    FROM service_owner_settings sos
+                    LEFT JOIN service_drafts sd ON sd.service_id = sos.owner_id
+                    WHERE sos.owner_id IS NOT NULL
+                    """
+                )
+                await raw_conn.execute("DROP TABLE service_owner_settings")
+                await raw_conn.execute(
+                    "ALTER TABLE service_owner_settings_new RENAME TO service_owner_settings"
+                )
+            else:
+                if "owner_user_id" not in settings_cols:
+                    await raw_conn.execute(
+                        "ALTER TABLE service_owner_settings ADD COLUMN owner_user_id INTEGER"
+                    )
+                await raw_conn.execute(
+                    """
+                    UPDATE service_owner_settings
+                    SET owner_user_id = COALESCE(
+                        owner_user_id,
+                        (
+                            SELECT sd.owner_user_id
+                            FROM service_drafts sd
+                            WHERE sd.service_id = service_owner_settings.service_id
+                            LIMIT 1
+                        ),
+                        service_id
+                    )
+                    """
+                )
+        else:
+            await raw_conn.execute(
+                """
+                CREATE TABLE service_owner_settings (
+                    service_id INTEGER PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL UNIQUE,
+                    notif_new_order INTEGER NOT NULL DEFAULT 1,
+                    notif_cancel INTEGER NOT NULL DEFAULT 1,
+                    FOREIGN KEY(service_id) REFERENCES services(id)
+                )
+                """
+            )
+
+        # Ensure default owner settings for every linked draft.
+        await raw_conn.execute(
+            """
+            INSERT OR IGNORE INTO service_owner_settings (
+                service_id,
+                owner_user_id,
+                notif_new_order,
+                notif_cancel
+            )
+            SELECT service_id, owner_user_id, 1, 1
+            FROM service_drafts
+            WHERE service_id IS NOT NULL
+            """
+        )
 
         cursor = await raw_conn.execute("PRAGMA table_info('metro_stations')")
         metro_cols = {row[1] for row in await cursor.fetchall()}
@@ -759,20 +1055,6 @@ async def init_db() -> None:
                 )
                 logger.info("Migration: added user_actions.%s", col_name)
 
-        # Migrate new order fields for price change
-        cursor = await raw_conn.execute("PRAGMA table_info('orders')")
-        order_cols2 = {row[1] for row in await cursor.fetchall()}
-        for col_def in (
-            ("price_change_reason", "TEXT"),
-            ("price_updated_at", "TEXT"),
-        ):
-            col_name, col_type = col_def
-            if col_name not in order_cols2:
-                await raw_conn.execute(
-                    f"ALTER TABLE orders ADD COLUMN {col_name} {col_type}"
-                )
-                logger.info("Migration: added orders.%s", col_name)
-
         # Seed "Электрика + механика" category for existing databases
         cursor = await raw_conn.execute(
             "SELECT COUNT(*) FROM service_categories WHERE name = 'Электрика + механика'"
@@ -783,6 +1065,7 @@ async def init_db() -> None:
                 "INSERT INTO service_categories (name) VALUES ('Электрика + механика')"
             )
             logger.info("Migration: seeded service category 'Электрика + механика'")
+
         await raw_conn.commit()
 
     await seed_database()

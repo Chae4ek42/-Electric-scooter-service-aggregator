@@ -16,6 +16,8 @@ __pycache__/
 .venv/
 venv/
 
+claude.md
+
 # Tools
 .pytest_cache/
 .mypy_cache/

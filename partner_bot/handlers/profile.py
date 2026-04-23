@@ -1,8 +1,11 @@
-"""Partner bot: profile editing & quick status toggle."""
+"""Partner bot: profile editing and quick status toggle."""
 
 from __future__ import annotations
 
+import datetime
 import logging
+import re
+import zoneinfo
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
@@ -10,7 +13,9 @@ from sqlalchemy import select
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
-from client_bot.domain.models import Service
+from client_bot.core.formatting import e
+from client_bot.domain.models import Service, ServiceBankDetails, ServiceDraft
+from client_bot.domain.order_rules import parse_hydro_price_range
 from client_bot.domain.schemas import (
     AddressInput,
     BankAccountInput,
@@ -26,10 +31,13 @@ from client_bot.domain.schemas import (
     WorkHoursInput,
 )
 from client_bot.domain.states import PartnerProfileFSM
-from client_bot.services.sheets_writer import set_service_available, update_service_row
-from client_bot.core.formatting import e
+from client_bot.services.sheets_writer import (
+    set_service_available,
+    update_service_bank_row,
+    update_service_row,
+)
 from client_bot.texts import Btn, Partner, PARTNER_MENU_TEXTS
-from partner_bot.handlers.common import _get_owner, _sort_days, _TYPE_RU
+from partner_bot.handlers.common import _TYPE_RU, _get_owner, _sort_days
 from partner_bot.ui.keyboards import (
     bank_edit_fields_kb,
     hydro_toggle_kb,
@@ -59,7 +67,7 @@ _FIELD_LABELS = {
     "inn": "ИНН (10 или 12 цифр)",
 }
 
-# Fields that do NOT require re-moderation
+# Fields that do not require re-moderation.
 _NO_REMOD_FIELDS = {
     "diagnostics",
     "hydro_price",
@@ -73,25 +81,40 @@ _NO_REMOD_FIELDS = {
     "inn",
 }
 
-
 _PARTNER_MENU_TEXTS = PARTNER_MENU_TEXTS
+try:
+    _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
+except Exception:
+    # Fallback for environments without system tz database / tzdata package.
+    _MSK = datetime.timezone(datetime.timedelta(hours=3), name="MSK")
 
 
-async def _require_active(event) -> Service | None:
-    tg_id = event.from_user.id
+async def _get_owner_and_service(
+    tg_id: int,
+) -> tuple[ServiceDraft | None, Service | None]:
     owner = await _get_owner(tg_id)
-    if not owner or owner.status != "активный":
+    if not owner or owner.service_id is None:
+        return owner, None
+    async with async_session() as session:
+        svc = (
+            await session.execute(select(Service).where(Service.id == owner.service_id))
+        ).scalar_one_or_none()
+    return owner, svc
+
+
+async def _require_active(event) -> tuple[ServiceDraft | None, Service | None]:
+    owner, svc = await _get_owner_and_service(event.from_user.id)
+    if not owner or owner.status != "активный" or svc is None:
         text = "Вы не зарегистрированы или не одобрены."
         if isinstance(event, types.CallbackQuery):
             await event.answer(text, show_alert=True)
         else:
             await event.answer(text)
-        return None
-    return owner
+        return None, None
+    return owner, svc
 
 
 def _format_profile(svc: Service) -> str:
-    # e is imported from bot.core.formatting
     wd = _sort_days(svc.working_days)
     lines = [
         "Профиль сервисного центра:",
@@ -103,59 +126,149 @@ def _format_profile(svc: Service) -> str:
         f"Телефон: {e(svc.phone or '-')}",
         f"Telegram: {e(svc.telegram_handle or '-')}",
         f"Рабочие дни: {e(wd or '-')}",
-        f"Время: {svc.open_time or '?'}\u2014{svc.close_time or '?'}",
+        f"Время: {svc.open_time or '?'}-{svc.close_time or '?'}",
         f"Диагностика: {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
         f"Доступен: {'Да' if svc.is_available else 'Нет'}",
     ]
     return "\n".join(lines)
 
 
-def _format_bank_details(svc: Service) -> str:
-    lines = [
-        "Банковские реквизиты:",
-        "",
-        f"Форма: {e(svc.draft_legal_form or '—')}",
-        f"Налогообложение: {e(svc.draft_tax_system or '—')}",
-        f"Расч. счёт: {e(svc.draft_bank_account or '—')}",
-        f"Банк: {e(svc.draft_bank_name or '—')}",
-        f"БИК: {e(svc.draft_bik or '—')}",
-        f"Корр. счёт: {e(svc.draft_corr_account or '—')}",
-        f"Организация: {e(svc.draft_org_name or '—')}",
-        f"ИНН: {e(svc.draft_inn or '—')}",
-    ]
-    return "\n".join(lines)
+def _format_bank_details(bank: ServiceBankDetails | None) -> str:
+    if bank is None:
+        return "\n".join(
+            [
+                "Банковские реквизиты:",
+                "",
+                "Форма: —",
+                "Налогообложение: —",
+                "Расч. счёт: —",
+                "Банк: —",
+                "БИК: —",
+                "Корр. счёт: —",
+                "Организация: —",
+                "ИНН: —",
+            ]
+        )
+    return "\n".join(
+        [
+            "Банковские реквизиты:",
+            "",
+            f"Форма: {e(bank.legal_form or '—')}",
+            f"Налогообложение: {e(bank.tax_system or '—')}",
+            f"Расч. счёт: {e(bank.bank_account or '—')}",
+            f"Банк: {e(bank.bank_name or '—')}",
+            f"БИК: {e(bank.bik or '—')}",
+            f"Корр. счёт: {e(bank.corr_account or '—')}",
+            f"Организация: {e(bank.org_name or '—')}",
+            f"ИНН: {e(bank.inn or '—')}",
+        ]
+    )
 
 
-# ── Show profile ──────────────────────────────────────────────
+async def _load_bank_details(service_id: int) -> ServiceBankDetails | None:
+    async with async_session() as session:
+        return (
+            await session.execute(
+                select(ServiceBankDetails).where(
+                    ServiceBankDetails.service_id == service_id
+                )
+            )
+        ).scalar_one_or_none()
+
+
+async def _upsert_bank_field(
+    owner_user_id: int,
+    service_id: int,
+    *,
+    legal_form: str | None = None,
+    tax_system: str | None = None,
+    bank_account: str | None = None,
+    bank_name: str | None = None,
+    bik: str | None = None,
+    corr_account: str | None = None,
+    org_name: str | None = None,
+    inn: str | None = None,
+) -> None:
+    async with async_session() as session:
+        bank = (
+            await session.execute(
+                select(ServiceBankDetails).where(
+                    ServiceBankDetails.service_id == service_id
+                )
+            )
+        ).scalar_one_or_none()
+        if bank is None:
+            bank = ServiceBankDetails(service_id=service_id)
+            session.add(bank)
+
+        if legal_form is not None:
+            bank.legal_form = legal_form
+        if tax_system is not None:
+            bank.tax_system = tax_system
+        if bank_account is not None:
+            bank.bank_account = bank_account
+        if bank_name is not None:
+            bank.bank_name = bank_name
+        if bik is not None:
+            bank.bik = bik
+        if corr_account is not None:
+            bank.corr_account = corr_account
+        if org_name is not None:
+            bank.org_name = org_name
+        if inn is not None:
+            bank.inn = inn
+
+        owner = (
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.owner_user_id == owner_user_id)
+            )
+        ).scalar_one_or_none()
+        if owner:
+            if legal_form is not None:
+                owner.draft_legal_form = legal_form
+            if tax_system is not None:
+                owner.draft_tax_system = tax_system
+            if bank_account is not None:
+                owner.draft_bank_account = bank_account
+            if bank_name is not None:
+                owner.draft_bank_name = bank_name
+            if bik is not None:
+                owner.draft_bik = bik
+            if corr_account is not None:
+                owner.draft_corr_account = corr_account
+            if org_name is not None:
+                owner.draft_org_name = org_name
+            if inn is not None:
+                owner.draft_inn = inn
+
+        await session.commit()
 
 
 @router.message(F.text == Btn.EDIT_PROFILE)
 async def edit_profile(message: types.Message, state: FSMContext) -> None:
-    svc = await _require_active(message)
-    if not svc:
+    owner, svc = await _require_active(message)
+    if not owner or not svc:
         return
     await state.clear()
     await message.answer(_format_profile(svc), reply_markup=profile_edit_fields_kb())
 
 
-# ── Bank details ──────────────────────────────────────────────
-
-
 @router.message(F.text == Btn.BANK_DETAILS)
 async def show_bank_details(message: types.Message, state: FSMContext) -> None:
-    svc = await _require_active(message)
-    if not svc:
+    owner, svc = await _require_active(message)
+    if not owner or not svc:
         return
     await state.clear()
-    await message.answer(_format_bank_details(svc), reply_markup=bank_edit_fields_kb())
+    bank = await _load_bank_details(svc.id)
+    await message.answer(_format_bank_details(bank), reply_markup=bank_edit_fields_kb())
 
 
 @router.callback_query(F.data == "bedit:legal_form")
 async def bedit_select_legal_form(callback: types.CallbackQuery) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -173,23 +286,18 @@ async def bedit_select_legal_form(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("bedit_legal:"))
 async def bedit_save_legal_form(callback: types.CallbackQuery) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
     value = callback.data.split(":", 1)[1]
-    async with async_session() as session:
-        obj = (
-            await session.execute(select(Service).where(Service.id == svc.id))
-        ).scalar_one_or_none()
-        if obj:
-            obj.draft_legal_form = value
-            await session.commit()
-    async with async_session() as session:
-        updated = (
-            await session.execute(select(Service).where(Service.id == svc.id))
-        ).scalar_one_or_none()
+    await _upsert_bank_field(owner.owner_user_id, svc.id, legal_form=value)
+    bank = await _load_bank_details(svc.id)
+    try:
+        update_service_bank_row(svc.id)
+    except Exception:
+        logger.exception("Sheets write-back failed (bank legal form)")
     await callback.message.answer(
-        _format_bank_details(updated) if updated else "Обновлено.",
+        _format_bank_details(bank),
         reply_markup=bank_edit_fields_kb(),
     )
     await callback.answer()
@@ -197,10 +305,10 @@ async def bedit_save_legal_form(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data == "bedit:tax_system")
 async def bedit_select_tax_system(callback: types.CallbackQuery) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -221,23 +329,18 @@ async def bedit_select_tax_system(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("bedit_tax:"))
 async def bedit_save_tax_system(callback: types.CallbackQuery) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
     value = callback.data.split(":", 1)[1]
-    async with async_session() as session:
-        obj = (
-            await session.execute(select(Service).where(Service.id == svc.id))
-        ).scalar_one_or_none()
-        if obj:
-            obj.draft_tax_system = value
-            await session.commit()
-    async with async_session() as session:
-        updated = (
-            await session.execute(select(Service).where(Service.id == svc.id))
-        ).scalar_one_or_none()
+    await _upsert_bank_field(owner.owner_user_id, svc.id, tax_system=value)
+    bank = await _load_bank_details(svc.id)
+    try:
+        update_service_bank_row(svc.id)
+    except Exception:
+        logger.exception("Sheets write-back failed (bank tax)")
     await callback.message.answer(
-        _format_bank_details(updated) if updated else "Обновлено.",
+        _format_bank_details(bank),
         reply_markup=bank_edit_fields_kb(),
     )
     await callback.answer()
@@ -245,8 +348,8 @@ async def bedit_save_tax_system(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("bedit:"))
 async def bedit_select_field(callback: types.CallbackQuery, state: FSMContext) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
     field = callback.data.split(":")[1]
     label = _FIELD_LABELS.get(field, field)
@@ -258,39 +361,40 @@ async def bedit_select_field(callback: types.CallbackQuery, state: FSMContext) -
     await callback.answer()
 
 
-# ── Hydroisolation toggle (inline yes/no, no FSM text state needed) ──────────
-
-
 @router.callback_query(F.data.startswith("pedit:hydro:"))
 async def profile_toggle_hydro(callback: types.CallbackQuery) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
     val = callback.data.split(":")[2] == "yes"
     async with async_session() as session:
-        obj = (
+        db_svc = (
             await session.execute(select(Service).where(Service.id == svc.id))
         ).scalar_one_or_none()
-        if obj:
-            obj.has_hydroisolation = val
-            obj.draft_hydroisolation = val
+        db_owner = (
+            await session.execute(
+                select(ServiceDraft).where(
+                    ServiceDraft.owner_user_id == owner.owner_user_id
+                )
+            )
+        ).scalar_one_or_none()
+        if db_svc:
+            db_svc.has_hydroisolation = val
             if not val:
-                obj.hydroisolation_price = None
-                obj.draft_hydro_price = None
-            await session.commit()
-    try:
-        async with async_session() as session:
-            updated = (
-                await session.execute(select(Service).where(Service.id == svc.id))
-            ).scalar_one_or_none()
-        if updated:
+                db_svc.hydroisolation_price = None
+        if db_owner:
+            db_owner.draft_hydroisolation = val
+            if not val:
+                db_owner.draft_hydro_price = None
+        await session.commit()
+
+    _, updated = await _get_owner_and_service(callback.from_user.id)
+    if updated:
+        try:
             update_service_row(updated)
-    except Exception:
-        logger.exception("Sheets write-back failed (hydro toggle)")
-    async with async_session() as session:
-        updated = (
-            await session.execute(select(Service).where(Service.id == svc.id))
-        ).scalar_one_or_none()
+        except Exception:
+            logger.exception("Sheets write-back failed (hydro toggle)")
+
     await callback.message.answer(
         _format_profile(updated) if updated else "Профиль обновлён.",
         reply_markup=profile_edit_fields_kb(),
@@ -298,17 +402,14 @@ async def profile_toggle_hydro(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
-# ── Select field to edit ──────────────────────────────────────
-
-
 @router.callback_query(F.data.startswith("pedit:"))
 async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
     field = callback.data.split(":")[1]
     if field in ("status", "back"):
-        return  # handled by dedicated handlers
+        return
     if field == "hydro":
         await callback.message.answer(
             f"Гидроизоляция сейчас: {'Да' if svc.has_hydroisolation else 'Нет'}. Изменить?",
@@ -316,22 +417,21 @@ async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None
         )
         await callback.answer()
         return
+
     label = _FIELD_LABELS.get(field, field)
     await state.set_state(PartnerProfileFSM.edit_field_value)
     await state.update_data(edit_field=field, edit_service_id=svc.id)
+
     if field in _NO_REMOD_FIELDS:
         prompt = f"Введите новое значение для поля '{label}':"
     else:
         prompt = (
-            f"⚠️ При изменении этого поля сервис будет деактивирован "
-            f"до повторной модерации.\n\n"
+            "⚠️ При изменении этого поля сервис будет деактивирован "
+            "до повторной модерации.\n\n"
             f"Введите новое значение для поля '{label}':"
         )
     await callback.message.answer(prompt)
     await callback.answer()
-
-
-# ── Accept new value ──────────────────────────────────────────
 
 
 @router.message(PartnerProfileFSM.edit_field_value, F.text)
@@ -350,9 +450,6 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
 
     text = message.text.strip()
 
-    # Validate
-    import re as _re
-
     try:
         if field == "name":
             ServiceNameInput(text=text)
@@ -370,10 +467,12 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
             if len(text) < 2:
                 raise ValueError("Минимум 2 символа")
         elif field == "hydro_price":
-            if not _re.match(r"^\d+(-\d+)?$", text):
+            if not re.match(r"^\d+(-\d+)?$", text):
                 raise ValueError(
                     "Формат: число или диапазон (напр. 1000 или 1000-2000)"
                 )
+            low, high = parse_hydro_price_range(text)
+            text = f"{low:.0f}" if low == high else f"{low:.0f}-{high:.0f}"
         elif field == "bank_account":
             BankAccountInput(text=text)
         elif field == "bank_name":
@@ -392,92 +491,110 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
 
     needs_remod = field not in _NO_REMOD_FIELDS
 
-    # Update DB
+    owner, svc = await _require_active(message)
+    if not owner or not svc:
+        await state.clear()
+        return
+
+    bank_updates: dict[str, str] = {
+        "bank_account": "bank_account",
+        "bank_name": "bank_name",
+        "bik": "bik",
+        "corr_account": "corr_account",
+        "org_name": "org_name",
+        "inn": "inn",
+    }
+    if field in bank_updates:
+        kwargs = {bank_updates[field]: text}
+        await _upsert_bank_field(owner.owner_user_id, service_id, **kwargs)
+        await state.clear()
+        try:
+            update_service_bank_row(service_id)
+        except Exception:
+            logger.exception("Sheets bank write-back failed")
+        bank = await _load_bank_details(service_id)
+        await message.answer(
+            _format_bank_details(bank),
+            reply_markup=bank_edit_fields_kb(),
+        )
+        return
+
     async with async_session() as session:
-        svc = (
+        db_svc = (
             await session.execute(select(Service).where(Service.id == service_id))
         ).scalar_one_or_none()
-        if not svc:
+        db_owner = (
+            await session.execute(
+                select(ServiceDraft).where(
+                    ServiceDraft.owner_user_id == owner.owner_user_id
+                )
+            )
+        ).scalar_one_or_none()
+
+        if not db_svc or not db_owner:
             await message.answer("Сервис не найден.")
             await state.clear()
             return
 
         if field == "name":
-            svc.name = text
-            svc.draft_name = text
+            db_svc.name = text
+            db_owner.draft_name = text
         elif field == "address":
-            svc.address = text
-            svc.draft_address = text
+            db_svc.address = text
+            db_owner.draft_address = text
         elif field == "phone":
-            svc.phone = text
-            svc.draft_phone = text
+            db_svc.phone = text
+            db_owner.draft_phone = text
         elif field == "telegram":
-            svc.telegram_handle = text
-            svc.draft_telegram = f"@{text.lstrip('@')}"
+            clean = f"@{text.lstrip('@')}"
+            db_svc.telegram_handle = clean
+            db_owner.draft_telegram = clean
         elif field == "hours":
-            parts = text.split("-")
-            svc.open_time = parts[0].strip()
-            svc.close_time = parts[1].strip()
-            svc.draft_open_time = parts[0].strip()
-            svc.draft_close_time = parts[1].strip()
+            hours = WorkHoursInput(text=text).text
+            parts = re.split(r"\s*[-–]\s*", hours)
+            db_svc.open_time = parts[0]
+            db_svc.close_time = parts[1]
+            db_owner.draft_open_time = parts[0]
+            db_owner.draft_close_time = parts[1]
         elif field == "diagnostics":
-            svc.diagnostics_price = float(text)
-            svc.draft_diagnostics_price = float(text)
+            value = float(text)
+            db_svc.diagnostics_price = value
+            db_owner.draft_diagnostics_price = value
         elif field == "metro":
-            svc.nearest_metro = text
-            svc.draft_metro = text
+            db_svc.nearest_metro = text
+            db_owner.draft_metro = text
         elif field == "hydro_price":
-            svc.hydroisolation_price = text
-            svc.draft_hydro_price = text
-            # Setting a price implies hydroisolation is offered
-            svc.has_hydroisolation = True
-            svc.draft_hydroisolation = True
-        elif field == "bank_account":
-            svc.draft_bank_account = text
-        elif field == "bank_name":
-            svc.draft_bank_name = text
-        elif field == "bik":
-            svc.draft_bik = text
-        elif field == "corr_account":
-            svc.draft_corr_account = text
-        elif field == "org_name":
-            svc.draft_org_name = text
-        elif field == "inn":
-            svc.draft_inn = text
+            db_svc.hydroisolation_price = text
+            db_svc.has_hydroisolation = True
+            db_owner.draft_hydro_price = text
+            db_owner.draft_hydroisolation = True
 
         if needs_remod:
-            svc.is_available = False
-            svc.status = "ожидает"
+            db_svc.is_available = False
+            db_svc.partnership_status = "ожидает"
+            db_owner.status = "ожидает"
+
         await session.commit()
 
-    # Write back to Sheets
-    async with async_session() as session:
-        svc = (
-            await session.execute(select(Service).where(Service.id == service_id))
-        ).scalar_one_or_none()
-    if svc:
+    _, updated_svc = await _get_owner_and_service(message.from_user.id)
+    if updated_svc:
         try:
-            update_service_row(svc)
+            update_service_row(updated_svc)
         except Exception:
             logger.exception("Sheets write-back failed")
 
-    await state.clear()
-    logger.info(
-        "partner %s updated field '%s' for service %s (remod=%s)",
-        message.from_user.id,
-        field,
-        service_id,
-        needs_remod,
-    )
+    if data.get("edit_section") == "bank":
+        try:
+            update_service_bank_row(service_id)
+        except Exception:
+            logger.exception("Sheets bank write-back failed")
 
-    edit_section = data.get("edit_section", "profile")
-    if edit_section == "bank":
-        async with async_session() as session:
-            updated = (
-                await session.execute(select(Service).where(Service.id == service_id))
-            ).scalar_one_or_none()
+    await state.clear()
+
+    if data.get("edit_section") == "bank":
+        bank = await _load_bank_details(service_id)
         await message.answer(
-            _format_bank_details(updated) if updated else "Поле обновлено.",
+            _format_bank_details(bank),
             reply_markup=bank_edit_fields_kb(),
         )
         return
@@ -486,8 +603,7 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
     is_admin = uname.lower() in ADMIN_USERNAMES
     if needs_remod:
         await message.answer(
-            "Поле обновлено. Ваш сервис деактивирован и отправлен "
-            "на повторную модерацию. Ожидайте одобрения.",
+            "Поле обновлено. Ваш сервис деактивирован и отправлен на повторную модерацию.",
             reply_markup=partner_pending_menu_kb(has_draft=False, is_admin=is_admin),
         )
     else:
@@ -497,30 +613,25 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         )
 
 
-# ── Combined status toggle (merged "Мой статус" + "Открыт / Закрыт") ───
-
-
 @router.message(F.text == Btn.SERVICE_STATUS)
 async def status_toggle_menu(message: types.Message, state: FSMContext) -> None:
     current = await state.get_state()
     if current is not None:
         await state.clear()
         await message.answer(Partner.PROCEDURE_INTERRUPTED)
-    svc = await _require_active(message)
-    if not svc:
+
+    owner, svc = await _require_active(message)
+    if not owner or not svc:
         return
-    import datetime, zoneinfo
 
-    _msk = zoneinfo.ZoneInfo("Europe/Moscow")
-    now = datetime.datetime.now(tz=_msk)
-
+    now = datetime.datetime.now(tz=_MSK)
     if svc.is_available:
         status_text = "🟢 Открыт"
         pause_info = ""
     else:
         status_text = "🔴 Закрыт"
         if svc.pause_until:
-            pause_dt = svc.pause_until.astimezone(_msk)
+            pause_dt = svc.pause_until.astimezone(_MSK)
             pause_info = f"\nОткроется: {pause_dt.strftime('%d.%m.%Y %H:%M')}"
         else:
             pause_info = "\nОткроется: вручную"
@@ -528,24 +639,16 @@ async def status_toggle_menu(message: types.Message, state: FSMContext) -> None:
     await message.answer(
         f"<b>Статус сервиса:</b> {status_text}{pause_info}\n\n"
         "ℹ️ Эта опция показывает, доступен ли ваш сервис для клиентов. "
-        "Если вам нужно временно приостановить приём заявок "
-        "(отпуск, непредвиденные обстоятельства и т.д.), "
-        "выберите длительность паузы ниже.",
+        "Если нужно временно приостановить приём заявок, выберите длительность паузы ниже.",
         reply_markup=quick_status_kb(),
     )
 
 
-# ── Quick status toggle (inline fallback) ─────────────────────
-
-
 @router.callback_query(F.data == "pedit:status")
 async def show_status_toggle(callback: types.CallbackQuery) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
-    import datetime, zoneinfo
-
-    _msk = zoneinfo.ZoneInfo("Europe/Moscow")
 
     if svc.is_available:
         status_text = "🟢 Открыт"
@@ -553,7 +656,7 @@ async def show_status_toggle(callback: types.CallbackQuery) -> None:
     else:
         status_text = "🔴 Закрыт"
         if svc.pause_until:
-            pause_dt = svc.pause_until.astimezone(_msk)
+            pause_dt = svc.pause_until.astimezone(_MSK)
             pause_info = f"\nОткроется: {pause_dt.strftime('%d.%m.%Y %H:%M')}"
         else:
             pause_info = "\nОткроется: вручную"
@@ -567,15 +670,12 @@ async def show_status_toggle(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("pstatus:"))
 async def toggle_status(callback: types.CallbackQuery) -> None:
-    svc = await _require_active(callback)
-    if not svc:
+    owner, svc = await _require_active(callback)
+    if not owner or not svc:
         return
 
     action = callback.data.split(":")[1]
-    import datetime, zoneinfo
-
-    _msk = zoneinfo.ZoneInfo("Europe/Moscow")
-    now = datetime.datetime.now(tz=_msk)
+    now = datetime.datetime.now(tz=_MSK)
 
     if action == "open":
         new_val = True
@@ -583,47 +683,39 @@ async def toggle_status(callback: types.CallbackQuery) -> None:
         status_text = "🟢 Открыт"
     elif action == "pause_today":
         new_val = False
-        # Закрыть до конца текущего дня (23:59 МСК)
-        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
-        pause_until = end_of_day
-        status_text = f"🔴 Закрыт до {end_of_day.strftime('%d.%m %H:%M')}"
+        pause_until = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        status_text = f"🔴 Закрыт до {pause_until.strftime('%d.%m %H:%M')}"
     elif action == "pause_week":
         new_val = False
-        # Закрыть до конца недели (воскресенье 23:59 МСК)
         days_until_sunday = 6 - now.weekday()
         if days_until_sunday <= 0:
             days_until_sunday = 7
-        end_of_week = (now + datetime.timedelta(days=days_until_sunday)).replace(
-            hour=23, minute=59, second=59, microsecond=0
+        pause_until = (now + datetime.timedelta(days=days_until_sunday)).replace(
+            hour=23,
+            minute=59,
+            second=59,
+            microsecond=0,
         )
-        pause_until = end_of_week
-        status_text = f"🔴 Закрыт до {end_of_week.strftime('%d.%m %H:%M')}"
-    else:  # close — пока не открою
+        status_text = f"🔴 Закрыт до {pause_until.strftime('%d.%m %H:%M')}"
+    else:
         new_val = False
         pause_until = None
         status_text = "🔴 Закрыт (до ручного открытия)"
 
     async with async_session() as session:
-        svc_db = (
+        db_svc = (
             await session.execute(select(Service).where(Service.id == svc.id))
         ).scalar_one_or_none()
-        if svc_db:
-            svc_db.is_available = new_val
-            svc_db.pause_until = pause_until
+        if db_svc:
+            db_svc.is_available = new_val
+            db_svc.pause_until = pause_until
             await session.commit()
 
     try:
-        set_service_available(svc.name, new_val)
+        set_service_available(svc.id, new_val)
     except Exception:
         logger.exception("Sheets status update failed")
 
-    logger.info(
-        "partner %s set status=%s pause_until=%s for service %s",
-        callback.from_user.id,
-        "open" if new_val else "closed",
-        pause_until,
-        svc.id,
-    )
     await callback.answer(f"Статус: {status_text}", show_alert=True)
     await callback.message.edit_text(
         f"<b>Статус сервиса:</b> {status_text}",
@@ -634,10 +726,11 @@ async def toggle_status(callback: types.CallbackQuery) -> None:
 @router.callback_query(F.data == "pedit:back")
 async def back_to_profile(callback: types.CallbackQuery, state: FSMContext) -> None:
     owner, svc = await _require_active(callback)
-    if not svc:
+    if not owner or not svc:
         return
     await state.clear()
     await callback.message.edit_text(
-        _format_profile(svc), reply_markup=profile_edit_fields_kb()
+        _format_profile(svc),
+        reply_markup=profile_edit_fields_kb(),
     )
     await callback.answer()

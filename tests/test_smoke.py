@@ -299,14 +299,17 @@ async def test_all() -> None:
         await session.commit()
         print("    ✅ UserAction OK")
 
-    # 13. Service owner-related columns
-    print("\n[13] Testing Service owner columns …")
-    from client_bot.domain.models import Service as SVC
+    # 13. ServiceDraft owner-related columns
+    print("\n[13] Testing ServiceDraft owner columns …")
+    from client_bot.domain.models import ServiceDraft
 
-    svc_cols = {c.name for c in SVC.__table__.columns}
-    assert "status" in svc_cols, "Service must have 'status' column"
-    assert "telegram_id" in svc_cols, "Service must have 'telegram_id' column"
-    print("    Service has status & telegram_id columns")
+    draft_cols = {c.name for c in ServiceDraft.__table__.columns}
+    assert "status" in draft_cols, "ServiceDraft must have 'status' column"
+    assert (
+        "owner_user_id" in draft_cols
+    ), "ServiceDraft must have 'owner_user_id' column"
+    assert "service_id" in draft_cols, "ServiceDraft must have 'service_id' column"
+    print("    ServiceDraft has status, owner_user_id, service_id columns")
 
     from partner_bot.handlers.admin import _STATUS_RU
 

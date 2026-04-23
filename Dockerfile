@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir .
 
-COPY bot/ bot/
+COPY client_bot/ client_bot/
 COPY partner_bot/ partner_bot/
 COPY sync_service/ sync_service/
 COPY media/ media/

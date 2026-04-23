@@ -1,4 +1,4 @@
-"""Partner bot: admin panel — partner application management."""
+"""Partner bot: admin panel for partner application moderation."""
 
 from __future__ import annotations
 
@@ -16,9 +16,15 @@ from sqlalchemy import func, select
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
-from client_bot.domain.models import Service
+from client_bot.domain.models import (
+    Service,
+    ServiceBankDetails,
+    ServiceCategory,
+    ServiceDraft,
+    ServiceOwnerSettings,
+)
 from client_bot.services.sheets_writer import update_service_row
-from client_bot.texts import TYPE_RU, PARTNER_STATUS_RU, Btn, Partner
+from client_bot.texts import Btn, PARTNER_STATUS_RU, Partner, TYPE_RU
 from partner_bot.ui.keyboards import (
     padm_main_kb,
     padm_partner_detail_kb,
@@ -30,9 +36,7 @@ logger = logging.getLogger(__name__)
 router = Router(name="partner_admin")
 
 PARTNER_PAGE_SIZE = 10
-
-
-# ── Filter ────────────────────────────────────────────────────
+_STATUS_RU = PARTNER_STATUS_RU
 
 
 class IsAdmin(BaseFilter):
@@ -45,19 +49,13 @@ router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 
-# ── Helpers ───────────────────────────────────────────────────
-
-_STATUS_RU = PARTNER_STATUS_RU
-
-
-def _fmt_partner(owner: Service) -> str:
-    type_map = TYPE_RU
-    type_label = type_map.get(
+def _fmt_partner(owner: ServiceDraft) -> str:
+    type_label = TYPE_RU.get(
         owner.draft_service_type or "", owner.draft_service_type or "—"
     )
     lines = [
         f"<b>Партнёр #</b><code>{owner.id}</code>",
-        f"<b>Telegram ID:</b> <code>{owner.telegram_id}</code>",
+        f"<b>Telegram ID:</b> <code>{owner.owner_user_id}</code>",
         f"<b>Статус:</b> {_STATUS_RU.get(owner.status, owner.status)}",
         "",
         f"<b>Название:</b> {e(owner.draft_name or '—')}",
@@ -66,13 +64,14 @@ def _fmt_partner(owner: Service) -> str:
     if owner.draft_service_type == "upgrade":
         cats = (owner.draft_upgrade_categories or "").replace(",", ", ") or "—"
         lines.append(f"<b>Категории апгрейда:</b> {e(cats)}")
-    if owner.draft_service_type == "repair":
+    if owner.draft_service_type in ("repair", "complex"):
         lines.append(f"<b>Категория ремонта:</b> {e(owner.draft_category or '—')}")
     lines.append(
         f"<b>Гидроизоляция:</b> {'Да' if owner.draft_hydroisolation else 'Нет'}"
     )
     if owner.draft_hydroisolation:
         lines.append(f"<b>Цена гидроизоляции:</b> {e(owner.draft_hydro_price or '—')}")
+
     lines += [
         f"<b>Адрес:</b> {e(owner.draft_address or '—')}",
         f"<b>Метро:</b> {e(owner.draft_metro or '—')}",
@@ -85,6 +84,7 @@ def _fmt_partner(owner: Service) -> str:
         lines.append(f"<b>Диагностика:</b> {int(owner.draft_diagnostics_price)} ₽")
     else:
         lines.append("<b>Диагностика:</b> бесплатно")
+
     lines.append(
         f"<b>Входит в стоимость:</b> {'Да' if owner.draft_diag_included else 'Нет'}"
     )
@@ -103,90 +103,44 @@ def _fmt_partner(owner: Service) -> str:
     return "\n".join(lines)
 
 
-async def _send_or_edit(
-    event: Union[types.Message, types.CallbackQuery],
-    text: str,
-    markup,
-) -> None:
-    if isinstance(event, types.CallbackQuery):
-        await event.message.edit_text(text, reply_markup=markup)
-        await event.answer()
-    else:
-        await event.answer(text, reply_markup=markup)
-
-
-# ══════════════════════════════════════════════════════════════
-# Вход в панель
-# ══════════════════════════════════════════════════════════════
+async def _panel_stats() -> tuple[int, list[tuple[str, int]]]:
+    async with async_session() as session:
+        total = (
+            await session.execute(
+                select(func.count())
+                .select_from(ServiceDraft)
+                .where(ServiceDraft.registration_complete.is_(True))
+            )
+        ).scalar_one()
+        stats_rows = (
+            await session.execute(
+                select(ServiceDraft.status, func.count(ServiceDraft.id))
+                .where(ServiceDraft.registration_complete.is_(True))
+                .group_by(ServiceDraft.status)
+            )
+        ).all()
+    return total, [(status, int(cnt)) for status, cnt in stats_rows]
 
 
 @router.message(F.text == Btn.ADMIN_PANEL)
 async def padm_enter(message: types.Message, state: FSMContext) -> None:
     await state.clear()
-    async with async_session() as session:
-        total = (
-            await session.execute(
-                select(func.count())
-                .select_from(Service)
-                .where(Service.telegram_id.isnot(None))
-                .where(Service.registration_complete.is_(True))
-            )
-        ).scalar_one()
-        stats_rows = (
-            await session.execute(
-                select(Service.status, func.count(Service.id))
-                .where(Service.telegram_id.isnot(None))
-                .where(Service.registration_complete.is_(True))
-                .group_by(Service.status)
-            )
-        ).all()
-    stat_lines = [
-        f"<b>Партнёров:</b> {total}",
-        "",
-    ]
+    total, stats_rows = await _panel_stats()
+    lines = [f"<b>Партнёров:</b> {total}", ""]
     for status, cnt in stats_rows:
-        stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
-    await message.answer("\n".join(stat_lines), reply_markup=padm_main_kb())
-
-
-# ══════════════════════════════════════════════════════════════
-# Главное меню
-# ══════════════════════════════════════════════════════════════
+        lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
+    await message.answer("\n".join(lines), reply_markup=padm_main_kb())
 
 
 @router.callback_query(F.data == "padm:main")
 async def padm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    async with async_session() as session:
-        total = (
-            await session.execute(
-                select(func.count())
-                .select_from(Service)
-                .where(Service.telegram_id.isnot(None))
-                .where(Service.registration_complete.is_(True))
-            )
-        ).scalar_one()
-        stats_rows = (
-            await session.execute(
-                select(Service.status, func.count(Service.id))
-                .where(Service.telegram_id.isnot(None))
-                .where(Service.registration_complete.is_(True))
-                .group_by(Service.status)
-            )
-        ).all()
-    stat_lines = [
-        f"<b>Партнёров:</b> {total}",
-        "",
-    ]
+    total, stats_rows = await _panel_stats()
+    lines = [f"<b>Партнёров:</b> {total}", ""]
     for status, cnt in stats_rows:
-        stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
-    await cb.message.edit_text("\n".join(stat_lines), reply_markup=padm_main_kb())
+        lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
+    await cb.message.edit_text("\n".join(lines), reply_markup=padm_main_kb())
     await cb.answer()
-
-
-# ══════════════════════════════════════════════════════════════
-# Выход из панели
-# ══════════════════════════════════════════════════════════════
 
 
 @router.message(F.text == Btn.EXIT_PANEL)
@@ -198,11 +152,6 @@ async def padm_exit(message: types.Message, state: FSMContext) -> None:
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# Список партнёров (с фильтром по статусу)
-# ══════════════════════════════════════════════════════════════
-
-
 @router.callback_query(F.data.startswith("padm:partners:"))
 async def padm_partners_list(cb: types.CallbackQuery) -> None:
     parts = cb.data.split(":")
@@ -210,32 +159,20 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
     status_filter = parts[4] if len(parts) >= 5 and parts[3] == "status" else None
 
     async with async_session() as session:
-        q = (
-            select(Service)
-            .where(Service.telegram_id.isnot(None))
-            .where(Service.registration_complete.is_(True))
-        )
-        cq = (
-            select(func.count())
-            .select_from(Service)
-            .where(Service.telegram_id.isnot(None))
-            .where(Service.registration_complete.is_(True))
-        )
+        q = select(ServiceDraft).where(ServiceDraft.registration_complete.is_(True))
         if status_filter:
-            q = q.where(Service.status == status_filter)
-            cq = cq.where(Service.status == status_filter)
-        total_raw = (await session.execute(cq)).scalar_one()
+            q = q.where(ServiceDraft.status == status_filter)
+
         all_owners = (
-            (await session.execute(q.order_by(Service.registered_at.desc())))
+            (await session.execute(q.order_by(ServiceDraft.registered_at.desc())))
             .scalars()
             .all()
         )
+
     total = len(all_owners)
     owners = all_owners[page * PARTNER_PAGE_SIZE : (page + 1) * PARTNER_PAGE_SIZE]
-    logger.info(
-        "PADM_PARTNERS | total=%d | page=%d | page_size=%d", total, page, len(owners)
-    )
     total_pages = max(1, math.ceil(total / PARTNER_PAGE_SIZE))
+
     if not owners:
         try:
             await cb.message.edit_text(
@@ -245,6 +182,7 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
             pass
         await cb.answer()
         return
+
     header = (
         "Все партнёры"
         if not status_filter
@@ -255,11 +193,6 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
         reply_markup=padm_partners_kb(list(owners), page, total_pages, status_filter),
     )
     await cb.answer()
-
-
-# ══════════════════════════════════════════════════════════════
-# Фильтр по статусу
-# ══════════════════════════════════════════════════════════════
 
 
 @router.callback_query(F.data == "padm:filter")
@@ -275,22 +208,18 @@ async def padm_filter(cb: types.CallbackQuery) -> None:
     rows = [
         [
             InlineKeyboardButton(
-                text=label,
-                callback_data=f"padm:partners:0:status:{key}",
+                text=label, callback_data=f"padm:partners:0:status:{key}"
             )
         ]
         for key, label in statuses
     ]
     rows.append([InlineKeyboardButton(text="Все", callback_data="padm:partners:0")])
+
     await cb.message.edit_text(
-        "Фильтр по статусу:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+        "Фильтр по статусу:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await cb.answer()
-
-
-# ══════════════════════════════════════════════════════════════
-# Карточка партнёра
-# ══════════════════════════════════════════════════════════════
 
 
 @router.callback_query(F.data.startswith("padm:partner:"))
@@ -298,11 +227,14 @@ async def padm_partner_detail(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
     if not owner:
         await cb.answer("Партнёр не найден.", show_alert=True)
         return
+
     await cb.message.edit_text(
         _fmt_partner(owner),
         reply_markup=padm_partner_detail_kb(owner.id, owner.status),
@@ -310,19 +242,19 @@ async def padm_partner_detail(cb: types.CallbackQuery) -> None:
     await cb.answer()
 
 
-# ══════════════════════════════════════════════════════════════
-# Одобрить партнёра
-# ══════════════════════════════════════════════════════════════
-
-
 @router.callback_query(F.data.startswith("padm:approve:"))
 async def padm_approve_partner(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
     admin_username = cb.from_user.username or str(cb.from_user.id)
 
+    svc_id: int | None = None
+    partner_tg_id: int | None = None
+
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
         if not owner:
             await cb.answer("Партнёр не найден.", show_alert=True)
@@ -331,99 +263,191 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
             await cb.answer("Нельзя одобрить — статус не 'ожидает'.", show_alert=True)
             return
 
+        cat_id = None
+        if owner.draft_category:
+            cat = (
+                await session.execute(
+                    select(ServiceCategory).where(
+                        ServiceCategory.name == owner.draft_category
+                    )
+                )
+            ).scalar_one_or_none()
+            if cat:
+                cat_id = cat.id
+
+        svc = None
+        if owner.service_id:
+            svc = (
+                await session.execute(
+                    select(Service).where(Service.id == owner.service_id)
+                )
+            ).scalar_one_or_none()
+
+        if svc is None:
+            svc = Service(
+                name=owner.draft_name or "Без названия",
+                service_type=owner.draft_service_type or "repair",
+                is_available=True,
+            )
+            session.add(svc)
+            await session.flush()
+
+        svc.name = owner.draft_name or "Без названия"
+        svc.service_type = owner.draft_service_type or "repair"
+        svc.category_id = cat_id
+        svc.address = owner.draft_address
+        svc.nearest_metro = owner.draft_metro
+        svc.phone = owner.draft_phone
+        svc.telegram_handle = owner.draft_telegram
+        svc.open_time = owner.draft_open_time
+        svc.close_time = owner.draft_close_time
+        svc.has_hydroisolation = owner.draft_hydroisolation
+        svc.hydroisolation_price = owner.draft_hydro_price
+        svc.diagnostics_price = owner.draft_diagnostics_price
+        svc.diagnostics_included = owner.draft_diag_included
+        svc.upgrade_categories = owner.draft_upgrade_categories
+        svc.working_days = owner.draft_working_days
+        svc.is_available = True
+        svc.registration_complete = True
+        svc.partnership_status = "активный"
+
+        owner.service_id = svc.id
         owner.status = "активный"
-        owner.is_available = True
-        owner.partnership_status = "активный"
+        owner.registration_complete = True
         owner.approved_at = datetime.datetime.now(tz=datetime.timezone.utc)
         owner.approved_by = admin_username
-        await session.commit()
 
-        svc_id = owner.id
-
-    # Update Google Sheets row (status + is_available changed)
-    async with async_session() as session:
-        svc = (
-            await session.execute(select(Service).where(Service.id == svc_id))
+        bank = (
+            await session.execute(
+                select(ServiceBankDetails).where(
+                    ServiceBankDetails.service_id == svc.id
+                )
+            )
         ).scalar_one_or_none()
-    if svc:
-        try:
-            update_service_row(svc)
-        except Exception:
-            logger.exception("Failed to update approved service in Sheets")
+        if bank is None:
+            bank = ServiceBankDetails(service_id=svc.id)
+            session.add(bank)
+        bank.legal_form = owner.draft_legal_form
+        bank.tax_system = owner.draft_tax_system
+        bank.bank_account = owner.draft_bank_account
+        bank.bank_name = owner.draft_bank_name
+        bank.bik = owner.draft_bik
+        bank.corr_account = owner.draft_corr_account
+        bank.org_name = owner.draft_org_name
+        bank.inn = owner.draft_inn
 
-    logger.info(
-        "admin %s approved partner #%s (service #%s)",
-        admin_username,
-        owner_id,
-        svc_id,
-    )
+        settings = (
+            await session.execute(
+                select(ServiceOwnerSettings).where(
+                    ServiceOwnerSettings.service_id == svc.id
+                )
+            )
+        ).scalar_one_or_none()
+        if settings is None:
+            session.add(
+                ServiceOwnerSettings(
+                    service_id=svc.id,
+                    owner_user_id=owner.owner_user_id,
+                )
+            )
+        else:
+            settings.owner_user_id = owner.owner_user_id
+
+        await session.commit()
+        svc_id = svc.id
+        partner_tg_id = owner.owner_user_id
+
+    if svc_id is not None:
+        async with async_session() as session:
+            svc = (
+                await session.execute(select(Service).where(Service.id == svc_id))
+            ).scalar_one_or_none()
+        if svc:
+            try:
+                update_service_row(svc)
+            except Exception:
+                logger.exception("Failed to update approved service in Sheets")
+
     await cb.answer("Партнёр одобрен!", show_alert=True)
 
-    # Notify partner (same bot — direct message) with new keyboard
-    try:
-        bot = cb.bot
-        partner_uname = ""
+    if partner_tg_id is not None:
         try:
-            chat = await bot.get_chat(owner.telegram_id)
-            partner_uname = chat.username or ""
+            partner_uname = ""
+            try:
+                chat = await cb.bot.get_chat(partner_tg_id)
+                partner_uname = chat.username or ""
+            except Exception:
+                pass
+            partner_is_admin = (
+                partner_uname.lower() in ADMIN_USERNAMES if partner_uname else False
+            )
+            await cb.bot.send_message(
+                partner_tg_id,
+                "Ваша заявка одобрена! Теперь вы можете принимать заявки.",
+                reply_markup=partner_main_menu_kb(is_admin=partner_is_admin),
+            )
         except Exception:
-            pass
-        partner_is_admin = (
-            partner_uname.lower() in ADMIN_USERNAMES if partner_uname else False
-        )
-        await bot.send_message(
-            owner.telegram_id,
-            "Ваша заявка одобрена! Теперь вы можете принимать заявки.",
-            reply_markup=partner_main_menu_kb(is_admin=partner_is_admin),
-        )
-    except Exception:
-        logger.exception("Failed to notify partner about approval")
+            logger.exception("Failed to notify partner about approval")
 
-    # Refresh view
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
     if owner:
         await cb.message.edit_text(
             _fmt_partner(owner),
             reply_markup=padm_partner_detail_kb(owner.id, owner.status),
         )
-
-
-# ══════════════════════════════════════════════════════════════
-# Отклонить партнёра
-# ══════════════════════════════════════════════════════════════
 
 
 @router.callback_query(F.data.startswith("padm:reject_partner:"))
 async def padm_reject_partner(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
+    partner_tg_id: int | None = None
 
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
         if not owner:
             await cb.answer("Партнёр не найден.", show_alert=True)
             return
+
         owner.status = "отклонён"
+        partner_tg_id = owner.owner_user_id
+
+        if owner.service_id:
+            svc = (
+                await session.execute(
+                    select(Service).where(Service.id == owner.service_id)
+                )
+            ).scalar_one_or_none()
+            if svc:
+                svc.is_available = False
+                svc.partnership_status = "отклонён"
+
         await session.commit()
 
-    logger.info("admin rejected partner #%s", owner_id)
     await cb.answer("Партнёр отклонён.", show_alert=True)
 
-    try:
-        await cb.bot.send_message(
-            owner.telegram_id,
-            "Ваша заявка на регистрацию сервисного центра была отклонена.",
-        )
-    except Exception:
-        logger.exception("Failed to notify partner about rejection")
+    if partner_tg_id is not None:
+        try:
+            await cb.bot.send_message(
+                partner_tg_id,
+                "Ваша заявка на регистрацию сервисного центра была отклонена.",
+            )
+        except Exception:
+            logger.exception("Failed to notify partner about rejection")
 
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
     if owner:
         await cb.message.edit_text(
@@ -432,29 +456,40 @@ async def padm_reject_partner(cb: types.CallbackQuery) -> None:
         )
 
 
-# ══════════════════════════════════════════════════════════════
-# Приостановить / восстановить
-# ══════════════════════════════════════════════════════════════
-
-
 @router.callback_query(F.data.startswith("padm:suspend:"))
 async def padm_suspend_partner(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
+
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
         if not owner:
             await cb.answer("Не найден.", show_alert=True)
             return
+
         owner.status = "приостановлен"
-        owner.is_available = False
+        if owner.service_id:
+            svc = (
+                await session.execute(
+                    select(Service).where(Service.id == owner.service_id)
+                )
+            ).scalar_one_or_none()
+            if svc:
+                svc.is_available = False
+                svc.partnership_status = "приостановлен"
+
         await session.commit()
-    logger.info("admin suspended partner #%s", owner_id)
+
     await cb.answer("Партнёр приостановлен.", show_alert=True)
+
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
     if owner:
         await cb.message.edit_text(
@@ -466,32 +501,43 @@ async def padm_suspend_partner(cb: types.CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("padm:unsuspend:"))
 async def padm_unsuspend_partner(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
+
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
         if not owner:
             await cb.answer("Не найден.", show_alert=True)
             return
+
         owner.status = "активный"
-        owner.is_available = True
+        if owner.service_id:
+            svc = (
+                await session.execute(
+                    select(Service).where(Service.id == owner.service_id)
+                )
+            ).scalar_one_or_none()
+            if svc:
+                svc.is_available = True
+                svc.partnership_status = "активный"
+
         await session.commit()
-    logger.info("admin unsuspended partner #%s", owner_id)
+
     await cb.answer("Партнёр восстановлен.", show_alert=True)
+
     async with async_session() as session:
         owner = (
-            await session.execute(select(Service).where(Service.id == owner_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+            )
         ).scalar_one_or_none()
     if owner:
         await cb.message.edit_text(
             _fmt_partner(owner),
             reply_markup=padm_partner_detail_kb(owner.id, owner.status),
         )
-
-
-# ══════════════════════════════════════════════════════════════
-# No-op
-# ══════════════════════════════════════════════════════════════
 
 
 @router.callback_query(F.data == "padm:noop")
