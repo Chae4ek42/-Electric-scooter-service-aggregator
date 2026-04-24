@@ -340,6 +340,67 @@ def order_select_kb(orders: list, action: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def my_order_card_kb(
+    order_id: int,
+    *,
+    pay_callback: str | None,
+    can_cancel: bool,
+    can_contact: bool,
+    can_comment: bool,
+) -> InlineKeyboardMarkup:
+    """Inline actions under a short order card in "Мои заявки"."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text="Полная информация",
+                callback_data=f"myord:full:{order_id}",
+            )
+        ]
+    ]
+
+    if can_cancel:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Отменить",
+                    callback_data=f"myord:cancel:{order_id}",
+                )
+            ]
+        )
+
+    if pay_callback:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Оплатить",
+                    callback_data=pay_callback,
+                )
+            ]
+        )
+
+    if can_contact:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Связаться с сервисом",
+                    callback_data=f"myord:contact:{order_id}",
+                )
+            ]
+        )
+
+    if can_comment:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Добавить комментарий",
+                    callback_data=f"myord:comment:{order_id}",
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # ── Client notification keyboards ────────────────────────────
 
 

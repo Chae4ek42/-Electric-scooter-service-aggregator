@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import zoneinfo
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -27,6 +28,13 @@ from partner_bot.handlers.notifications import router as notif_router
 from partner_bot.handlers.admin import router as admin_router
 
 
+_PAUSE_REOPEN_POLL_SECONDS = 15
+try:
+    _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
+except Exception:
+    _MSK = None
+
+
 def _setup_logging() -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(
@@ -41,34 +49,63 @@ def _setup_logging() -> None:
 async def _pause_reopen_loop() -> None:
     """Auto-reopen services whose pause_until has passed."""
     import datetime
-    from sqlalchemy import select, update
+    from sqlalchemy import select
     from client_bot.core.database import async_session
     from client_bot.domain.models import Service
+    from client_bot.services.sheets_writer import set_service_available
 
     logger = logging.getLogger(__name__)
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(_PAUSE_REOPEN_POLL_SECONDS)
         try:
-            now = datetime.datetime.now(tz=datetime.timezone.utc)
+            now = (
+                datetime.datetime.now(tz=_MSK)
+                if _MSK is not None
+                else datetime.datetime.now(tz=datetime.timezone.utc)
+            )
+            reopened_ids: list[int] = []
             async with async_session() as session:
-                expired = (
+                paused = (
                     (
                         await session.execute(
                             select(Service)
                             .where(Service.is_available.is_(False))
                             .where(Service.pause_until.isnot(None))
-                            .where(Service.pause_until <= now)
                         )
                     )
                     .scalars()
                     .all()
                 )
-                for svc in expired:
+
+                for svc in paused:
+                    pause_until = svc.pause_until
+                    if pause_until is None:
+                        continue
+                    if pause_until.tzinfo is None:
+                        if _MSK is not None:
+                            pause_until = pause_until.replace(tzinfo=_MSK)
+                        else:
+                            pause_until = pause_until.replace(
+                                tzinfo=datetime.timezone.utc
+                            )
+                    else:
+                        pause_until = pause_until.astimezone(now.tzinfo)
+
+                    if pause_until > now:
+                        continue
+
                     svc.is_available = True
                     svc.pause_until = None
+                    reopened_ids.append(svc.id)
                     logger.info("Auto-reopened service %s (id=%s)", svc.name, svc.id)
-                if expired:
+
+                if reopened_ids:
                     await session.commit()
+
+            for service_id in reopened_ids:
+                asyncio.create_task(
+                    asyncio.to_thread(set_service_available, service_id, True)
+                )
         except Exception as exc:
             logger.error("Pause reopen loop error: %s", exc)
 

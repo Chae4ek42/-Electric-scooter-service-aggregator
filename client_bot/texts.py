@@ -96,8 +96,6 @@ PARTNER_MENU_TEXTS: tuple[str, ...] = (
 
 
 class Client:
-    """Texts for the client bot (bot/)."""
-
     PROCEDURE_INTERRUPTED = "Процедура прервана."
     USE_BUTTONS = "Пожалуйста, используйте кнопки для навигации."
     NO_ACTIVE_FORM = "Нет активной формы."
@@ -186,8 +184,7 @@ class Client:
             "Ближайшее доступное время: <b>{suggested}</b>"
         )
         ORDER_CODE_MSG = (
-            "Ваш номер заказа: <b>{code}</b>\n"
-            "По прибытии в сервис назовите этот номер."
+            "Ваш номер заказа: {code}\n" "По прибытии в сервис назовите этот номер."
         )
         HYDRO_PREPAYMENT = "Стоимость гидроизоляции: {price}\nПредоплата: 500 руб."
 

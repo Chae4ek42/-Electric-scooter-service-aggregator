@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 import re
@@ -112,6 +113,18 @@ async def _require_active(event) -> tuple[ServiceDraft | None, Service | None]:
             await event.answer(text)
         return None, None
     return owner, svc
+
+
+def _schedule_sheets_call(operation: str, fn, *args) -> None:
+    """Run blocking Sheets call in background to keep UI responsive."""
+
+    async def _run() -> None:
+        try:
+            await asyncio.to_thread(fn, *args)
+        except Exception:
+            logger.exception("Sheets async call failed (%s)", operation)
+
+    asyncio.create_task(_run())
 
 
 def _format_profile(svc: Service) -> str:
@@ -711,10 +724,12 @@ async def toggle_status(callback: types.CallbackQuery) -> None:
             db_svc.pause_until = pause_until
             await session.commit()
 
-    try:
-        set_service_available(svc.id, new_val)
-    except Exception:
-        logger.exception("Sheets status update failed")
+    _schedule_sheets_call(
+        "service availability",
+        set_service_available,
+        svc.id,
+        new_val,
+    )
 
     await callback.answer(f"Статус: {status_text}", show_alert=True)
     await callback.message.edit_text(

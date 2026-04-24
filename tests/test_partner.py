@@ -958,6 +958,11 @@ class TestYandexRatingDisplay:
 
 
 class TestPartnerOrderFSMStates:
+    def test_has_set_total_cost_items(self):
+        from client_bot.domain.states import PartnerOrderFSM
+
+        assert hasattr(PartnerOrderFSM, "set_total_cost_items")
+
     def test_has_set_total_cost(self):
         from client_bot.domain.states import PartnerOrderFSM
 
@@ -1149,6 +1154,7 @@ class TestNewFSMStates:
         from client_bot.domain.states import ClientOrderFSM
 
         assert hasattr(ClientOrderFSM, "dispute_reason")
+        assert hasattr(ClientOrderFSM, "order_comment")
 
 
 class TestClientNotificationKbs:
@@ -1184,6 +1190,15 @@ class TestClientNotificationKbs:
         texts = [btn.text for row in kb.inline_keyboard for btn in row]
         assert "Оплатить и завершить" in texts
         assert "Оспорить" in texts
+
+
+class TestPartnerAdminKeyboards:
+    def test_main_contains_service_stats(self):
+        from partner_bot.ui.keyboards import padm_main_kb
+
+        kb = padm_main_kb()
+        texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        assert "Статистика сервисов" in texts
 
     def test_pay_confirm_kb(self):
         from client_bot.ui.keyboards import client_pay_confirm_kb

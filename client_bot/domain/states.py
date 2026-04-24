@@ -51,6 +51,7 @@ class PartnerProfileFSM(StatesGroup):
 
 
 class PartnerOrderFSM(StatesGroup):
+    set_total_cost_items = State()
     set_total_cost = State()
     reject_reason = State()
     client_refused_reason = State()
@@ -65,3 +66,4 @@ class PartnerOrderFSM(StatesGroup):
 
 class ClientOrderFSM(StatesGroup):
     dispute_reason = State()
+    order_comment = State()

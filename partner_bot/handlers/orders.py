@@ -129,6 +129,72 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _build_client_order_notification(
+    order: Order,
+    title: str,
+    extra_lines: list[str] | None = None,
+) -> str:
+    """Единый полный формат уведомлений клиенту по заявке."""
+    stype = order.service.service_type if order.service else None
+    type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплексный"}
+
+    lines = [
+        title,
+        "",
+        f"Заявка #{order.id}",
+        f"Статус: {_STATUS_RU.get(order.status, order.status)}",
+        f"Устройство: {e(_model_name(order))}",
+        f"Тип услуги: {type_map.get(stype, stype) if stype else '—'}",
+        f"Дата: {order.scheduled_date or '—'} {order.scheduled_time or ''}".rstrip(),
+    ]
+
+    if order.service:
+        lines.append(f"Сервис: {e(order.service.name or '—')}")
+        if order.service.address:
+            lines.append(f"Адрес: {e(order.service.address)}")
+        if order.service.phone:
+            lines.append(f"Телефон: {e(order.service.phone)}")
+        if order.service.telegram_handle:
+            handle = order.service.telegram_handle
+            if handle and not handle.startswith("@"):
+                handle = f"@{handle}"
+            lines.append(f"Telegram: {e(handle)}")
+
+    if order.order_code:
+        lines.append(f"Код заказа: {e(order.order_code)}")
+        lines.append("По прибытии в сервис назовите номер заказа.")
+    if order.upgrade_category:
+        lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
+    if order.problem_description:
+        lines.append(f"Описание проблемы: {e(order.problem_description)}")
+    if order.diagnostics_price is not None:
+        lines.append(f"Диагностика: {order.diagnostics_price:.0f} руб.")
+    if order.estimate_cost is not None:
+        lines.append(f"Смета: {order.estimate_cost:.0f} руб.")
+    if order.estimate_items:
+        lines.append(f"Работы: {e(order.estimate_items)}")
+    if order.estimate_deadline:
+        lines.append(f"Срок: {e(order.estimate_deadline)}")
+    if order.estimate_description:
+        lines.append(f"Описание сметы: {e(order.estimate_description)}")
+    if order.total_cost is not None:
+        lines.append(f"Итоговая стоимость: {order.total_cost:.0f} руб.")
+    if order.reject_reason:
+        lines.append(f"Причина отказа: {e(order.reject_reason)}")
+    if order.refusal_reason:
+        lines.append(f"Причина отказа клиента: {e(order.refusal_reason)}")
+    if order.dispute_reason:
+        lines.append(f"Причина оспаривания: {e(order.dispute_reason)}")
+    if order.price_change_reason:
+        lines.append(f"Причина изменения цены: {e(order.price_change_reason)}")
+
+    if extra_lines:
+        lines.append("")
+        lines.extend(extra_lines)
+
+    return "\n".join(lines)
+
+
 async def _get_partner_orders(
     service_id: int, page: int, status_filter: str | None = None
 ) -> tuple[list[Order], int]:
@@ -215,9 +281,14 @@ async def incoming_orders(message: types.Message, state: FSMContext) -> None:
             "Ремонт" if o.service and o.service.service_type == "repair" else "Апгрейд"
         )
         if o.upgrade_category:
-            stype = f"Апгрейд -- {o.upgrade_category}"
+            stype = f"Апгрейд - {o.upgrade_category}"
+        client_info = ""
+        if o.user and o.user.username:
+            client_info = f" | @{o.user.username}"
         lines.append(f"#{o.id} | {m} | {stype}")
-        lines.append(f"  {o.scheduled_date or '?'} {o.scheduled_time or ''}")
+        lines.append(
+            f"  {o.scheduled_date or '?'} {o.scheduled_time or ''}{client_info}"
+        )
 
     from partner_bot.ui.keyboards import partner_orders_list_kb
 
@@ -244,7 +315,7 @@ async def order_detail(callback: types.CallbackQuery, state: FSMContext) -> None
         return
 
     client_username = order.user.username if order.user else None
-    show_client = order.status not in ("awaiting_payment", "paid")
+    show_client = True
     text = _fmt_partner_order(order, show_client=show_client)
     kb = partner_order_detail_kb(
         order_id, order.status, client_username if show_client else None
@@ -291,16 +362,23 @@ async def accept_order(callback: types.CallbackQuery, state: FSMContext) -> None
 
     # Notify client
     try:
-        svc_name = order.service.name if order and order.service else ""
-        svc_address = order.service.address if order and order.service else ""
+        async with async_session() as session:
+            notify_order = (
+                await session.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+        if not notify_order:
+            raise RuntimeError("order_not_found_for_client_notify")
+
         from client_bot.core.config import CLIENT_BOT_TOKEN
 
         await send_by_token(
             CLIENT_BOT_TOKEN,
-            order.user_id,
-            f"Ваша заявка #{order_id} принята сервисом {svc_name}.\n"
-            f"Адрес: {svc_address}",
-            dedupe_key=f"client_accept:{order_id}:{order.user_id}",
+            notify_order.user_id,
+            _build_client_order_notification(
+                notify_order,
+                "Ваша заявка принята сервисом",
+            ),
+            dedupe_key=f"client_accept:{order_id}:{notify_order.user_id}",
         )
     except Exception:
         logger.exception("Failed to notify client about acceptance")
@@ -384,13 +462,23 @@ async def reject_order_reason(message: types.Message, state: FSMContext) -> None
 
     # Notify client
     try:
+        async with async_session() as session:
+            notify_order = (
+                await session.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+        if not notify_order:
+            raise RuntimeError("order_not_found_for_client_notify")
+
         from client_bot.core.config import CLIENT_BOT_TOKEN
 
         await send_by_token(
             CLIENT_BOT_TOKEN,
-            order.user_id,
-            f"Ваша заявка #{order_id} была отклонена сервисом.\n" f"Причина: {v.text}",
-            dedupe_key=f"client_reject:{order_id}:{order.user_id}",
+            notify_order.user_id,
+            _build_client_order_notification(
+                notify_order,
+                "Ваша заявка была отклонена сервисом",
+            ),
+            dedupe_key=f"client_reject:{order_id}:{notify_order.user_id}",
         )
     except Exception:
         logger.exception("Failed to notify client about rejection")
@@ -474,19 +562,25 @@ async def client_refused_reason(message: types.Message, state: FSMContext) -> No
 
     # Notify client
     try:
+        async with async_session() as session:
+            notify_order = (
+                await session.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+        if not notify_order:
+            raise RuntimeError("order_not_found_for_client_notify")
+
         from client_bot.core.config import CLIENT_BOT_TOKEN
         from client_bot.ui.keyboards import client_visited_kb
 
         await send_by_token(
             CLIENT_BOT_TOKEN,
-            user_id,
-            f"❌ Заявка #{order_id}\n\n"
-            f"Сервис сообщил, что вы отказались от ремонта.\n"
-            f"Причина: {text}\n\n"
-            f"Устройство: {model_str}\n"
-            f"Сервис: {svc_name}",
+            notify_order.user_id,
+            _build_client_order_notification(
+                notify_order,
+                "❌ Сервис отметил, что вы отказались от ремонта",
+            ),
             reply_markup=client_visited_kb(order_id),
-            dedupe_key=f"client_refused_notice:{order_id}:{user_id}",
+            dedupe_key=f"client_refused_notice:{order_id}:{notify_order.user_id}",
         )
     except Exception:
         logger.exception("Failed to notify client about refusal")
@@ -717,32 +811,29 @@ async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> 
 
     # Notify client
     try:
+        async with async_session() as session:
+            notify_order = (
+                await session.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+        if not notify_order:
+            raise RuntimeError("order_not_found_for_client_notify")
+
         from client_bot.core.config import CLIENT_BOT_TOKEN
         from client_bot.ui.keyboards import client_confirm_estimate_kb
 
-        est_lines = [
-            f"🔧 Заявка #{order_id} — принята в работу\n",
-            f"Устройство: {model_str}",
-            f"Сервис: {svc_name}\n",
-            "Смета:",
-            f"  Стоимость: {cost:.0f} руб.",
-            f"  Работы: {items}",
-            f"  Срок: {deadline}",
-        ]
-        if desc:
-            est_lines.append(f"  Описание: {desc}")
-        est_lines += [
-            "",
-            f"Предоплата: {prepayment:.0f} руб.",
-            f"Остаток: {remainder:.0f} руб.",
-        ]
-
         await send_by_token(
             CLIENT_BOT_TOKEN,
-            user_id,
-            "\n".join(est_lines),
+            notify_order.user_id,
+            _build_client_order_notification(
+                notify_order,
+                "🔧 Заявка принята в работу",
+                extra_lines=[
+                    f"Предоплата: {prepayment:.0f} руб.",
+                    f"Остаток: {remainder:.0f} руб.",
+                ],
+            ),
             reply_markup=client_confirm_estimate_kb(order_id),
-            dedupe_key=f"client_estimate:{order_id}:{user_id}",
+            dedupe_key=f"client_estimate:{order_id}:{notify_order.user_id}",
         )
     except Exception:
         logger.exception("Failed to notify client about estimate")
@@ -815,21 +906,29 @@ async def order_ready(callback: types.CallbackQuery) -> None:
 
     # Notify client
     try:
+        async with async_session() as session:
+            notify_order = (
+                await session.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+        if not notify_order:
+            raise RuntimeError("order_not_found_for_client_notify")
+
         from client_bot.core.config import CLIENT_BOT_TOKEN
         from client_bot.ui.keyboards import client_ready_kb
 
         await send_by_token(
             CLIENT_BOT_TOKEN,
-            user_id,
-            f"✅ Заявка #{order_id} — готов к выдаче!\n\n"
-            f"Устройство: {model_str}\n"
-            f"Сервис: {svc_name}\n"
-            f"Адрес: {svc_address}\n\n"
-            f"Итоговая стоимость: {total:.0f} руб.\n"
-            f"Предоплата: {prepayment:.0f} руб.\n"
-            f"К оплате: {remainder:.0f} руб.",
+            notify_order.user_id,
+            _build_client_order_notification(
+                notify_order,
+                "✅ Заявка готова к выдаче",
+                extra_lines=[
+                    f"Предоплата: {prepayment:.0f} руб.",
+                    f"К оплате: {remainder:.0f} руб.",
+                ],
+            ),
             reply_markup=client_ready_kb(order_id),
-            dedupe_key=f"client_ready:{order_id}:{user_id}",
+            dedupe_key=f"client_ready:{order_id}:{notify_order.user_id}",
         )
     except Exception:
         logger.exception("Failed to notify client about ready")
@@ -872,9 +971,21 @@ async def set_cost_start(callback: types.CallbackQuery, state: FSMContext) -> No
             return
 
     await state.update_data(cost_order_id=order_id)
-    await state.set_state(PartnerOrderFSM.set_total_cost)
-    await callback.message.answer("Введите итоговую стоимость ремонта (число, руб.):")
+    await state.set_state(PartnerOrderFSM.set_total_cost_items)
+    await callback.message.answer("Укажите смету (что будет сделано):")
     await callback.answer()
+
+
+@router.message(PartnerOrderFSM.set_total_cost_items, F.text)
+async def set_cost_items_input(message: types.Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if len(text) < 3:
+        await message.answer("Смета слишком короткая. Опишите работы подробнее:")
+        return
+
+    await state.update_data(cost_items=text)
+    await state.set_state(PartnerOrderFSM.set_total_cost)
+    await message.answer("Введите итоговую стоимость ремонта (число, руб.):")
 
 
 @router.message(PartnerOrderFSM.set_total_cost, F.text)
@@ -890,6 +1001,7 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
 
     data = await state.get_data()
     order_id = data.get("cost_order_id")
+    cost_items = (data.get("cost_items") or "").strip()
     if not order_id:
         await state.clear()
         return
@@ -926,7 +1038,28 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
                 )
                 return
 
+        if order.status == "accepted":
+            await transition_order_status(
+                session,
+                order,
+                "in_progress",
+                actor=ACTOR_PARTNER,
+                reason="set_total_cost_auto_progress",
+            )
+        if order.status == "in_progress":
+            await transition_order_status(
+                session,
+                order,
+                "ready_for_pickup",
+                actor=ACTOR_PARTNER,
+                reason="set_total_cost_auto_ready",
+            )
+
         order.total_cost = money_to_float(cost)
+        if cost_items:
+            order.estimate_items = cost_items
+        if order.estimate_cost is None:
+            order.estimate_cost = money_to_float(cost)
         await session.commit()
         prepayment = PaymentPolicy.prepayment(
             order.upgrade_category,
@@ -934,7 +1067,6 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
         )
         order_upgrade_category = order.upgrade_category
         order_diagnostics_price = order.diagnostics_price
-        user_id = order.user_id
 
     remainder = PaymentPolicy.remainder(
         cost,
@@ -943,9 +1075,11 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
     )
     await state.clear()
     await message.answer(
+        f"Смета: {cost_items or '—'}\n"
         f"Итоговая стоимость заявки #{order_id}: {cost:.0f} руб.\n"
         f"Предоплата: {prepayment:.0f} руб.\n"
-        f"Остаток к оплате: {remainder:.0f} руб."
+        f"Остаток к оплате: {remainder:.0f} руб.\n"
+        "Заявка переведена в статус «Готов к выдаче»."
     )
 
     logger.info(
@@ -957,16 +1091,30 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
 
     # Notify client
     try:
+        async with async_session() as session:
+            notify_order = (
+                await session.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+        if not notify_order:
+            raise RuntimeError("order_not_found_for_client_notify")
+
         from client_bot.core.config import CLIENT_BOT_TOKEN
+        from client_bot.ui.keyboards import client_ready_kb
 
         await send_by_token(
             CLIENT_BOT_TOKEN,
-            user_id,
-            f"По вашей заявке #{order_id} определена итоговая стоимость: "
-            f"{cost:.0f} руб.\n"
-            f"Предоплата: {prepayment:.0f} руб.\n"
-            f"Остаток к оплате: {remainder:.0f} руб.",
-            dedupe_key=f"client_total_cost:{order_id}:{user_id}",
+            notify_order.user_id,
+            _build_client_order_notification(
+                notify_order,
+                "💰 По вашей заявке обновлена итоговая стоимость",
+                extra_lines=[
+                    f"Предоплата: {prepayment:.0f} руб.",
+                    f"Остаток к оплате: {remainder:.0f} руб.",
+                    "Чтобы завершить заявку, нажмите «Оплатить и завершить».",
+                ],
+            ),
+            reply_markup=client_ready_kb(order_id),
+            dedupe_key=f"client_total_cost:{order_id}:{notify_order.user_id}",
         )
     except Exception:
         logger.exception("Failed to notify client about total cost")
@@ -1089,16 +1237,27 @@ async def update_price_reason_input(message: types.Message, state: FSMContext) -
 
     # Notify client
     try:
+        async with async_session() as session:
+            notify_order = (
+                await session.execute(select(Order).where(Order.id == order_id))
+            ).scalar_one_or_none()
+        if not notify_order:
+            raise RuntimeError("order_not_found_for_client_notify")
+
         from client_bot.core.config import CLIENT_BOT_TOKEN
 
         await send_by_token(
             CLIENT_BOT_TOKEN,
-            user_id,
-            f"Стоимость вашей заявки #{order_id} была изменена сервисом.\n"
-            f"Было: {old_str}\n"
-            f"Стало: {new_cost:.0f} руб.\n"
-            f"Причина: {e(reason)}",
-            dedupe_key=f"client_price_update:{order_id}:{user_id}",
+            notify_order.user_id,
+            _build_client_order_notification(
+                notify_order,
+                "Сервис изменил стоимость вашей заявки",
+                extra_lines=[
+                    f"Было: {old_str}",
+                    f"Стало: {new_cost:.0f} руб.",
+                ],
+            ),
+            dedupe_key=f"client_price_update:{order_id}:{notify_order.user_id}",
         )
     except Exception:
         logger.exception("Failed to notify client about price update")

@@ -19,13 +19,14 @@ from __future__ import annotations
 import datetime
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, Sequence, runtime_checkable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from client_bot.domain.models import MetroStation, Service, ServiceCategory
+from client_bot.domain.models import MetroStation, Service
 from client_bot.services.metro_graph import metro_transfer_distance
 
 logger = logging.getLogger(__name__)
@@ -248,10 +249,14 @@ class RankingResult:
     time_fallback: bool = False
     suggested_date: str | None = None
     suggested_time: str | None = None
+    suggested_slots: list[tuple[str, str]] = field(default_factory=list)
+    fallback_service_id: int | None = None
+    fallback_service_name: str | None = None
 
 
 _RU_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 _FALLBACK_SEARCH_DAYS = 21
+_MAX_FALLBACK_SLOTS = 3
 
 
 def _parse_minutes(time_str: str | None) -> int | None:
@@ -279,6 +284,42 @@ def _parse_ru_date(date_str: str | None) -> datetime.date | None:
 
 def _fmt_minutes(total_minutes: int) -> str:
     return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def _csv_tokens(csv_text: str | None) -> set[str]:
+    if not csv_text:
+        return set()
+    return {token.strip() for token in csv_text.split(",") if token.strip()}
+
+
+def _svc_supports_repair_category(svc: Service, category: str | None) -> bool:
+    if not category:
+        return True
+    svc_category = svc.category_rel.name if svc.category_rel else None
+    if not svc_category:
+        return False
+    if svc_category == "Электрика + механика":
+        return True
+    return svc_category == category
+
+
+def _svc_supports_upgrade_category(svc: Service, category: str | None) -> bool:
+    if not category:
+        return True
+    if category == "Гидроизоляция":
+        return bool(svc.has_hydroisolation)
+    return category in _csv_tokens(svc.upgrade_categories)
+
+
+def _svc_matches_category_filters(svc: Service, ctx: RankingContext) -> bool:
+    repair_ok = _svc_supports_repair_category(svc, ctx.malfunction_category)
+    upgrade_ok = _svc_supports_upgrade_category(svc, ctx.upgrade_category)
+
+    if ctx.service_type == "repair":
+        return repair_ok
+    if ctx.service_type == "upgrade":
+        return upgrade_ok
+    return repair_ok and upgrade_ok
 
 
 def _svc_covers_date(svc: Service, date_str: str | None) -> bool:
@@ -328,6 +369,63 @@ def _find_nearest_valid_time(svc: Service, original_time: str) -> str | None:
     if best < open_mins:
         return None
     return _fmt_minutes(best)
+
+
+def _collect_service_slots(
+    svc: Service,
+    *,
+    base_date: str | None,
+    base_time: str | None,
+    limit: int,
+) -> list[tuple[str, str]]:
+    """Собирает ближайшие слоты только из расписания конкретного сервиса."""
+    if limit <= 0:
+        return []
+
+    start_date = _parse_ru_date(base_date)
+    if start_date is None:
+        return []
+
+    open_mins = _parse_minutes(svc.open_time)
+    close_mins = _parse_minutes(svc.close_time)
+    requested_mins = _parse_minutes(base_time)
+
+    slots: list[tuple[str, str]] = []
+    step_minutes = 60
+
+    for day_offset in range(_FALLBACK_SEARCH_DAYS + 1):
+        day = start_date + datetime.timedelta(days=day_offset)
+        day_str = day.strftime("%d.%m.%Y")
+        if not _svc_covers_date(svc, day_str):
+            continue
+
+        if open_mins is None or close_mins is None:
+            if requested_mins is None:
+                continue
+            slots.append((day_str, _fmt_minutes(requested_mins)))
+            if len(slots) >= limit:
+                break
+            continue
+
+        latest_start = close_mins - step_minutes
+        if latest_start < open_mins:
+            continue
+
+        day_start = open_mins
+        if day_offset == 0 and requested_mins is not None:
+            day_start = max(open_mins, min(requested_mins, latest_start))
+
+        current = day_start
+        while current <= latest_start:
+            slots.append((day_str, _fmt_minutes(current)))
+            if len(slots) >= limit:
+                break
+            current += step_minutes
+
+        if len(slots) >= limit:
+            break
+
+    return slots
 
 
 def _find_nearest_valid_slot(
@@ -412,40 +510,50 @@ async def rank_services(
         proximity = MetroProximityStrategy()
     await proximity.setup(session)
 
-    # Гидроизоляция — особый случай: ищем по has_hydroisolation
-    if ctx.upgrade_category == "Гидроизоляция":
-        stmt = (
-            select(Service)
-            .where(Service.is_available.is_(True))
-            .where(Service.has_hydroisolation.is_(True))
-            .where(Service.registration_complete.is_(True))
-        )
+    if ctx.service_type == "repair":
+        allowed_types = ("repair", "complex")
+    elif ctx.service_type == "upgrade":
+        allowed_types = ("upgrade", "complex")
     else:
-        if ctx.service_type == "repair":
-            allowed_types = ("repair", "complex")
-        elif ctx.service_type == "upgrade":
-            allowed_types = ("upgrade", "complex")
-        else:
-            allowed_types = ("repair", "upgrade", "complex")
+        allowed_types = ("repair", "upgrade", "complex")
 
-        stmt = (
-            select(Service)
-            .where(Service.service_type.in_(allowed_types))
-            .where(Service.is_available.is_(True))
-            .where(Service.registration_complete.is_(True))
-        )
+    stmt = (
+        select(Service)
+        .options(selectinload(Service.category_rel))
+        .where(Service.service_type.in_(allowed_types))
+        .where(Service.is_available.is_(True))
+        .where(Service.registration_complete.is_(True))
+    )
 
-        if ctx.malfunction_category:
-            # Сервисы с "Электрика + механика" подходят для любой из двух категорий
-            stmt = stmt.join(Service.category_rel).where(
-                (ServiceCategory.name == ctx.malfunction_category)
-                | (ServiceCategory.name == "Электрика + механика")
-            )
+    if ctx.upgrade_category == "Гидроизоляция":
+        stmt = stmt.where(Service.has_hydroisolation.is_(True))
 
     services = (await session.execute(stmt)).scalars().all()
 
+    services = [s for s in services if _svc_matches_category_filters(s, ctx)]
+
     if not services:
         return RankingResult(matches=[])
+
+    ranked_all: list[ServiceMatch] = []
+    for svc in services:
+        prox = proximity.score(svc, ctx)
+        if svc.yandex_rating is not None:
+            rating = min(svc.yandex_rating, MAX_YANDEX_RATING) / MAX_YANDEX_RATING
+        else:
+            rating = 0.5
+
+        total = WEIGHT_PROXIMITY * prox + WEIGHT_RATING * rating
+        ranked_all.append(
+            ServiceMatch(
+                service=svc,
+                score=round(total, 4),
+                proximity_score=prox,
+                rating_score=rating,
+            )
+        )
+
+    ranked_all.sort(key=lambda m: (m.score, m.service.yandex_rating or 0), reverse=True)
 
     # Фильтрация по рабочему дню и времени
     slot_compatible = [
@@ -457,47 +565,40 @@ async def rank_services(
     if not slot_compatible:
         suggested_date: str | None = None
         suggested_time: str | None = None
+        suggested_slots: list[tuple[str, str]] = []
+        fallback_service_id: int | None = None
+        fallback_service_name: str | None = None
 
-        if ctx.scheduled_date:
-            candidates: list[tuple[float, float, str, str]] = []
-            for svc in services:
-                slot = _find_nearest_valid_slot(
-                    svc,
-                    ctx.scheduled_date,
-                    ctx.scheduled_time,
-                )
-                if not slot:
-                    continue
-                date_part, time_part = slot
-                distance = _slot_distance_minutes(
-                    ctx.scheduled_date,
-                    ctx.scheduled_time,
-                    date_part,
-                    time_part,
-                )
-                rating_tiebreak = -(svc.yandex_rating or 0.0)
-                candidates.append((distance, rating_tiebreak, date_part, time_part))
+        top_service = ranked_all[0].service if ranked_all else None
+        if top_service and ctx.scheduled_date:
+            suggested_slots = _collect_service_slots(
+                top_service,
+                base_date=ctx.scheduled_date,
+                base_time=ctx.scheduled_time,
+                limit=_MAX_FALLBACK_SLOTS,
+            )
+            fallback_service_id = top_service.id
+            fallback_service_name = top_service.name
 
-            if candidates:
-                candidates.sort(key=lambda item: (item[0], item[1]))
-                suggested_date = candidates[0][2]
-                suggested_time = candidates[0][3]
-        elif ctx.scheduled_time:
-            for svc in sorted(
-                services,
-                key=lambda s: s.yandex_rating or 0,
-                reverse=True,
-            ):
-                nearest = _find_nearest_valid_time(svc, ctx.scheduled_time)
-                if nearest:
-                    suggested_time = nearest
-                    break
+        if not suggested_slots and top_service and ctx.scheduled_time:
+            nearest = _find_nearest_valid_time(top_service, ctx.scheduled_time)
+            if nearest:
+                suggested_slots = [("", nearest)]
+                fallback_service_id = top_service.id
+                fallback_service_name = top_service.name
+
+        if suggested_slots:
+            suggested_date = suggested_slots[0][0] or None
+            suggested_time = suggested_slots[0][1]
 
         return RankingResult(
             matches=[],
             time_fallback=True,
             suggested_date=suggested_date,
             suggested_time=suggested_time,
+            suggested_slots=suggested_slots,
+            fallback_service_id=fallback_service_id,
+            fallback_service_name=fallback_service_name,
         )
 
     target_services = slot_compatible

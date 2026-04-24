@@ -601,6 +601,72 @@ def padm_main_kb() -> InlineKeyboardMarkup:
                     text="Фильтр по статусу", callback_data="padm:filter"
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="Статистика сервисов", callback_data="padm:services:0"
+                )
+            ],
+        ]
+    )
+
+
+def padm_services_kb(
+    services: Sequence,
+    page: int,
+    total_pages: int,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for svc in services:
+        name = (getattr(svc, "name", None) or "?").strip() or "?"
+        total_orders = int(getattr(svc, "orders_total", 0) or 0)
+        label = f"#{svc.id} | {name} | заявок: {total_orders}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"padm:service:{svc.id}:from:{page}",
+                )
+            ]
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                text="◄ Назад",
+                callback_data=f"padm:services:{page - 1}",
+            )
+        )
+    nav.append(
+        InlineKeyboardButton(
+            text=f"{page + 1}/{total_pages}",
+            callback_data="padm:noop",
+        )
+    )
+    if page < total_pages - 1:
+        nav.append(
+            InlineKeyboardButton(
+                text="Вперёд ►",
+                callback_data=f"padm:services:{page + 1}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="padm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def padm_service_detail_kb(from_page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="К списку сервисов",
+                    callback_data=f"padm:services:{from_page}",
+                )
+            ],
+            [InlineKeyboardButton(text="Главное меню", callback_data="padm:main")],
         ]
     )
 

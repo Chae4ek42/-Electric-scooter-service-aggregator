@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import logging
 import random
+import re
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
@@ -29,8 +30,8 @@ from client_bot.ui.keyboards import (
     main_menu_kb,
     malfunction_type_kb,
     metro_confirm_kb,
+    my_order_card_kb,
     models_kb,
-    orders_list_action_kb,
     order_select_kb,
     payment_kb,
     service_type_kb,
@@ -64,6 +65,29 @@ router = Router(name="order")
 
 
 _MENU_TEXTS = (Btn.SUBMIT_ORDER, Btn.MY_ORDERS, Btn.SUPPORT)
+_SERVICE_TYPE_RU = {
+    "repair": "Ремонт",
+    "upgrade": "Апгрейд",
+    "complex": "Комплексный",
+}
+_CANCELLABLE_ORDER_STATUSES = {"awaiting_payment", "paid", "accepted"}
+_POST_PREPAYMENT_STATUSES = {
+    "paid",
+    "accepted",
+    "in_progress",
+    "ready_for_pickup",
+    "completed",
+    "rejected_by_partner",
+    "interrupted",
+    "client_refused",
+    "disputed",
+}
+
+# Защита UI от автогенерируемых тестовых брендов, попадающих в рабочую БД.
+_TEST_BRAND_RE = re.compile(
+    r"^(?:hl_)?brand_[0-9a-f]{8,}$|^(?:test|pytest)_[0-9a-f]{6,}$",
+    re.IGNORECASE,
+)
 
 
 def _pydantic_msg(exc: ValidationError) -> str:
@@ -77,6 +101,16 @@ def _pydantic_msg(exc: ValidationError) -> str:
 
 def _is_admin(username: str | None) -> bool:
     return bool(username) and username.lower() in ADMIN_USERNAMES
+
+
+def _is_generated_test_brand_name(name: str) -> bool:
+    return bool(_TEST_BRAND_RE.match(name.strip()))
+
+
+async def _load_client_brands(session) -> list[Brand]:
+    brands = (await session.execute(select(Brand).order_by(Brand.name))).scalars().all()
+    filtered = [b for b in brands if not _is_generated_test_brand_name(b.name or "")]
+    return filtered or brands
 
 
 async def _safe_edit_or_answer(
@@ -139,9 +173,7 @@ async def pick_service_type(callback: types.CallbackQuery, state: FSMContext) ->
     logger.info("user=%s picked service_type=%s", callback.from_user.id, stype)
     await state.set_state(OrderFSM.brand)
     async with async_session() as session:
-        brands = (
-            (await session.execute(select(Brand).order_by(Brand.name))).scalars().all()
-        )
+        brands = await _load_client_brands(session)
     await _safe_edit_or_answer(callback, Client.Order.SELECT_BRAND, brands_kb(brands))
 
 
@@ -449,6 +481,7 @@ async def _process_time_choice(
     callback: types.CallbackQuery,
     state: FSMContext,
     time_str: str,
+    forced_service_id: int | None = None,
 ) -> None:
     await state.update_data(scheduled_time=time_str)
     data = await state.get_data()
@@ -477,42 +510,56 @@ async def _process_time_choice(
         result = await rank_services(ctx, session, limit=1)
 
         logger.info(
-            "user=%s ranking: matches=%d time_fallback=%s suggested_date=%s suggested_time=%s",
+            "user=%s ranking: matches=%d time_fallback=%s suggested_date=%s suggested_time=%s suggested_slots=%s",
             callback.from_user.id,
             len(result.matches),
             result.time_fallback,
             result.suggested_date,
             result.suggested_time,
+            result.suggested_slots,
         )
 
-        if result.time_fallback and result.suggested_time:
+        slot_suggestions = list(result.suggested_slots)
+        if not slot_suggestions and result.suggested_time:
+            slot_suggestions = [(result.suggested_date or "", result.suggested_time)]
+
+        if result.time_fallback and slot_suggestions:
             from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-            if result.suggested_date:
-                suggested_label = f"{result.suggested_date} {result.suggested_time}"
-                suggested_cb = (
-                    f"time_suggest:{result.suggested_date}:{result.suggested_time}"
-                )
-            else:
-                suggested_label = result.suggested_time
-                suggested_cb = f"time:{result.suggested_time}"
-
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[
+            rows: list[list[InlineKeyboardButton]] = []
+            labels: list[str] = []
+            for suggested_date, suggested_time in slot_suggestions:
+                if suggested_date:
+                    suggested_label = f"{suggested_date} {suggested_time}"
+                    if result.fallback_service_id is not None:
+                        suggested_cb = (
+                            f"time_suggest:{result.fallback_service_id}:"
+                            f"{suggested_date}:{suggested_time}"
+                        )
+                    else:
+                        suggested_cb = f"time_suggest:{suggested_date}:{suggested_time}"
+                else:
+                    suggested_label = suggested_time
+                    suggested_cb = f"time:{suggested_time}"
+                labels.append(suggested_label)
+                rows.append(
                     [
                         InlineKeyboardButton(
-                            text=f"Записаться на {suggested_label}",
+                            text=f"Записаться: {suggested_label}",
                             callback_data=suggested_cb,
                         )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="Выбрать другую дату",
-                            callback_data="back",
-                        )
-                    ],
+                    ]
+                )
+
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Выбрать другую дату",
+                        callback_data="back",
+                    )
                 ]
             )
+            kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
             selected_date = data.get("scheduled_date")
             selected_slot = (
@@ -520,16 +567,29 @@ async def _process_time_choice(
                 if selected_date
                 else f"в {e(time_str)}"
             )
+            suggested_lines = "\n".join(f"• <b>{e(label)}</b>" for label in labels)
+            service_hint = (
+                f"\nСервис: <b>{e(result.fallback_service_name)}</b>"
+                if result.fallback_service_name
+                else ""
+            )
             await _safe_edit_or_answer(
                 callback,
-                f"К сожалению, {selected_slot} подходящие сервисы не работают.\n"
-                f"Ближайший доступный слот: <b>{e(suggested_label)}</b>",
+                f"К сожалению, {selected_slot} подходящие сервисы не работают.{service_hint}\n"
+                f"Ближайшие доступные слоты:\n{suggested_lines}",
                 kb,
             )
             return
 
         if result.matches:
             best = result.matches[0]
+            if forced_service_id is not None:
+                forced_match = next(
+                    (m for m in result.matches if m.service.id == forced_service_id),
+                    None,
+                )
+                if forced_match is not None:
+                    best = forced_match
             service_id = best.service.id
             diagnostics_price = best.service.diagnostics_price
             diagnostics_included = best.service.diagnostics_included
@@ -683,10 +743,23 @@ async def pick_suggested_time(
     if len(parts) < 4:
         await callback.answer("Ошибка формата времени", show_alert=True)
         return
-    date_str = parts[1]
-    time_str = f"{parts[2]}:{parts[3]}"
+
+    forced_service_id: int | None = None
+    if len(parts) >= 5 and parts[1].isdigit():
+        forced_service_id = int(parts[1])
+        date_str = parts[2]
+        time_str = f"{parts[3]}:{parts[4]}"
+    else:
+        date_str = parts[1]
+        time_str = f"{parts[2]}:{parts[3]}"
+
     await state.update_data(scheduled_date=date_str)
-    await _process_time_choice(callback, state, time_str)
+    await _process_time_choice(
+        callback,
+        state,
+        time_str,
+        forced_service_id=forced_service_id,
+    )
 
 
 # 10. CONFIRM
@@ -773,35 +846,15 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
                 await s.commit()
                 logger.info("auto-payment completed for order #%s", order_id)
 
-                # Build full order info for client
-                svc = o.service
-                svc_name = svc.name if svc else ""
-                svc_address = svc.address if svc else ""
-                svc_phone = svc.phone if svc else ""
                 model_str = _client_model_name(o)
 
-                info_lines = [
-                    f"✅ Оплата заявки №{order_id} прошла успешно!\n",
-                    f"Сервис-центр: {svc_name}",
-                ]
-                if svc_address:
-                    info_lines.append(f"Адрес: {svc_address}")
-                if svc_phone:
-                    info_lines.append(f"Телефон: {svc_phone}")
-                info_lines.append(f"Модель: {model_str}")
-                if o.metro_station:
-                    info_lines.append(f"Метро: {o.metro_station}")
-                info_lines.append(
-                    f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}"
-                )
-                if o.order_code:
-                    info_lines.append(
-                        f"\nВаш номер заказа: <b>{o.order_code}</b>\n"
-                        "По прибытии в сервис назовите этот номер."
-                    )
-
                 try:
-                    await callback.message.answer("\n".join(info_lines))
+                    await callback.message.answer(
+                        _build_client_order_full_text(
+                            o,
+                            title=f"✅ Оплата заявки №{order_id} прошла успешно.",
+                        )
+                    )
                 except Exception:
                     logger.exception(
                         "Failed to send auto-payment message for order #%s",
@@ -810,12 +863,7 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
 
                 # Notify partner
                 _notify_partner(
-                    o,
-                    f"🆕 Новая заявка #{order_id}\n\n"
-                    f"Устройство: {model_str}\n"
-                    f"Метро: {o.metro_station or ''}\n"
-                    f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}\n"
-                    f"Описание: {o.problem_description or '—'}",
+                    o, _build_partner_new_order_text(order_id, o, model_str)
                 )
 
     asyncio.create_task(_auto_pay_diagnostics())
@@ -864,46 +912,21 @@ async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> N
                 await s.commit()
                 logger.info("auto-payment completed for order #%s", order_id)
 
-                # Build full order info for client
-                svc = o.service
-                svc_name = svc.name if svc else ""
-                svc_address = svc.address if svc else ""
-                svc_phone = svc.phone if svc else ""
                 model_str = _client_model_name(o)
 
-                info_lines = [
-                    f"✅ Оплата заявки №{order_id} прошла успешно!\n",
-                    f"Сервис-центр: {svc_name}",
-                ]
-                if svc_address:
-                    info_lines.append(f"Адрес: {svc_address}")
-                if svc_phone:
-                    info_lines.append(f"Телефон: {svc_phone}")
-                info_lines.append(f"Модель: {model_str}")
-                if o.metro_station:
-                    info_lines.append(f"Метро: {o.metro_station}")
-                info_lines.append(
-                    f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}"
-                )
-                if o.order_code:
-                    info_lines.append(
-                        f"\nВаш номер заказа: <b>{o.order_code}</b>\n"
-                        "По прибытии в сервис назовите этот номер."
-                    )
-
                 try:
-                    await callback.message.answer("\n".join(info_lines))
+                    await callback.message.answer(
+                        _build_client_order_full_text(
+                            o,
+                            title=f"✅ Оплата заявки №{order_id} прошла успешно.",
+                        )
+                    )
                 except Exception:
                     logger.exception("Failed to send auto-payment message")
 
                 # Notify partner
                 _notify_partner(
-                    o,
-                    f"🆕 Новая заявка #{order_id}\n\n"
-                    f"Устройство: {model_str}\n"
-                    f"Метро: {o.metro_station or ''}\n"
-                    f"Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}\n"
-                    f"Описание: {o.problem_description or '—'}",
+                    o, _build_partner_new_order_text(order_id, o, model_str)
                 )
 
     asyncio.create_task(_auto_pay())
@@ -917,7 +940,7 @@ async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> No
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
         ).scalar_one_or_none()
-        if order and order.status in ("awaiting_payment", "paid", "accepted"):
+        if order and order.status in _CANCELLABLE_ORDER_STATUSES:
             await transition_order_status(
                 session,
                 order,
@@ -960,11 +983,7 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
     elif current == OrderFSM.brand_custom.state:
         await state.set_state(OrderFSM.brand)
         async with async_session() as session:
-            brands = (
-                (await session.execute(select(Brand).order_by(Brand.name)))
-                .scalars()
-                .all()
-            )
+            brands = await _load_client_brands(session)
         await _safe_edit_or_answer(
             callback, "Выберите бренд самоката:", brands_kb(brands)
         )
@@ -972,11 +991,7 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
     elif current == OrderFSM.model.state:
         await state.set_state(OrderFSM.brand)
         async with async_session() as session:
-            brands = (
-                (await session.execute(select(Brand).order_by(Brand.name)))
-                .scalars()
-                .all()
-            )
+            brands = await _load_client_brands(session)
         await _safe_edit_or_answer(
             callback, "Выберите бренд самоката:", brands_kb(brands)
         )
@@ -1107,14 +1122,116 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
 # MY ORDERS
 
 
+def _can_cancel_order(order: Order) -> bool:
+    return order.status in _CANCELLABLE_ORDER_STATUSES
+
+
+def _can_contact_or_comment(order: Order) -> bool:
+    return order.status in _POST_PREPAYMENT_STATUSES and order.service is not None
+
+
+def _order_pay_callback(order: Order) -> str | None:
+    if order.status == "awaiting_payment":
+        return f"pay:proceed:{order.id}"
+    if order.status == "ready_for_pickup":
+        return f"cord:pay_final:{order.id}"
+    return None
+
+
+def _service_type_code(order: Order) -> str:
+    if order.service:
+        return order.service.service_type
+    return "upgrade" if order.upgrade_category else "repair"
+
+
+def _build_client_order_short_text(order: Order) -> str:
+    model_name = _client_model_name(order)
+    status_text = ORDER_STATUS_RU.get(order.status, order.status)
+
+    if order.status == "awaiting_payment":
+        service_name = "будет назначен после оплаты"
+    else:
+        service_name = order.service.name if order.service else "—"
+
+    lines = [
+        f"<b>Заявка №{order.id}</b> - {e(status_text)}",
+        f"Модель: {e(model_name)}",
+        f"Сервис: {e(service_name)}",
+        f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+        f"Дата: {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}".rstrip(),
+    ]
+    if order.upgrade_category:
+        lines.append(f"Категория: {e(order.upgrade_category)}")
+    return "\n".join(lines)
+
+
+def _build_client_order_full_text(order: Order, title: str | None = None) -> str:
+    model_name = _client_model_name(order)
+    status_text = ORDER_STATUS_RU.get(order.status, order.status)
+
+    if order.status == "awaiting_payment":
+        service_name = "будет назначен после оплаты"
+    else:
+        service_name = order.service.name if order.service else "—"
+
+    lines: list[str] = []
+    if title:
+        lines.extend([title, ""])
+
+    lines.extend(
+        [
+            f"Заявка №{order.id}",
+            f"Статус: {e(status_text)}",
+            f"Модель: {e(model_name)}",
+            f"Сервис: {e(service_name)}",
+            f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+            f"Метро: {e(order.metro_station or '—')}",
+            f"Дата: {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}".rstrip(),
+        ]
+    )
+
+    if order.order_code:
+        lines.append(f"Код заказа: {e(order.order_code)}")
+        lines.append("По прибытии в сервис назовите номер заказа.")
+    if order.upgrade_category:
+        lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
+    if order.problem_description:
+        lines.append(f"Описание проблемы: {e(order.problem_description)}")
+    if order.diagnostics_price is not None:
+        lines.append(f"Диагностика: {order.diagnostics_price:.0f} руб.")
+    if order.estimate_cost is not None:
+        lines.append(f"Смета: {order.estimate_cost:.0f} руб.")
+    if order.total_cost is not None:
+        lines.append(f"Итоговая стоимость: {order.total_cost:.0f} руб.")
+    if order.partner_comment:
+        lines.append(f"Комментарий по заявке: {e(order.partner_comment)}")
+    if order.reject_reason:
+        lines.append(f"Причина отказа: {e(order.reject_reason)}")
+    if order.refusal_reason:
+        lines.append(f"Причина отказа клиента: {e(order.refusal_reason)}")
+    if order.dispute_reason:
+        lines.append(f"Причина оспаривания: {e(order.dispute_reason)}")
+
+    if order.service and _can_contact_or_comment(order):
+        if order.service.address:
+            lines.append(f"Адрес сервиса: {e(order.service.address)}")
+        if order.service.phone:
+            lines.append(f"Телефон сервиса: {e(order.service.phone)}")
+        if order.service.telegram_handle:
+            handle = order.service.telegram_handle
+            if handle and not handle.startswith("@"):
+                handle = f"@{handle}"
+            lines.append(f"Telegram сервиса: {e(handle)}")
+
+    return "\n".join(lines)
+
+
 @router.message(F.text == Btn.MY_ORDERS)
 async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None:
     current = await state.get_state()
     if current is not None:
         await state.clear()
         await message.answer(Client.PROCEDURE_INTERRUPTED)
-
-    status_map = ORDER_STATUS_RU
 
     async with async_session() as session:
         orders = (
@@ -1134,47 +1251,17 @@ async def my_orders_interrupt(message: types.Message, state: FSMContext) -> None
             await message.answer(Client.Order.NO_ORDERS)
             return
 
-        lines: list[str] = []
-        for o in orders:
-            model = None
-            if o.model_id:
-                model = (
-                    await session.execute(select(Model).where(Model.id == o.model_id))
-                ).scalar_one_or_none()
-            service = (
-                await session.execute(select(Service).where(Service.id == o.service_id))
-            ).scalar_one_or_none()
-
-            if o.brand_custom_name:
-                model_name = (
-                    f"{o.brand_custom_name} {o.model_custom_name or ''}".strip()
-                )
-            elif o.model_custom_name and model:
-                model_name = f"{model.brand.name} {o.model_custom_name}"
-            elif model:
-                model_name = f"{model.brand.name} {model.name}"
-            else:
-                model_name = o.model_custom_name or ""
-
-            status_text = status_map.get(o.status, o.status)
-
-            if o.status == "awaiting_payment":
-                svc_display = "будет назначен после оплаты"
-            else:
-                svc_display = service.name if service else ""
-
-            lines.append(
-                f"<b>Заявка №{o.id}</b>  --  {status_text}\n"
-                f"  Модель: {e(model_name)}\n"
-                f"  Сервис-центр: {e(svc_display)}\n"
-                f"  Дата: {o.scheduled_date or ''} {o.scheduled_time or ''}\n"
-                f"  Метро: {e(o.metro_station or '')}"
-            )
-
-        has_active = any(o.status == "awaiting_payment" for o in orders)
-        markup = orders_list_action_kb() if has_active else None
-
-    await message.answer("\n\n".join(lines), reply_markup=markup)
+    for order in orders:
+        await message.answer(
+            _build_client_order_short_text(order),
+            reply_markup=my_order_card_kb(
+                order.id,
+                pay_callback=_order_pay_callback(order),
+                can_cancel=_can_cancel_order(order),
+                can_contact=_can_contact_or_comment(order),
+                can_comment=_can_contact_or_comment(order),
+            ),
+        )
 
 
 # ORDERS ACTION CALLBACKS
@@ -1212,7 +1299,7 @@ async def orders_action_cancel(callback: types.CallbackQuery) -> None:
                 await session.execute(
                     select(Order)
                     .where(Order.user_id == callback.from_user.id)
-                    .where(Order.status.in_(["awaiting_payment", "accepted"]))
+                    .where(Order.status.in_(tuple(_CANCELLABLE_ORDER_STATUSES)))
                     .order_by(Order.created_at.desc())
                 )
             )
@@ -1251,7 +1338,7 @@ async def orders_select(callback: types.CallbackQuery) -> None:
             return
 
         if action == "cancel":
-            if order.status not in ("awaiting_payment", "accepted"):
+            if not _can_cancel_order(order):
                 await callback.answer("Эту заявку нельзя отменить.", show_alert=True)
                 return
             await transition_order_status(
@@ -1275,6 +1362,181 @@ async def orders_select(callback: types.CallbackQuery) -> None:
             await callback.answer()
         else:
             await callback.answer("Неизвестное действие.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("myord:cancel:"))
+async def my_order_cancel(callback: types.CallbackQuery) -> None:
+    order_id = int(callback.data.split(":")[2])
+
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.user_id != callback.from_user.id:
+            await callback.answer("Заявка не найдена.", show_alert=True)
+            return
+        if not _can_cancel_order(order):
+            await callback.answer("Эту заявку нельзя отменить.", show_alert=True)
+            return
+
+        await transition_order_status(
+            session,
+            order,
+            "cancelled",
+            actor=ACTOR_CLIENT,
+            reason="my_orders_cancel",
+        )
+        await session.commit()
+
+    await callback.message.answer(f"Заявка №{order_id} отменена.")
+    await callback.answer("Заявка отменена")
+
+
+@router.callback_query(F.data.startswith("myord:full:"))
+async def my_order_full(callback: types.CallbackQuery) -> None:
+    order_id = int(callback.data.split(":")[2])
+
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+    if not order or order.user_id != callback.from_user.id:
+        await callback.answer("Заявка не найдена.", show_alert=True)
+        return
+
+    await callback.message.answer(
+        _build_client_order_full_text(
+            order,
+            title=f"Полная информация по заявке №{order_id}",
+        )
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("myord:contact:"))
+async def my_order_contact(callback: types.CallbackQuery) -> None:
+    order_id = int(callback.data.split(":")[2])
+
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+    if not order or order.user_id != callback.from_user.id:
+        await callback.answer("Заявка не найдена.", show_alert=True)
+        return
+    if not _can_contact_or_comment(order):
+        await callback.answer(
+            "Связь с сервисом доступна после предоплаты.",
+            show_alert=True,
+        )
+        return
+
+    service = order.service
+    if service is None:
+        await callback.answer("Сервис не найден.", show_alert=True)
+        return
+
+    lines = [
+        f"Контакты сервиса по заявке №{order_id}:",
+        f"Сервис: {e(service.name or '—')}",
+    ]
+    if service.address:
+        lines.append(f"Адрес: {e(service.address)}")
+    if service.phone:
+        lines.append(f"Телефон: {e(service.phone)}")
+    if service.telegram_handle:
+        handle = service.telegram_handle
+        if handle and not handle.startswith("@"):
+            handle = f"@{handle}"
+        lines.append(f"Telegram: {e(handle)}")
+
+    await callback.message.answer("\n".join(lines))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("myord:comment:"))
+async def my_order_comment_start(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+) -> None:
+    order_id = int(callback.data.split(":")[2])
+
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+    if not order or order.user_id != callback.from_user.id:
+        await callback.answer("Заявка не найдена.", show_alert=True)
+        return
+    if not _can_contact_or_comment(order):
+        await callback.answer(
+            "Комментарий доступен после предоплаты.",
+            show_alert=True,
+        )
+        return
+
+    await state.update_data(comment_order_id=order_id)
+    await state.set_state(ClientOrderFSM.order_comment)
+    await callback.message.answer(
+        "Введите комментарий для сервиса (минимум 3 символа):"
+    )
+    await callback.answer()
+
+
+@router.message(ClientOrderFSM.order_comment, F.text)
+async def my_order_comment_input(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
+
+    comment = message.text.strip()
+    if len(comment) < 3:
+        await message.answer("Комментарий слишком короткий. Напишите подробнее:")
+        return
+
+    data = await state.get_data()
+    order_id = data.get("comment_order_id")
+    if not order_id:
+        await state.clear()
+        return
+
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+        if not order or order.user_id != message.from_user.id:
+            await message.answer("Заявка не найдена.")
+            await state.clear()
+            return
+        if not _can_contact_or_comment(order):
+            await message.answer("Комментарий можно добавить только после предоплаты.")
+            await state.clear()
+            return
+
+        stamp = datetime.datetime.now(tz=datetime.timezone.utc).strftime(
+            "%d.%m.%Y %H:%M UTC"
+        )
+        entry = f"[{stamp}] {comment}"
+        order.partner_comment = (
+            f"{order.partner_comment}\n{entry}" if order.partner_comment else entry
+        )
+        await session.commit()
+        model_str = _client_model_name(order)
+
+    await state.clear()
+    await message.answer("Комментарий добавлен и отправлен сервису.")
+
+    async with async_session() as session:
+        order = (
+            await session.execute(select(Order).where(Order.id == order_id))
+        ).scalar_one_or_none()
+    if order:
+        _notify_partner(
+            order,
+            f"Клиент добавил комментарий к заявке #{order_id}\n\n"
+            f"Устройство: {e(model_str)}\n"
+            f"Дата: {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}\n"
+            f"Комментарий:\n{e(comment)}",
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1327,6 +1589,41 @@ def _notify_partner(order: Order, text: str) -> None:
             )
 
     asyncio.create_task(_send())
+
+
+def _build_partner_new_order_text(order_id: int, order: Order, model_str: str) -> str:
+    service_type = order.service.service_type if order.service else None
+    if service_type is None:
+        service_type = "upgrade" if order.upgrade_category else "repair"
+
+    user = order.user
+    if user and user.username:
+        client_info = f"@{user.username}"
+    elif user and user.full_name:
+        client_info = user.full_name
+    else:
+        client_info = "—"
+
+    slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
+    lines = [
+        f"🆕 Новая заявка #{order_id}",
+        "",
+        f"Устройство: {e(model_str)}",
+        f"Клиент: {e(client_info)} (ID: {order.user_id})",
+        f"Тип услуги: {_SERVICE_TYPE_RU.get(service_type, service_type)}",
+        f"Метро: {e(order.metro_station or '—')}",
+        f"Дата: {e(slot)}",
+    ]
+    if order.upgrade_category:
+        lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
+    if order.problem_description:
+        lines.append(f"Описание: {e(order.problem_description)}")
+    if order.diagnostics_price is not None:
+        lines.append(f"Диагностика: {order.diagnostics_price:.0f} руб.")
+    if order.order_code:
+        lines.append(f"Код заказа: {e(order.order_code)}")
+        lines.append("Клиенту нужно назвать номер заказа при визите.")
+    return "\n".join(lines)
 
 
 # ── Visited? ──────────────────────────────────────────────────
@@ -1546,7 +1843,6 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
             o.completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
             o.payment_id = f"AUTO-FINAL-{order_id}"
             await s.commit()
-            svc_name = o.service.name if o.service else ""
             total = money(o.total_cost or o.estimate_cost or 0)
             model_str = _client_model_name(o)
 
@@ -1554,9 +1850,10 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
 
         try:
             await callback.message.answer(
-                f"✅ Заявка #{order_id} завершена!\n\n"
-                f"Оплата произведена.\n"
-                f"Спасибо за обращение в {svc_name}!",
+                _build_client_order_full_text(
+                    o,
+                    title=(f"✅ Заявка №{order_id} завершена.\n" "Оплата произведена."),
+                )
             )
         except Exception:
             logger.exception("Failed to send final payment message")
@@ -1775,11 +2072,7 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
         )
     elif current == OrderFSM.brand.state:
         async with async_session() as session:
-            brands = (
-                (await session.execute(select(Brand).order_by(Brand.name)))
-                .scalars()
-                .all()
-            )
+            brands = await _load_client_brands(session)
         await callback.message.answer(
             "Выберите бренд самоката:", reply_markup=brands_kb(brands)
         )

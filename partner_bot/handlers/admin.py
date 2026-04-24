@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 import math
+from dataclasses import dataclass
 from typing import Union
 
 from aiogram import F, Router, types
@@ -12,11 +14,13 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
 from client_bot.domain.models import (
+    Order,
     Service,
     ServiceBankDetails,
     ServiceCategory,
@@ -24,11 +28,13 @@ from client_bot.domain.models import (
     ServiceOwnerSettings,
 )
 from client_bot.services.sheets_writer import update_service_row
-from client_bot.texts import Btn, PARTNER_STATUS_RU, Partner, TYPE_RU
+from client_bot.texts import Btn, ORDER_STATUS_RU, PARTNER_STATUS_RU, Partner, TYPE_RU
 from partner_bot.ui.keyboards import (
     padm_main_kb,
     padm_partner_detail_kb,
     padm_partners_kb,
+    padm_service_detail_kb,
+    padm_services_kb,
     partner_main_menu_kb,
 )
 
@@ -36,7 +42,37 @@ logger = logging.getLogger(__name__)
 router = Router(name="partner_admin")
 
 PARTNER_PAGE_SIZE = 10
+SERVICE_PAGE_SIZE = 10
 _STATUS_RU = PARTNER_STATUS_RU
+
+
+@dataclass
+class AdminServiceStatsItem:
+    id: int
+    name: str
+    orders_total: int
+
+
+def _schedule_service_sheet_sync(service_id: int) -> None:
+    """Sync approved service to Sheets in background thread."""
+
+    async def _run() -> None:
+        try:
+            async with async_session() as session:
+                svc = (
+                    await session.execute(
+                        select(Service)
+                        .options(selectinload(Service.category_rel))
+                        .where(Service.id == service_id)
+                    )
+                ).scalar_one_or_none()
+            if svc is None:
+                return
+            await asyncio.to_thread(update_service_row, svc)
+        except Exception:
+            logger.exception("Failed to update approved service in Sheets")
+
+    asyncio.create_task(_run())
 
 
 class IsAdmin(BaseFilter):
@@ -120,6 +156,97 @@ async def _panel_stats() -> tuple[int, list[tuple[str, int]]]:
             )
         ).all()
     return total, [(status, int(cnt)) for status, cnt in stats_rows]
+
+
+async def _service_stats_page(
+    page: int,
+) -> tuple[list[AdminServiceStatsItem], int, int, int]:
+    async with async_session() as session:
+        services = (
+            (
+                await session.execute(
+                    select(Service)
+                    .where(Service.registration_complete.is_(True))
+                    .order_by(Service.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        total_services = len(services)
+        if total_services == 0:
+            return [], 0, 1, 0
+
+        total_pages = max(1, math.ceil(total_services / SERVICE_PAGE_SIZE))
+        safe_page = max(0, min(page, total_pages - 1))
+        page_services = services[
+            safe_page * SERVICE_PAGE_SIZE : (safe_page + 1) * SERVICE_PAGE_SIZE
+        ]
+
+        service_ids = [svc.id for svc in page_services]
+        stats_rows = (
+            await session.execute(
+                select(Order.service_id, func.count(Order.id))
+                .where(Order.service_id.in_(service_ids))
+                .group_by(Order.service_id)
+            )
+        ).all()
+        totals_by_service = {int(sid): int(cnt) for sid, cnt in stats_rows if sid}
+
+    items = [
+        AdminServiceStatsItem(
+            id=svc.id,
+            name=svc.name or "Без названия",
+            orders_total=totals_by_service.get(svc.id, 0),
+        )
+        for svc in page_services
+    ]
+    return items, safe_page, total_pages, total_services
+
+
+async def _service_status_breakdown(service_id: int) -> dict[str, int]:
+    async with async_session() as session:
+        rows = (
+            await session.execute(
+                select(Order.status, func.count(Order.id))
+                .where(Order.service_id == service_id)
+                .group_by(Order.status)
+            )
+        ).all()
+    return {status: int(cnt) for status, cnt in rows}
+
+
+def _format_service_stats_text(service: Service, by_status: dict[str, int]) -> str:
+    total_orders = sum(by_status.values())
+    completed = by_status.get("completed", 0)
+    conversion = (completed / total_orders * 100) if total_orders else 0.0
+
+    lines = [
+        f"<b>Сервис #{service.id}</b>",
+        f"<b>Название:</b> {e(service.name or '—')}",
+        f"<b>Тип:</b> {TYPE_RU.get(service.service_type or '', service.service_type or '—')}",
+        f"<b>Доступность:</b> {'Да' if service.is_available else 'Нет'}",
+        f"<b>Адрес:</b> {e(service.address or '—')}",
+        f"<b>Метро:</b> {e(service.nearest_metro or '—')}",
+        f"<b>Телефон:</b> {e(service.phone or '—')}",
+        "",
+        f"<b>Всего заявок:</b> {total_orders}",
+        f"<b>Завершено:</b> {completed}",
+        f"<b>Конверсия в завершение:</b> {conversion:.1f}%",
+        "",
+        "<b>Статусы:</b>",
+    ]
+
+    for status_key, status_label in ORDER_STATUS_RU.items():
+        cnt = by_status.get(status_key)
+        if cnt:
+            lines.append(f"• {status_label}: {cnt}")
+
+    if all(not by_status.get(k) for k in ORDER_STATUS_RU):
+        lines.append("• Пока нет заявок")
+
+    return "\n".join(lines)
 
 
 @router.message(F.text == Btn.ADMIN_PANEL)
@@ -218,6 +345,56 @@ async def padm_filter(cb: types.CallbackQuery) -> None:
     await cb.message.edit_text(
         "Фильтр по статусу:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("padm:services:"))
+async def padm_services_list(cb: types.CallbackQuery) -> None:
+    parts = cb.data.split(":")
+    page = int(parts[2]) if len(parts) >= 3 else 0
+
+    items, safe_page, total_pages, total_services = await _service_stats_page(page)
+    if not items:
+        await cb.message.edit_text(
+            "Сервисы не найдены.",
+            reply_markup=padm_main_kb(),
+        )
+        await cb.answer()
+        return
+
+    await cb.message.edit_text(
+        f"<b>Сервисов:</b> {total_services} (стр. {safe_page + 1}/{total_pages})\n"
+        "Выберите сервис, чтобы посмотреть подробную статистику.",
+        reply_markup=padm_services_kb(items, safe_page, total_pages),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("padm:service:"))
+async def padm_service_detail(cb: types.CallbackQuery) -> None:
+    parts = cb.data.split(":")
+    if len(parts) < 3:
+        await cb.answer("Некорректный запрос.", show_alert=True)
+        return
+
+    service_id = int(parts[2])
+    from_page = 0
+    if len(parts) >= 5 and parts[3] == "from":
+        from_page = int(parts[4])
+
+    async with async_session() as session:
+        service = (
+            await session.execute(select(Service).where(Service.id == service_id))
+        ).scalar_one_or_none()
+    if not service:
+        await cb.answer("Сервис не найден.", show_alert=True)
+        return
+
+    breakdown = await _service_status_breakdown(service_id)
+    await cb.message.edit_text(
+        _format_service_stats_text(service, breakdown),
+        reply_markup=padm_service_detail_kb(from_page),
     )
     await cb.answer()
 
@@ -358,15 +535,7 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
         partner_tg_id = owner.owner_user_id
 
     if svc_id is not None:
-        async with async_session() as session:
-            svc = (
-                await session.execute(select(Service).where(Service.id == svc_id))
-            ).scalar_one_or_none()
-        if svc:
-            try:
-                update_service_row(svc)
-            except Exception:
-                logger.exception("Failed to update approved service in Sheets")
+        _schedule_service_sheet_sync(svc_id)
 
     await cb.answer("Партнёр одобрен!", show_alert=True)
 

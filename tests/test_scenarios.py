@@ -1011,6 +1011,7 @@ class TestPartnerOrderFSM:
         from client_bot.domain.states import PartnerOrderFSM
 
         expected = [
+            "set_total_cost_items",
             "set_total_cost",
             "reject_reason",
             "client_refused_reason",
@@ -1029,6 +1030,7 @@ class TestClientOrderFSM:
         from client_bot.domain.states import ClientOrderFSM
 
         assert hasattr(ClientOrderFSM, "dispute_reason")
+        assert hasattr(ClientOrderFSM, "order_comment")
 
 
 class TestPartnerProfileFSM:
