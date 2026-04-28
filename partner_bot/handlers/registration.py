@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
@@ -36,7 +38,7 @@ from client_bot.domain.schemas import (
     WorkHoursInput,
 )
 from client_bot.domain.states import RegistrationFSM
-from client_bot.services.metro_search import best_metro_match, top_metro_matches
+from client_bot.services.metro_search import top_metro_matches
 from client_bot.services.sheets_writer import add_service_row, update_service_row
 from client_bot.texts import TYPE_RU, Btn, PARTNER_MENU_TEXTS, Partner
 from partner_bot.handlers.common import _draft_complete, _format_draft, _get_owner
@@ -152,6 +154,163 @@ async def _update_draft(tg_id: int, **kwargs) -> None:
             await session.commit()
 
 
+_EDIT_FIELD_LABELS = {
+    "name": "Название",
+    "service_type": "Тип услуг",
+    "category": "Категория ремонта",
+    "upgrade_cats": "Категории апгрейда",
+    "hydro": "Гидроизоляция",
+    "hydro_price": "Цена гидроизоляции",
+    "address": "Адрес",
+    "metro": "Метро",
+    "phone": "Телефон",
+    "working_days": "Рабочие дни",
+    "hours": "Время работы",
+    "diagnostics": "Диагностика",
+    "diag_included": "Входит в стоимость",
+}
+
+
+def _schedule_service_sheet_sync(svc: Service) -> None:
+    async def _run() -> None:
+        try:
+            await asyncio.to_thread(update_service_row, svc)
+        except Exception:
+            logger.exception("Sheets write-back failed after active profile edit")
+
+    asyncio.create_task(_run())
+
+
+async def _sync_active_service_from_draft(owner_user_id: int) -> Service | None:
+    async with async_session() as session:
+        draft = (
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.owner_user_id == owner_user_id)
+            )
+        ).scalar_one_or_none()
+        if draft is None or draft.service_id is None:
+            return None
+
+        svc = (
+            await session.execute(select(Service).where(Service.id == draft.service_id))
+        ).scalar_one_or_none()
+        if svc is None:
+            return None
+
+        category_id: int | None = None
+        if draft.draft_service_type in ("repair", "complex") and draft.draft_category:
+            cat = (
+                await session.execute(
+                    select(ServiceCategory).where(
+                        ServiceCategory.name == draft.draft_category
+                    )
+                )
+            ).scalar_one_or_none()
+            if cat is None:
+                cat = ServiceCategory(name=draft.draft_category)
+                session.add(cat)
+                await session.flush()
+            category_id = cat.id
+
+        svc.name = draft.draft_name or svc.name
+        svc.service_type = draft.draft_service_type or svc.service_type
+        svc.category_id = category_id
+        svc.address = draft.draft_address
+        svc.nearest_metro = draft.draft_metro
+        svc.phone = draft.draft_phone
+        svc.telegram_handle = draft.draft_telegram
+        svc.open_time = draft.draft_open_time
+        svc.close_time = draft.draft_close_time
+        svc.has_hydroisolation = bool(draft.draft_hydroisolation)
+        svc.hydroisolation_price = (
+            draft.draft_hydro_price if draft.draft_hydroisolation else None
+        )
+        svc.diagnostics_price = draft.draft_diagnostics_price
+        svc.diagnostics_included = bool(draft.draft_diag_included)
+        svc.upgrade_categories = (
+            draft.draft_upgrade_categories
+            if svc.service_type in ("upgrade", "complex")
+            else None
+        )
+        svc.working_days = draft.draft_working_days
+        svc.partnership_status = "активный"
+        svc.registration_complete = True
+
+        draft.status = "активный"
+        draft.registration_complete = True
+
+        settings = (
+            await session.execute(
+                select(ServiceOwnerSettings).where(
+                    ServiceOwnerSettings.service_id == svc.id
+                )
+            )
+        ).scalar_one_or_none()
+        if settings is None:
+            session.add(
+                ServiceOwnerSettings(
+                    service_id=svc.id,
+                    owner_user_id=owner_user_id,
+                )
+            )
+        else:
+            settings.owner_user_id = owner_user_id
+
+        await session.commit()
+
+        return (
+            await session.execute(
+                select(Service)
+                .options(selectinload(Service.category_rel))
+                .where(Service.id == svc.id)
+            )
+        ).scalar_one_or_none()
+
+
+async def _notify_admins_about_active_profile_edit(
+    event: types.Message | types.CallbackQuery,
+    *,
+    service_id: int,
+    field_key: str | None,
+) -> None:
+    admin_list = [u.strip().lower() for u in ADMIN_USERNAMES if u.strip()]
+    if not admin_list:
+        return
+
+    field_label = _EDIT_FIELD_LABELS.get(field_key or "", field_key or "Профиль")
+    actor = event.from_user
+    actor_username = actor.username or ""
+    actor_name = actor.full_name or ""
+
+    async with async_session() as session:
+        admins = (
+            (
+                await session.execute(
+                    select(User).where(func.lower(User.username).in_(admin_list))
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    for admin_user in admins:
+        try:
+            await event.bot.send_message(
+                admin_user.id,
+                "Партнер обновил профиль\n"
+                f"Поле: {field_label}\n"
+                f"Service ID: {service_id}\n"
+                f"Partner TG ID: {actor.id}\n"
+                f"Username: @{actor_username if actor_username else '—'}\n"
+                f"Имя: {actor_name or '—'}",
+            )
+        except Exception:
+            logger.warning(
+                "Failed to notify admin %s about active profile edit",
+                admin_user.id,
+            )
+
+
 def _next_empty_state(owner: ServiceDraft) -> str | None:
     """Find next state that needs filling."""
     if not owner.draft_name:
@@ -265,7 +424,7 @@ async def edit_draft(message: types.Message, state: FSMContext) -> None:
         await message.answer("Анкета не найдена.", reply_markup=reg_start_kb())
         return
     if owner.status == "активный":
-        await message.answer("Используйте 'Редактировать профиль'.")
+        await message.answer("Используйте Редактировать профиль.")
         return
     await message.answer(
         _format_draft(owner) + "\n\nВыберите поле для изменения:",
@@ -306,7 +465,8 @@ async def edit_draft_field(callback: types.CallbackQuery, state: FSMContext) -> 
         await callback.answer("Неизвестное поле")
         return
     fsm_state, prompt = entry
-    await state.update_data(editing_draft=True)
+    field_key = callback.data.split(":", 1)[1]
+    await state.update_data(editing_draft=True, editing_draft_field=field_key)
     await state.set_state(fsm_state)
     if callback.data == "edit_draft:service_type":
         await _safe_edit_or_answer(callback, _STYPE_TEXT, reg_service_type_kb())
@@ -345,9 +505,23 @@ async def _after_edit(event, state: FSMContext) -> bool:
     data = await state.get_data()
     if not data.get("editing_draft"):
         return False
+    edited_field = data.get("editing_draft_field")
     await state.clear()
     tg_id = event.from_user.id
     owner = await _get_owner(tg_id)
+    if owner and owner.status == "активный":
+        updated_svc = await _sync_active_service_from_draft(owner.owner_user_id)
+        if updated_svc is not None:
+            _schedule_service_sheet_sync(updated_svc)
+            await _notify_admins_about_active_profile_edit(
+                event,
+                service_id=updated_svc.id,
+                field_key=str(edited_field) if edited_field is not None else None,
+            )
+            refreshed_owner = await _get_owner(tg_id)
+            if refreshed_owner is not None:
+                owner = refreshed_owner
+
     if owner:
         await _safe_edit_or_answer(
             event,
@@ -508,23 +682,24 @@ async def reg_hydro(callback: types.CallbackQuery, state: FSMContext) -> None:
     await _update_draft(callback.from_user.id, draft_hydroisolation=val)
     if not val:
         await _update_draft(callback.from_user.id, draft_hydro_price=None)
-    if await _after_edit(callback, state):
-        return
-    if val:
-        await state.set_state(RegistrationFSM.reg_hydro_price)
-        await _safe_edit_or_answer(
-            callback,
-            "💧 Укажите стоимость гидроизоляции.\n\n"
-            "Введите фиксированную цену или диапазон:\n"
-            "• Фиксированная: <code>1000</code>\n"
-            "• Диапазон: <code>1000-2000</code>",
-            reg_back_kb(),
-        )
-    else:
+    if not val:
+        if await _after_edit(callback, state):
+            return
         await state.set_state(RegistrationFSM.reg_address)
         await _safe_edit_or_answer(
             callback, "Введите адрес сервисного центра:", reg_back_kb()
         )
+        return
+
+    await state.set_state(RegistrationFSM.reg_hydro_price)
+    await _safe_edit_or_answer(
+        callback,
+        "💧 Укажите стоимость гидроизоляции.\n\n"
+        "Введите фиксированную цену или диапазон:\n"
+        "• Фиксированная: <code>1000</code>\n"
+        "• Диапазон: <code>1000-2000</code>",
+        reg_back_kb(),
+    )
 
 
 @router.message(RegistrationFSM.reg_hydro_price, F.text)
@@ -546,7 +721,11 @@ async def reg_hydro_price(message: types.Message, state: FSMContext) -> None:
         return
 
     normalized = f"{low:.0f}" if low == high else f"{low:.0f}-{high:.0f}"
-    await _update_draft(message.from_user.id, draft_hydro_price=normalized)
+    await _update_draft(
+        message.from_user.id,
+        draft_hydro_price=normalized,
+        draft_hydroisolation=True,
+    )
     if await _after_edit(message, state):
         return
     await state.set_state(RegistrationFSM.reg_address)
@@ -771,8 +950,6 @@ async def reg_diagnostics(message: types.Message, state: FSMContext) -> None:
         return
     price = int(v.text)
     await _update_draft(message.from_user.id, draft_diagnostics_price=float(price))
-    if await _after_edit(message, state):
-        return
     await state.set_state(RegistrationFSM.reg_diag_included)
     await message.answer(
         "🔧 <b>Диагностика входит в стоимость ремонта?</b>\n\n"

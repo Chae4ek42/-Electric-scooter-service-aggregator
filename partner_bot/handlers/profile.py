@@ -10,12 +10,20 @@ import zoneinfo
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
+from sqlalchemy import func
 from sqlalchemy import select
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
-from client_bot.domain.models import Service, ServiceBankDetails, ServiceDraft
+from client_bot.domain.models import (
+    MetroStation,
+    Service,
+    ServiceBankDetails,
+    ServiceCategory,
+    ServiceDraft,
+    User,
+)
 from client_bot.domain.order_rules import parse_hydro_price_range
 from client_bot.domain.schemas import (
     AddressInput,
@@ -25,25 +33,26 @@ from client_bot.domain.schemas import (
     CorrAccountInput,
     DiagnosticsPriceInput,
     InnInput,
+    MetroTextInput,
     OrgNameInput,
     PhoneInput,
     ServiceNameInput,
-    TelegramHandleInput,
     WorkHoursInput,
 )
 from client_bot.domain.states import PartnerProfileFSM
+from client_bot.services.metro_search import best_metro_match
 from client_bot.services.sheets_writer import (
     set_service_available,
     update_service_bank_row,
     update_service_row,
 )
 from client_bot.texts import Btn, Partner, PARTNER_MENU_TEXTS
-from partner_bot.handlers.common import _TYPE_RU, _get_owner, _sort_days
+from partner_bot.handlers.common import _TYPE_RU, _format_draft, _get_owner, _sort_days
 from partner_bot.ui.keyboards import (
     bank_edit_fields_kb,
+    draft_edit_kb,
     hydro_toggle_kb,
     partner_main_menu_kb,
-    partner_pending_menu_kb,
     profile_edit_fields_kb,
     quick_status_kb,
 )
@@ -55,7 +64,6 @@ _FIELD_LABELS = {
     "name": "Название",
     "address": "Адрес",
     "phone": "Телефон",
-    "telegram": "Telegram",
     "hours": "Время работы (ЧЧ:ММ-ЧЧ:ММ)",
     "diagnostics": "Стоимость диагностики (руб.)",
     "metro": "Ближайшее метро",
@@ -66,20 +74,6 @@ _FIELD_LABELS = {
     "corr_account": "Корр. счёт (20 цифр)",
     "org_name": "Название организации",
     "inn": "ИНН (10 или 12 цифр)",
-}
-
-# Fields that do not require re-moderation.
-_NO_REMOD_FIELDS = {
-    "diagnostics",
-    "hydro_price",
-    "legal_form",
-    "tax_system",
-    "bank_account",
-    "bank_name",
-    "bik",
-    "corr_account",
-    "org_name",
-    "inn",
 }
 
 _PARTNER_MENU_TEXTS = PARTNER_MENU_TEXTS
@@ -101,6 +95,93 @@ async def _get_owner_and_service(
             await session.execute(select(Service).where(Service.id == owner.service_id))
         ).scalar_one_or_none()
     return owner, svc
+
+
+async def _sync_owner_draft_from_service(owner_user_id: int, service_id: int) -> None:
+    """Keep editable draft snapshot aligned with active service profile."""
+    async with async_session() as session:
+        owner = (
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.owner_user_id == owner_user_id)
+            )
+        ).scalar_one_or_none()
+        svc = (
+            await session.execute(select(Service).where(Service.id == service_id))
+        ).scalar_one_or_none()
+        if owner is None or svc is None:
+            return
+
+        category_name: str | None = None
+        if svc.category_id is not None:
+            category_name = (
+                await session.execute(
+                    select(ServiceCategory.name).where(
+                        ServiceCategory.id == svc.category_id
+                    )
+                )
+            ).scalar_one_or_none()
+
+        owner.service_id = svc.id
+        owner.status = "активный"
+        owner.registration_complete = True
+        owner.draft_name = svc.name
+        owner.draft_service_type = svc.service_type
+        owner.draft_category = category_name
+        owner.draft_address = svc.address
+        owner.draft_metro = svc.nearest_metro
+        owner.draft_phone = svc.phone
+        owner.draft_telegram = svc.telegram_handle
+        owner.draft_open_time = svc.open_time
+        owner.draft_close_time = svc.close_time
+        owner.draft_hydroisolation = bool(svc.has_hydroisolation)
+        owner.draft_hydro_price = svc.hydroisolation_price
+        owner.draft_diagnostics_price = svc.diagnostics_price
+        owner.draft_diag_included = bool(svc.diagnostics_included)
+        owner.draft_upgrade_categories = svc.upgrade_categories
+        owner.draft_working_days = svc.working_days
+        await session.commit()
+
+
+async def _notify_admins_about_profile_update(
+    event: types.Message | types.CallbackQuery,
+    *,
+    service_id: int,
+    field_label: str,
+) -> None:
+    admin_list = [u.strip().lower() for u in ADMIN_USERNAMES if u.strip()]
+    if not admin_list:
+        return
+
+    actor = event.from_user
+    actor_username = actor.username or ""
+    actor_name = actor.full_name or ""
+
+    async with async_session() as session:
+        admins = (
+            (
+                await session.execute(
+                    select(User).where(func.lower(User.username).in_(admin_list))
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    for admin_user in admins:
+        try:
+            await event.bot.send_message(
+                admin_user.id,
+                "Партнер обновил профиль\n"
+                f"Поле: {field_label}\n"
+                f"Service ID: {service_id}\n"
+                f"Partner TG ID: {actor.id}\n"
+                f"Username: @{actor_username if actor_username else '—'}\n"
+                f"Имя: {actor_name or '—'}",
+            )
+        except Exception:
+            logger.warning(
+                "Failed to notify admin %s about profile update", admin_user.id
+            )
 
 
 async def _require_active(event) -> tuple[ServiceDraft | None, Service | None]:
@@ -134,13 +215,18 @@ def _format_profile(svc: Service) -> str:
         "",
         f"Название: {e(svc.name)}",
         f"Тип: {_TYPE_RU.get(svc.service_type, svc.service_type)}",
+        f"Категория ремонта: {e(svc.category_rel.name if svc.category_rel else '-')}",
+        f"Категории апгрейда: {e((svc.upgrade_categories or '-').replace(',', ', '))}",
         f"Адрес: {e(svc.address or '-')}",
         f"Метро: {e(svc.nearest_metro or '-')}",
         f"Телефон: {e(svc.phone or '-')}",
         f"Telegram: {e(svc.telegram_handle or '-')}",
         f"Рабочие дни: {e(wd or '-')}",
         f"Время: {svc.open_time or '?'}-{svc.close_time or '?'}",
+        f"Гидроизоляция: {'Да' if svc.has_hydroisolation else 'Нет'}",
+        f"Цена гидроизоляции: {e(svc.hydroisolation_price or '-')}",
         f"Диагностика: {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
+        f"Входит в стоимость: {'Да' if svc.diagnostics_included else 'Нет'}",
         f"Доступен: {'Да' if svc.is_available else 'Нет'}",
     ]
     return "\n".join(lines)
@@ -262,8 +348,16 @@ async def edit_profile(message: types.Message, state: FSMContext) -> None:
     owner, svc = await _require_active(message)
     if not owner or not svc:
         return
+    await _sync_owner_draft_from_service(owner.owner_user_id, svc.id)
+    owner = await _get_owner(message.from_user.id)
+    if not owner:
+        await message.answer("Анкета не найдена.")
+        return
     await state.clear()
-    await message.answer(_format_profile(svc), reply_markup=profile_edit_fields_kb())
+    await message.answer(
+        _format_draft(owner) + "\n\nВыберите поле для изменения:",
+        reply_markup=draft_edit_kb(owner.draft_service_type),
+    )
 
 
 @router.message(F.text == Btn.BANK_DETAILS)
@@ -305,10 +399,12 @@ async def bedit_save_legal_form(callback: types.CallbackQuery) -> None:
     value = callback.data.split(":", 1)[1]
     await _upsert_bank_field(owner.owner_user_id, svc.id, legal_form=value)
     bank = await _load_bank_details(svc.id)
-    try:
-        update_service_bank_row(svc.id)
-    except Exception:
-        logger.exception("Sheets write-back failed (bank legal form)")
+    _schedule_sheets_call("bank row (legal form)", update_service_bank_row, svc.id)
+    await _notify_admins_about_profile_update(
+        callback,
+        service_id=svc.id,
+        field_label="Форма",
+    )
     await callback.message.answer(
         _format_bank_details(bank),
         reply_markup=bank_edit_fields_kb(),
@@ -348,10 +444,12 @@ async def bedit_save_tax_system(callback: types.CallbackQuery) -> None:
     value = callback.data.split(":", 1)[1]
     await _upsert_bank_field(owner.owner_user_id, svc.id, tax_system=value)
     bank = await _load_bank_details(svc.id)
-    try:
-        update_service_bank_row(svc.id)
-    except Exception:
-        logger.exception("Sheets write-back failed (bank tax)")
+    _schedule_sheets_call("bank row (tax system)", update_service_bank_row, svc.id)
+    await _notify_admins_about_profile_update(
+        callback,
+        service_id=svc.id,
+        field_label="Налогообложение",
+    )
     await callback.message.answer(
         _format_bank_details(bank),
         reply_markup=bank_edit_fields_kb(),
@@ -370,16 +468,19 @@ async def bedit_select_field(callback: types.CallbackQuery, state: FSMContext) -
     await state.update_data(
         edit_field=field, edit_service_id=svc.id, edit_section="bank"
     )
-    await callback.message.answer(f"Введите новое значение для поля '{label}':")
+    await callback.message.answer(f"Введите новое значение для поля {label}:")
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("pedit:hydro:"))
-async def profile_toggle_hydro(callback: types.CallbackQuery) -> None:
+async def profile_toggle_hydro(
+    callback: types.CallbackQuery, state: FSMContext
+) -> None:
     owner, svc = await _require_active(callback)
     if not owner or not svc:
         return
     val = callback.data.split(":")[2] == "yes"
+    need_hydro_price = False
     async with async_session() as session:
         db_svc = (
             await session.execute(select(Service).where(Service.id == svc.id))
@@ -393,20 +494,36 @@ async def profile_toggle_hydro(callback: types.CallbackQuery) -> None:
         ).scalar_one_or_none()
         if db_svc:
             db_svc.has_hydroisolation = val
+            if val and not (db_svc.hydroisolation_price or "").strip():
+                need_hydro_price = True
             if not val:
                 db_svc.hydroisolation_price = None
         if db_owner:
             db_owner.draft_hydroisolation = val
+            if val and not (db_owner.draft_hydro_price or "").strip():
+                need_hydro_price = True
             if not val:
                 db_owner.draft_hydro_price = None
         await session.commit()
 
+    await _notify_admins_about_profile_update(
+        callback,
+        service_id=svc.id,
+        field_label="Гидроизоляция",
+    )
+
+    if need_hydro_price:
+        await state.set_state(PartnerProfileFSM.edit_field_value)
+        await state.update_data(edit_field="hydro_price", edit_service_id=svc.id)
+        await callback.message.answer(
+            "Гидроизоляция включена. Укажите стоимость (число или диапазон, напр. 1000 или 1000-2000):"
+        )
+        await callback.answer()
+        return
+
     _, updated = await _get_owner_and_service(callback.from_user.id)
     if updated:
-        try:
-            update_service_row(updated)
-        except Exception:
-            logger.exception("Sheets write-back failed (hydro toggle)")
+        _schedule_sheets_call("service row (hydro toggle)", update_service_row, updated)
 
     await callback.message.answer(
         _format_profile(updated) if updated else "Профиль обновлён.",
@@ -423,6 +540,11 @@ async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None
     field = callback.data.split(":")[1]
     if field in ("status", "back"):
         return
+    if field == "telegram":
+        await callback.answer(
+            "Поле Telegram недоступно для редактирования.", show_alert=True
+        )
+        return
     if field == "hydro":
         await callback.message.answer(
             f"Гидроизоляция сейчас: {'Да' if svc.has_hydroisolation else 'Нет'}. Изменить?",
@@ -435,14 +557,7 @@ async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None
     await state.set_state(PartnerProfileFSM.edit_field_value)
     await state.update_data(edit_field=field, edit_service_id=svc.id)
 
-    if field in _NO_REMOD_FIELDS:
-        prompt = f"Введите новое значение для поля '{label}':"
-    else:
-        prompt = (
-            "⚠️ При изменении этого поля сервис будет деактивирован "
-            "до повторной модерации.\n\n"
-            f"Введите новое значение для поля '{label}':"
-        )
+    prompt = f"Введите новое значение для поля {label}:"
     await callback.message.answer(prompt)
     await callback.answer()
 
@@ -471,14 +586,19 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         elif field == "phone":
             PhoneInput(text=text)
         elif field == "telegram":
-            TelegramHandleInput(text=text)
+            raise ValueError("Поле Telegram недоступно для редактирования")
         elif field == "hours":
             WorkHoursInput(text=text)
         elif field == "diagnostics":
             DiagnosticsPriceInput(text=text)
         elif field == "metro":
-            if len(text) < 2:
-                raise ValueError("Минимум 2 символа")
+            MetroTextInput(text=text)
+            async with async_session() as session:
+                stations = (await session.execute(select(MetroStation))).scalars().all()
+            match = best_metro_match(text, stations)
+            if match is None:
+                raise ValueError("Станция не найдена. Укажите название точнее")
+            text = match.name
         elif field == "hydro_price":
             if not re.match(r"^\d+(-\d+)?$", text):
                 raise ValueError(
@@ -502,8 +622,6 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         await message.answer(f"Ошибка: {exc}\nПопробуйте ещё раз:")
         return
 
-    needs_remod = field not in _NO_REMOD_FIELDS
-
     owner, svc = await _require_active(message)
     if not owner or not svc:
         await state.clear()
@@ -521,10 +639,14 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         kwargs = {bank_updates[field]: text}
         await _upsert_bank_field(owner.owner_user_id, service_id, **kwargs)
         await state.clear()
-        try:
-            update_service_bank_row(service_id)
-        except Exception:
-            logger.exception("Sheets bank write-back failed")
+        _schedule_sheets_call(
+            "bank row (bank profile update)", update_service_bank_row, service_id
+        )
+        await _notify_admins_about_profile_update(
+            message,
+            service_id=service_id,
+            field_label=_FIELD_LABELS.get(field, str(field)),
+        )
         bank = await _load_bank_details(service_id)
         await message.answer(
             _format_bank_details(bank),
@@ -558,10 +680,6 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         elif field == "phone":
             db_svc.phone = text
             db_owner.draft_phone = text
-        elif field == "telegram":
-            clean = f"@{text.lstrip('@')}"
-            db_svc.telegram_handle = clean
-            db_owner.draft_telegram = clean
         elif field == "hours":
             hours = WorkHoursInput(text=text).text
             parts = re.split(r"\s*[-–]\s*", hours)
@@ -582,25 +700,27 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
             db_owner.draft_hydro_price = text
             db_owner.draft_hydroisolation = True
 
-        if needs_remod:
-            db_svc.is_available = False
-            db_svc.partnership_status = "ожидает"
-            db_owner.status = "ожидает"
+        db_svc.partnership_status = "активный"
+        db_owner.status = "активный"
 
         await session.commit()
 
     _, updated_svc = await _get_owner_and_service(message.from_user.id)
     if updated_svc:
-        try:
-            update_service_row(updated_svc)
-        except Exception:
-            logger.exception("Sheets write-back failed")
+        _schedule_sheets_call(
+            "service row (profile update)", update_service_row, updated_svc
+        )
 
     if data.get("edit_section") == "bank":
-        try:
-            update_service_bank_row(service_id)
-        except Exception:
-            logger.exception("Sheets bank write-back failed")
+        _schedule_sheets_call(
+            "bank row (profile update)", update_service_bank_row, service_id
+        )
+
+    await _notify_admins_about_profile_update(
+        message,
+        service_id=service_id,
+        field_label=_FIELD_LABELS.get(field, str(field)),
+    )
 
     await state.clear()
 
@@ -614,16 +734,10 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
 
     uname = message.from_user.username or ""
     is_admin = uname.lower() in ADMIN_USERNAMES
-    if needs_remod:
-        await message.answer(
-            "Поле обновлено. Ваш сервис деактивирован и отправлен на повторную модерацию.",
-            reply_markup=partner_pending_menu_kb(has_draft=False, is_admin=is_admin),
-        )
-    else:
-        await message.answer(
-            "Поле обновлено.",
-            reply_markup=partner_main_menu_kb(is_admin=is_admin),
-        )
+    await message.answer(
+        "Поле обновлено.",
+        reply_markup=partner_main_menu_kb(is_admin=is_admin),
+    )
 
 
 @router.message(F.text == Btn.SERVICE_STATUS)

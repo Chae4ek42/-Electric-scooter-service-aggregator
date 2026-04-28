@@ -8,7 +8,12 @@ from typing import Any
 from sqlalchemy import select
 
 from client_bot.core.database import async_session
-from client_bot.domain.models import Service, ServiceBankDetails, ServiceCategory
+from client_bot.domain.models import (
+    Service,
+    ServiceBankDetails,
+    ServiceCategory,
+    ServiceDraft,
+)
 
 logger = logging.getLogger(__name__)
 business_logger = logging.getLogger("esas.business.sheets_sync")
@@ -246,35 +251,164 @@ async def sync_services_from_sheet(
                 skipped += 1
                 continue
 
-            service_id = _parse_int(row, "ID", index, required=True)
+            try:
+                service_id = _parse_int(row, "ID", index, required=True)
+            except SheetValidationError as exc:
+                logger.warning("SYNC_ROW_SKIP | row=%d | reason=%s", index, exc)
+                skipped += 1
+                continue
+
             if service_id in seen_ids:
-                raise SheetValidationError(
-                    f"Строка {index}: дублирующийся ID '{service_id}'"
+                logger.warning(
+                    "SYNC_ROW_SKIP | row=%d | reason=duplicate_id | id=%s",
+                    index,
+                    service_id,
                 )
+                skipped += 1
+                continue
             seen_ids.add(service_id)
 
-            name = _required_str(row, "Название", index)
-            service_type = _parse_service_type(row, index)
-            is_available = _parse_bool(row, "Доступен", index, required=True)
+            existing = (
+                await session.execute(select(Service).where(Service.id == service_id))
+            ).scalar_one_or_none()
+
+            name = _col(row, "Название")
+            if not name:
+                if existing is not None:
+                    name = existing.name
+                    logger.warning(
+                        "SYNC_ROW_WARN | row=%d | field=Название | action=use_existing",
+                        index,
+                    )
+                else:
+                    logger.warning(
+                        "SYNC_ROW_SKIP | row=%d | reason=missing_name_for_new_service",
+                        index,
+                    )
+                    skipped += 1
+                    continue
+
+            try:
+                service_type = _parse_service_type(row, index)
+            except SheetValidationError as exc:
+                service_type = (
+                    existing.service_type if existing is not None else "repair"
+                )
+                logger.warning(
+                    "SYNC_ROW_WARN | row=%d | field=Специализация | reason=%s | action=use_fallback(%s)",
+                    index,
+                    exc,
+                    service_type,
+                )
+
+            try:
+                is_available = _parse_bool(row, "Доступен", index, required=True)
+            except SheetValidationError as exc:
+                is_available = existing.is_available if existing is not None else False
+                logger.warning(
+                    "SYNC_ROW_WARN | row=%d | field=Доступен | reason=%s | action=use_fallback(%s)",
+                    index,
+                    exc,
+                    is_available,
+                )
 
             category_name = _col(row, "Категория")
-            category_id = None
+            category_id = existing.category_id if existing is not None else None
             if category_name and category_name not in ("-", "—"):
                 category_id = cat_cache.get(category_name)
                 if category_id is None:
-                    raise SheetValidationError(
-                        f"Строка {index}: неизвестная категория '{category_name}'"
+                    new_cat = ServiceCategory(name=category_name)
+                    session.add(new_cat)
+                    await session.flush()
+                    category_id = new_cat.id
+                    cat_cache[category_name] = category_id
+                    logger.info(
+                        "SYNC_CATEGORY_CREATE | row=%d | name=%s | id=%s",
+                        index,
+                        category_name,
+                        category_id,
                     )
+            elif service_type == "upgrade":
+                category_id = None
 
-            yandex_rating = _parse_float(row, "Рейтинг Я.Карты", index)
+            def _safe_float(key: str, fallback: float | None) -> float | None:
+                try:
+                    return _parse_float(row, key, index)
+                except SheetValidationError as exc:
+                    logger.warning(
+                        "SYNC_ROW_WARN | row=%d | field=%s | reason=%s | action=use_existing",
+                        index,
+                        key,
+                        exc,
+                    )
+                    return fallback
+
+            def _safe_bool(
+                key: str,
+                fallback: bool | None,
+                *,
+                required: bool = False,
+            ) -> bool | None:
+                try:
+                    return _parse_bool(row, key, index, required=required)
+                except SheetValidationError as exc:
+                    logger.warning(
+                        "SYNC_ROW_WARN | row=%d | field=%s | reason=%s | action=use_existing",
+                        index,
+                        key,
+                        exc,
+                    )
+                    return fallback
+
+            def _safe_time(key: str, fallback: str | None) -> str | None:
+                try:
+                    return _parse_time(row, key, index)
+                except SheetValidationError as exc:
+                    logger.warning(
+                        "SYNC_ROW_WARN | row=%d | field=%s | reason=%s | action=use_existing",
+                        index,
+                        key,
+                        exc,
+                    )
+                    return fallback
+
+            yandex_rating = _safe_float(
+                "Рейтинг Я.Карты",
+                existing.yandex_rating if existing is not None else None,
+            )
             phone = _col(row, "Телефон")
             if phone and phone.startswith("#"):
                 phone = None
 
             partnership_status = _col(row, "Статус")
-            has_hydroisolation = _parse_bool(row, "Гидроизоляция", index)
-            diagnostics_included = _parse_bool(row, "Входит в стоимость", index)
-            registration_complete = _parse_bool(row, "Завершена", index)
+            if partnership_status is None and existing is not None:
+                partnership_status = existing.partnership_status
+
+            has_hydroisolation = _safe_bool(
+                "Гидроизоляция",
+                existing.has_hydroisolation if existing is not None else False,
+            )
+            diagnostics_included = _safe_bool(
+                "Входит в стоимость",
+                existing.diagnostics_included if existing is not None else False,
+            )
+            registration_complete = _safe_bool(
+                "Завершена",
+                existing.registration_complete if existing is not None else False,
+            )
+
+            open_time = _safe_time(
+                "Открытие",
+                existing.open_time if existing is not None else None,
+            )
+            close_time = _safe_time(
+                "Закрытие",
+                existing.close_time if existing is not None else None,
+            )
+            diagnostics_price = _safe_float(
+                "Диагностика",
+                existing.diagnostics_price if existing is not None else None,
+            )
 
             payload = {
                 "name": name,
@@ -288,10 +422,10 @@ async def sync_services_from_sheet(
                 "telegram_handle": _col(row, "Telegram"),
                 "partnership_status": partnership_status,
                 "main_brand_scooter": _col(row, "Основной бренд самокатов"),
-                "open_time": _parse_time(row, "Открытие", index),
-                "close_time": _parse_time(row, "Закрытие", index),
+                "open_time": open_time,
+                "close_time": close_time,
                 "hydroisolation_price": _col(row, "Цена гидроизоляции"),
-                "diagnostics_price": _parse_float(row, "Диагностика", index),
+                "diagnostics_price": diagnostics_price,
                 "upgrade_categories": _col(row, "Категории апгрейда"),
                 "working_days": _col(row, "Рабочие дни"),
             }
@@ -301,10 +435,6 @@ async def sync_services_from_sheet(
                 payload["diagnostics_included"] = diagnostics_included
             if registration_complete is not None:
                 payload["registration_complete"] = registration_complete
-
-            existing = (
-                await session.execute(select(Service).where(Service.id == service_id))
-            ).scalar_one_or_none()
 
             if existing:
                 changed = False
@@ -319,6 +449,55 @@ async def sync_services_from_sheet(
             else:
                 session.add(Service(id=service_id, **payload))
                 added += 1
+
+            draft_owner = (
+                await session.execute(
+                    select(ServiceDraft).where(ServiceDraft.service_id == service_id)
+                )
+            ).scalar_one_or_none()
+            if draft_owner is not None:
+                draft_owner.draft_name = payload.get("name")
+                draft_owner.draft_service_type = payload.get("service_type")
+                draft_owner.draft_category = (
+                    category_name
+                    if (category_id is not None and service_type != "upgrade")
+                    else None
+                )
+                draft_owner.draft_address = payload.get("address")
+                draft_owner.draft_metro = payload.get("nearest_metro")
+                draft_owner.draft_phone = payload.get("phone")
+                draft_owner.draft_telegram = payload.get("telegram_handle")
+                draft_owner.draft_open_time = payload.get("open_time")
+                draft_owner.draft_close_time = payload.get("close_time")
+                draft_owner.draft_hydroisolation = bool(
+                    payload.get(
+                        "has_hydroisolation",
+                        draft_owner.draft_hydroisolation,
+                    )
+                )
+                draft_owner.draft_hydro_price = (
+                    payload.get("hydroisolation_price")
+                    if draft_owner.draft_hydroisolation
+                    else None
+                )
+                draft_owner.draft_diagnostics_price = payload.get("diagnostics_price")
+                draft_owner.draft_diag_included = bool(
+                    payload.get(
+                        "diagnostics_included",
+                        draft_owner.draft_diag_included,
+                    )
+                )
+                draft_owner.draft_upgrade_categories = payload.get("upgrade_categories")
+                draft_owner.draft_working_days = payload.get("working_days")
+                if registration_complete is not None:
+                    draft_owner.registration_complete = registration_complete
+                if partnership_status in {
+                    "ожидает",
+                    "активный",
+                    "приостановлен",
+                    "отклонён",
+                }:
+                    draft_owner.status = partnership_status
 
         if dry_run:
             await session.rollback()
@@ -357,6 +536,7 @@ async def sync_bank_details_from_sheet(*, dry_run: bool = False) -> int:
     added = 0
     updated = 0
     unchanged = 0
+    skipped = 0
 
     seen_ids: set[int] = set()
 
@@ -365,11 +545,21 @@ async def sync_bank_details_from_sheet(*, dry_run: bool = False) -> int:
             if all((str(v).strip() == "" for v in row.values())):
                 continue
 
-            service_id = _parse_int(row, "ID", index, required=True)
+            try:
+                service_id = _parse_int(row, "ID", index, required=True)
+            except SheetValidationError as exc:
+                logger.warning("SYNC_BANK_ROW_SKIP | row=%d | reason=%s", index, exc)
+                skipped += 1
+                continue
+
             if service_id in seen_ids:
-                raise SheetValidationError(
-                    f"Строка {index} (реквизиты): дублирующийся ID '{service_id}'"
+                logger.warning(
+                    "SYNC_BANK_ROW_SKIP | row=%d | reason=duplicate_id | id=%s",
+                    index,
+                    service_id,
                 )
+                skipped += 1
+                continue
             seen_ids.add(service_id)
 
             service_exists = (
@@ -378,9 +568,13 @@ async def sync_bank_details_from_sheet(*, dry_run: bool = False) -> int:
                 )
             ).scalar_one_or_none()
             if service_exists is None:
-                raise SheetValidationError(
-                    f"Строка {index} (реквизиты): сервис с ID '{service_id}' не найден"
+                logger.warning(
+                    "SYNC_BANK_ROW_SKIP | row=%d | reason=service_not_found | id=%s",
+                    index,
+                    service_id,
                 )
+                skipped += 1
+                continue
 
             payload = {
                 "legal_form": _col(row, "Форма"),
@@ -402,19 +596,34 @@ async def sync_bank_details_from_sheet(*, dry_run: bool = False) -> int:
             ).scalar_one_or_none()
 
             if bank is None:
-                session.add(ServiceBankDetails(service_id=service_id, **payload))
+                bank = ServiceBankDetails(service_id=service_id, **payload)
+                session.add(bank)
                 added += 1
-                continue
-
-            changed = False
-            for attr, value in payload.items():
-                if getattr(bank, attr) != value:
-                    setattr(bank, attr, value)
-                    changed = True
-            if changed:
-                updated += 1
             else:
-                unchanged += 1
+                changed = False
+                for attr, value in payload.items():
+                    if getattr(bank, attr) != value:
+                        setattr(bank, attr, value)
+                        changed = True
+                if changed:
+                    updated += 1
+                else:
+                    unchanged += 1
+
+            draft_owner = (
+                await session.execute(
+                    select(ServiceDraft).where(ServiceDraft.service_id == service_id)
+                )
+            ).scalar_one_or_none()
+            if draft_owner is not None:
+                draft_owner.draft_legal_form = payload["legal_form"]
+                draft_owner.draft_tax_system = payload["tax_system"]
+                draft_owner.draft_bank_account = payload["bank_account"]
+                draft_owner.draft_bank_name = payload["bank_name"]
+                draft_owner.draft_bik = payload["bik"]
+                draft_owner.draft_corr_account = payload["corr_account"]
+                draft_owner.draft_org_name = payload["org_name"]
+                draft_owner.draft_inn = payload["inn"]
 
         if dry_run:
             await session.rollback()
@@ -422,10 +631,11 @@ async def sync_bank_details_from_sheet(*, dry_run: bool = False) -> int:
             await session.commit()
 
     logger.info(
-        "SYNC_RESULT | bank_added=%d | bank_updated=%d | bank_unchanged=%d",
+        "SYNC_RESULT | bank_added=%d | bank_updated=%d | bank_unchanged=%d | bank_skipped=%d",
         added,
         updated,
         unchanged,
+        skipped,
     )
     if dry_run:
         business_logger.info(

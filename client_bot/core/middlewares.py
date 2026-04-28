@@ -17,6 +17,7 @@ import redis.asyncio as aioredis
 
 from client_bot.core.config import REDIS_URL, THROTTLE_RATE
 from client_bot.core.database import async_session
+from client_bot.core.logging_setup import bind_update_log_context, reset_log_context
 from client_bot.domain.models import UserAction
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,33 @@ async def _get_redis() -> aioredis.Redis | None:
             logger.warning("Redis unavailable for throttling, using in-memory fallback")
             return None
     return _redis_pool
+
+
+class LogContextMiddleware(BaseMiddleware):
+    """Attach per-update context to every log record."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user_id: int | None = None
+        chat_id: int | None = None
+
+        if isinstance(event, Message):
+            user_id = event.from_user.id if event.from_user else None
+            chat_id = event.chat.id if event.chat else None
+        elif isinstance(event, CallbackQuery):
+            user_id = event.from_user.id if event.from_user else None
+            if event.message and event.message.chat:
+                chat_id = event.message.chat.id
+
+        token = bind_update_log_context(user_id=user_id, chat_id=chat_id)
+        try:
+            return await handler(event, data)
+        finally:
+            reset_log_context(token)
 
 
 class _ResponseCapture:

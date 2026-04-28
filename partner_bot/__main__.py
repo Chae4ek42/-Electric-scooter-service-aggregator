@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import zoneinfo
 
 from aiogram import Bot, Dispatcher
@@ -12,9 +11,11 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 from client_bot.core.config import PARTNER_BOT_TOKEN, REDIS_URL
+from client_bot.core.logging_setup import setup_logging
 from client_bot.core.middlewares import (
     ActionLoggerMiddleware,
     ErrorMiddleware,
+    LogContextMiddleware,
     ThrottlingMiddleware,
 )
 from client_bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
@@ -33,17 +34,6 @@ try:
     _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
 except Exception:
     _MSK = None
-
-
-def _setup_logging() -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        )
-    )
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
-    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
 
 async def _pause_reopen_loop() -> None:
@@ -128,7 +118,7 @@ async def _make_storage(logger):
 
 
 async def main() -> None:
-    _setup_logging()
+    setup_logging(service_name="partner-bot")
     logger = logging.getLogger(__name__)
 
     if not PARTNER_BOT_TOKEN:
@@ -147,6 +137,7 @@ async def main() -> None:
     dp = Dispatcher(storage=storage)
 
     for event_type in (dp.message, dp.callback_query):
+        event_type.middleware(LogContextMiddleware())
         event_type.middleware(ErrorMiddleware())
         event_type.middleware(ThrottlingMiddleware())
         event_type.middleware(ActionLoggerMiddleware())

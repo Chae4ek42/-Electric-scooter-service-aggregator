@@ -239,6 +239,7 @@ def reg_confirm_kb(has_bank: bool = False) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Заново", callback_data="reg:restart"),
             ],
             [InlineKeyboardButton(text=bank_label, callback_data="reg:fill_bank")],
+            [BACK_BTN],
         ]
     )
 
@@ -506,7 +507,6 @@ def profile_edit_fields_kb() -> InlineKeyboardMarkup:
         ("Адрес", "pedit:address"),
         ("Метро", "pedit:metro"),
         ("Телефон", "pedit:phone"),
-        ("Telegram", "pedit:telegram"),
         ("Время работы", "pedit:hours"),
         ("Диагностика", "pedit:diagnostics"),
         ("Гидроизоляция", "pedit:hydro"),

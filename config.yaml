@@ -17,7 +17,7 @@ google_sa_path: "service-account-key.json"
 
 # Google Sheets
 sheets:
-    sync_interval: 300 # секунды между синхронизациями
+    sync_interval: 20 # секунды между синхронизациями
     tab_services: "Сервисы"
     tab_orders: "Заявки"
     tab_clients: "Клиенты"

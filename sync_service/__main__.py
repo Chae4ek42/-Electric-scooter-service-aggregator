@@ -2,21 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 
 from client_bot.core.config import SHEETS_SYNC_INTERVAL
+from client_bot.core.logging_setup import setup_logging
 from client_bot.services.seed import init_db
 from client_bot.services.sheets_sync import run_full_sync
-
-
-def _setup_logging() -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        )
-    )
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
 async def _sync_loop(interval: int) -> None:
@@ -30,7 +20,7 @@ async def _sync_loop(interval: int) -> None:
 
 
 async def main() -> None:
-    _setup_logging()
+    setup_logging(service_name="sync-service")
     logger = logging.getLogger(__name__)
 
     logger.info("Initialising database …")

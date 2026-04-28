@@ -437,7 +437,7 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
             await cb.answer("Партнёр не найден.", show_alert=True)
             return
         if owner.status != "ожидает":
-            await cb.answer("Нельзя одобрить — статус не 'ожидает'.", show_alert=True)
+            await cb.answer("Нельзя одобрить — статус не ожидает.", show_alert=True)
             return
 
         cat_id = None

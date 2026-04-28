@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -16,25 +15,15 @@ from client_bot.core.config import CLIENT_BOT_TOKEN, REDIS_URL
 from client_bot.handlers.admin import router as admin_router
 from client_bot.handlers.common import router as common_router
 from client_bot.handlers.order import router as order_router
+from client_bot.core.logging_setup import setup_logging
 from client_bot.core.middlewares import (
     ActionLoggerMiddleware,
     ErrorMiddleware,
+    LogContextMiddleware,
     ThrottlingMiddleware,
 )
 from client_bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
 from client_bot.services.seed import init_db
-
-
-def _setup_logging() -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        )
-    )
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
-    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
-
 
 async def _payment_expire_loop() -> None:
     """Автоотмена заявок awaiting_payment старше 1 часа."""
@@ -77,7 +66,7 @@ async def _make_storage(logger):
 
 
 async def main() -> None:
-    _setup_logging()
+    setup_logging(service_name="client-bot")
     logger = logging.getLogger(__name__)
 
     logger.info("Initialising database …")
@@ -91,8 +80,9 @@ async def main() -> None:
     storage = await _make_storage(logger)
     dp = Dispatcher(storage=storage)
 
-    # Register middlewares  (outer → inner: Error → Throttle → Logger)
+    # Register middlewares (outer -> inner: context -> error -> throttle -> logger)
     for event_type in (dp.message, dp.callback_query):
+        event_type.middleware(LogContextMiddleware())
         event_type.middleware(ErrorMiddleware())
         event_type.middleware(ThrottlingMiddleware())
         event_type.middleware(ActionLoggerMiddleware())
