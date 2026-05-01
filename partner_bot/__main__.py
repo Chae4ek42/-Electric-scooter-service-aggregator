@@ -12,6 +12,11 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 from client_bot.core.config import PARTNER_BOT_TOKEN, REDIS_URL
 from client_bot.core.logging_setup import setup_logging
+from client_bot.core.resilience import (
+    create_guarded_task,
+    install_runtime_exception_handlers,
+    register_runtime_error,
+)
 from client_bot.core.middlewares import (
     ActionLoggerMiddleware,
     ErrorMiddleware,
@@ -27,7 +32,6 @@ from partner_bot.handlers.orders import router as orders_router
 from partner_bot.handlers.profile import router as profile_router
 from partner_bot.handlers.notifications import router as notif_router
 from partner_bot.handlers.admin import router as admin_router
-
 
 _PAUSE_REOPEN_POLL_SECONDS = 15
 try:
@@ -93,11 +97,20 @@ async def _pause_reopen_loop() -> None:
                     await session.commit()
 
             for service_id in reopened_ids:
-                asyncio.create_task(
-                    asyncio.to_thread(set_service_available, service_id, True)
+                create_guarded_task(
+                    asyncio.to_thread(set_service_available, service_id, True),
+                    logger=logger,
+                    task_name=f"pause_reopen_sheets:{service_id}",
+                    action_type="pause_reopen_sheet_error",
+                    payload=f"service_id={service_id}",
                 )
         except Exception as exc:
-            logger.error("Pause reopen loop error: %s", exc)
+            logger.exception("Pause reopen loop error")
+            await register_runtime_error(
+                action_type="pause_reopen_loop_error",
+                error=exc,
+                payload="partner-bot",
+            )
 
 
 async def _make_storage(logger):
@@ -120,6 +133,7 @@ async def _make_storage(logger):
 async def main() -> None:
     setup_logging(service_name="partner-bot")
     logger = logging.getLogger(__name__)
+    install_runtime_exception_handlers(service_name="partner-bot", logger=logger)
 
     if not PARTNER_BOT_TOKEN:
         logger.error("PARTNER_BOT_TOKEN not set")
@@ -158,6 +172,7 @@ async def main() -> None:
             BotCommand(command="start", description="Главное меню"),
             BotCommand(command="admin", description="Панель администратора"),
             BotCommand(command="client", description="Режим партнёра"),
+            BotCommand(command="health", description="Проверка инфраструктуры"),
         ]
     )
     try:

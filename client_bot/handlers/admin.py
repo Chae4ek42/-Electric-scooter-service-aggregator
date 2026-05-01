@@ -24,6 +24,7 @@ from client_bot.ui.keyboards import (
     admin_order_detail_kb,
     admin_orders_kb,
     admin_partner_detail_kb,
+    admin_service_detail_kb,
     main_menu_kb,
 )
 from client_bot.domain.models import (
@@ -125,6 +126,8 @@ def _fmt_order(order: Order) -> str:
         "",
         f"<b>Статус:</b> {_STATUS_RU.get(order.status, order.status)}",
     ]
+    if order.order_code:
+        lines.append(f"<b>Код заказа:</b> <code>{order.order_code}</code>")
     if order.upgrade_category:
         lines.append(f"<b>Категория апгрейда:</b> {e(order.upgrade_category)}")
     if order.diagnostics_price:
@@ -160,6 +163,46 @@ def _fmt_order(order: Order) -> str:
         lines.append(
             f"<b>Клиент был в сервисе:</b> {'Да' if order.client_visited else 'Нет'}"
         )
+    return "\n".join(lines)
+
+
+def _fmt_service(service: Service) -> str:
+    category = service.category_rel.name if service.category_rel else "—"
+    lines = [
+        f"<b>Сервис #</b><code>{service.id}</code>",
+        f"<b>Название:</b> {e(service.name or '—')}",
+        f"<b>Тип:</b> {TYPE_RU.get(service.service_type or '', service.service_type or '—')}",
+        f"<b>Категория:</b> {e(category)}",
+        f"<b>Статус партнёрства:</b> {e(service.partnership_status or '—')}",
+        f"<b>Доступен:</b> {'Да' if service.is_available else 'Нет'}",
+        "",
+        f"<b>Адрес:</b> {e(service.address or '—')}",
+        f"<b>Метро:</b> {e(service.nearest_metro or '—')}",
+        f"<b>Телефон:</b> {e(service.phone or '—')}",
+        f"<b>Telegram:</b> {e(service.telegram_handle or '—')}",
+    ]
+    if service.open_time or service.close_time:
+        lines.append(
+            f"<b>График:</b> {service.open_time or '?'}-{service.close_time or '?'}"
+        )
+    if service.working_days:
+        lines.append(
+            f"<b>Рабочие дни:</b> {e(service.working_days.replace(',', ', '))}"
+        )
+    if service.yandex_rating is not None:
+        lines.append(f"<b>Рейтинг Я.Карт:</b> {service.yandex_rating}")
+    if service.upgrade_categories:
+        lines.append(
+            f"<b>Категории апгрейда:</b> {e(service.upgrade_categories.replace(',', ', '))}"
+        )
+    if service.has_hydroisolation:
+        lines.append(
+            f"<b>Гидроизоляция:</b> Да ({e(service.hydroisolation_price or 'цена не указана')})"
+        )
+    else:
+        lines.append("<b>Гидроизоляция:</b> Нет")
+    if service.diagnostics_price is not None:
+        lines.append(f"<b>Диагностика:</b> {service.diagnostics_price:.0f} ₽")
     return "\n".join(lines)
 
 
@@ -368,7 +411,35 @@ async def adm_order_detail(cb: types.CallbackQuery, state: FSMContext) -> None:
     await state.update_data(detail_order_id=order_id)
     await state.set_state(AdminFSM.order_detail)
     await cb.message.edit_text(
-        _fmt_order(order), reply_markup=admin_order_detail_kb(order_id)
+        _fmt_order(order),
+        reply_markup=admin_order_detail_kb(order_id, order.service_id),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:service:"))
+async def adm_service_detail(cb: types.CallbackQuery) -> None:
+    parts = cb.data.split(":")
+    if len(parts) < 3:
+        await cb.answer("Сервис не найден.", show_alert=True)
+        return
+
+    service_id = int(parts[2])
+    order_id: int | None = None
+    if len(parts) >= 4 and parts[3].isdigit():
+        order_id = int(parts[3])
+
+    async with async_session() as session:
+        service = (
+            await session.execute(select(Service).where(Service.id == service_id))
+        ).scalar_one_or_none()
+    if not service:
+        await cb.answer("Сервис не найден.", show_alert=True)
+        return
+
+    await cb.message.edit_text(
+        _fmt_service(service),
+        reply_markup=admin_service_detail_kb(order_id),
     )
     await cb.answer()
 
@@ -409,7 +480,8 @@ async def adm_set_status(cb: types.CallbackQuery, state: FSMContext) -> None:
         show_alert=True,
     )
     await cb.message.edit_text(
-        _fmt_order(order), reply_markup=admin_order_detail_kb(order_id)
+        _fmt_order(order),
+        reply_markup=admin_order_detail_kb(order_id, order.service_id),
     )
 
 

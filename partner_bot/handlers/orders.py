@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
 from client_bot.domain.models import Order, ServiceDraft
+from client_bot.services.city_search import is_moscow_city
 from client_bot.services.notifications import send_by_token
 from client_bot.services.order_lifecycle import ACTOR_PARTNER, transition_order_status
 from client_bot.services.payment_policy import PaymentPolicy
@@ -92,7 +93,12 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
         f"Заявка #{order.id}",
         f"Устройство: {model_str}",
         f"Тип: {type_map.get(stype, stype) if stype else '—'}",
+        f"Город: {e(order.city or 'Москва')}",
     ]
+    if is_moscow_city(order.city):
+        lines.append(f"Метро: {e(order.metro_station or '—')}")
+    else:
+        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
     if order.upgrade_category:
         lines.append(f"Категория: {e(order.upgrade_category)}")
     if order.problem_description:

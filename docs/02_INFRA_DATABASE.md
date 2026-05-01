@@ -7,6 +7,7 @@
 - SQLite
 - Redis (FSM/throttling, с fallback)
 - gspread + Google Service Account
+- Ротационные файловые логи (`data/logs/*.app.log`, `data/logs/*.business.log`)
 
 ## Основные таблицы
 

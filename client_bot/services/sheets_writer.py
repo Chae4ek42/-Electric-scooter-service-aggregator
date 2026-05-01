@@ -12,6 +12,7 @@ from client_bot.core.config import (
     SHEETS_TAB_BANK_DETAILS,
     SHEETS_TAB_CLIENTS,
     SHEETS_TAB_ORDERS,
+    SHEETS_TAB_SERVICE_METRICS,
     SHEETS_TAB_SERVICES,
 )
 from client_bot.domain.models import Service
@@ -84,6 +85,23 @@ _CLIENT_HEADERS = [
     "Заявок",
     "Первый заказ",
     "Последний заказ",
+]
+
+_SERVICE_METRICS_HEADERS = [
+    "ID сервиса",
+    "Сервис",
+    "Тип",
+    "Всего заявок",
+    "Оплачено",
+    "Дошли до работы",
+    "Завершено",
+    "Негативные исходы",
+    "Конверсия в работу (%)",
+    "Конверсия в завершение (%)",
+    "Выручка completed (₽)",
+    "Средний чек completed (₽)",
+    "Медианный чек completed (₽)",
+    "Средний цикл completed (ч)",
 ]
 
 
@@ -438,4 +456,135 @@ def sync_all_clients_to_sheet() -> bool:
         return True
     except Exception:
         logger.exception("SHEETS_WRITE_ERR | op=sync_clients")
+        return False
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def sync_all_service_metrics_to_sheet() -> bool:
+    """Rewrite the service metrics worksheet with business KPIs per service."""
+    if not _is_enabled():
+        return False
+
+    try:
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import Session
+
+        from client_bot.core.database import sync_engine
+        from client_bot.domain.models import Order
+
+        gc = _get_client()
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        ws = _ensure_worksheet(
+            sh,
+            SHEETS_TAB_SERVICE_METRICS,
+            _SERVICE_METRICS_HEADERS,
+        )
+
+        with Session(sync_engine) as session:
+            services = (
+                session.execute(
+                    sa_select(Service)
+                    .where(Service.registration_complete.is_(True))
+                    .order_by(Service.id)
+                )
+                .scalars()
+                .all()
+            )
+
+            rows: list[list[str | int | float]] = []
+            for svc in services:
+                orders = (
+                    session.execute(sa_select(Order).where(Order.service_id == svc.id))
+                    .scalars()
+                    .all()
+                )
+
+                total = len(orders)
+                by_status: dict[str, int] = {}
+                for order in orders:
+                    by_status[order.status] = by_status.get(order.status, 0) + 1
+
+                paid = by_status.get("paid", 0)
+                accepted_flow = sum(
+                    by_status.get(key, 0)
+                    for key in (
+                        "accepted",
+                        "in_progress",
+                        "ready_for_pickup",
+                        "completed",
+                    )
+                )
+                completed = by_status.get("completed", 0)
+                failed = sum(
+                    by_status.get(key, 0)
+                    for key in (
+                        "cancelled",
+                        "rejected_by_partner",
+                        "client_refused",
+                        "interrupted",
+                        "disputed",
+                    )
+                )
+
+                completed_costs = [
+                    float(order.total_cost)
+                    for order in orders
+                    if order.status == "completed" and order.total_cost is not None
+                ]
+                revenue = sum(completed_costs)
+                avg_check = (revenue / len(completed_costs)) if completed_costs else 0.0
+                median_check = _median(completed_costs)
+
+                cycle_hours = [
+                    (order.completed_at - order.created_at).total_seconds() / 3600
+                    for order in orders
+                    if order.status == "completed"
+                    and order.completed_at is not None
+                    and order.created_at is not None
+                ]
+                avg_cycle_hours = (
+                    sum(cycle_hours) / len(cycle_hours) if cycle_hours else 0.0
+                )
+
+                conversion_to_work = (accepted_flow / total * 100) if total else 0.0
+                conversion_to_completed = (completed / total * 100) if total else 0.0
+
+                rows.append(
+                    [
+                        svc.id,
+                        svc.name or "",
+                        _TYPE_MAP_REV.get(svc.service_type, svc.service_type or ""),
+                        total,
+                        paid,
+                        accepted_flow,
+                        completed,
+                        failed,
+                        round(conversion_to_work, 2),
+                        round(conversion_to_completed, 2),
+                        round(revenue, 2),
+                        round(avg_check, 2),
+                        round(median_check, 2),
+                        round(avg_cycle_hours, 2),
+                    ]
+                )
+
+        ws.clear()
+        ws.update(
+            range_name="A1",
+            values=[_SERVICE_METRICS_HEADERS] + rows,
+            value_input_option="USER_ENTERED",
+        )
+        logger.info("SHEETS_WRITE | op=sync_service_metrics | count=%d", len(rows))
+        return True
+    except Exception:
+        logger.exception("SHEETS_WRITE_ERR | op=sync_service_metrics")
         return False

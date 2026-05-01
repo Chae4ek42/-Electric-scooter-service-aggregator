@@ -16,6 +16,10 @@ from client_bot.handlers.admin import router as admin_router
 from client_bot.handlers.common import router as common_router
 from client_bot.handlers.order import router as order_router
 from client_bot.core.logging_setup import setup_logging
+from client_bot.core.resilience import (
+    install_runtime_exception_handlers,
+    register_runtime_error,
+)
 from client_bot.core.middlewares import (
     ActionLoggerMiddleware,
     ErrorMiddleware,
@@ -24,6 +28,7 @@ from client_bot.core.middlewares import (
 )
 from client_bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
 from client_bot.services.seed import init_db
+
 
 async def _payment_expire_loop() -> None:
     """Автоотмена заявок awaiting_payment старше 1 часа."""
@@ -44,7 +49,12 @@ async def _payment_expire_loop() -> None:
                     await session.commit()
                     logger.info("Payment expire loop cancelled %s orders", changed)
         except Exception as exc:
-            logger.error("Payment expire loop error: %s", exc)
+            logger.exception("Payment expire loop error")
+            await register_runtime_error(
+                action_type="payment_expire_loop_error",
+                error=exc,
+                payload="client-bot",
+            )
 
 
 async def _make_storage(logger):
@@ -68,6 +78,7 @@ async def _make_storage(logger):
 async def main() -> None:
     setup_logging(service_name="client-bot")
     logger = logging.getLogger(__name__)
+    install_runtime_exception_handlers(service_name="client-bot", logger=logger)
 
     logger.info("Initialising database …")
     await init_db()
@@ -101,6 +112,7 @@ async def main() -> None:
             BotCommand(command="start", description="Главное меню"),
             BotCommand(command="admin", description="Панель администратора"),
             BotCommand(command="client", description="Вернуться в главное меню"),
+            BotCommand(command="health", description="Проверка инфраструктуры"),
         ]
     )
     try:

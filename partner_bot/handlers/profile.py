@@ -16,6 +16,7 @@ from sqlalchemy import select
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
+from client_bot.core.resilience import create_guarded_task
 from client_bot.domain.models import (
     MetroStation,
     Service,
@@ -30,6 +31,7 @@ from client_bot.domain.schemas import (
     BankAccountInput,
     BankNameInput,
     BikInput,
+    CityInput,
     CorrAccountInput,
     DiagnosticsPriceInput,
     InnInput,
@@ -40,6 +42,8 @@ from client_bot.domain.schemas import (
     WorkHoursInput,
 )
 from client_bot.domain.states import PartnerProfileFSM
+from client_bot.services.city_search import is_moscow_city
+from client_bot.services.geocoder import build_geocode_query, geocode_address
 from client_bot.services.metro_search import best_metro_match
 from client_bot.services.sheets_writer import (
     set_service_available,
@@ -61,6 +65,7 @@ logger = logging.getLogger(__name__)
 router = Router(name="partner_profile")
 
 _FIELD_LABELS = {
+    "city": "Город",
     "name": "Название",
     "address": "Адрес",
     "phone": "Телефон",
@@ -127,7 +132,10 @@ async def _sync_owner_draft_from_service(owner_user_id: int, service_id: int) ->
         owner.draft_name = svc.name
         owner.draft_service_type = svc.service_type
         owner.draft_category = category_name
+        owner.draft_city = svc.city
         owner.draft_address = svc.address
+        owner.draft_latitude = svc.latitude
+        owner.draft_longitude = svc.longitude
         owner.draft_metro = svc.nearest_metro
         owner.draft_phone = svc.phone
         owner.draft_telegram = svc.telegram_handle
@@ -205,7 +213,28 @@ def _schedule_sheets_call(operation: str, fn, *args) -> None:
         except Exception:
             logger.exception("Sheets async call failed (%s)", operation)
 
-    asyncio.create_task(_run())
+    create_guarded_task(
+        _run(),
+        logger=logger,
+        task_name=f"partner_profile_sheet_call:{operation}",
+        action_type="partner_profile_sheet_error",
+        payload=operation,
+    )
+
+
+async def _geocode_service_location(
+    city: str | None,
+    address: str | None,
+    metro: str | None,
+) -> tuple[float, float] | None:
+    if not city or not address:
+        return None
+    query = build_geocode_query(city, address, metro if is_moscow_city(city) else None)
+    return await geocode_address(query)
+
+
+def _profile_edit_kb(city: str | None):
+    return profile_edit_fields_kb(show_metro=is_moscow_city(city or "Москва"))
 
 
 def _format_profile(svc: Service) -> str:
@@ -213,12 +242,12 @@ def _format_profile(svc: Service) -> str:
     lines = [
         "Профиль сервисного центра:",
         "",
+        f"Город: {e(svc.city or '-')}",
         f"Название: {e(svc.name)}",
         f"Тип: {_TYPE_RU.get(svc.service_type, svc.service_type)}",
         f"Категория ремонта: {e(svc.category_rel.name if svc.category_rel else '-')}",
         f"Категории апгрейда: {e((svc.upgrade_categories or '-').replace(',', ', '))}",
         f"Адрес: {e(svc.address or '-')}",
-        f"Метро: {e(svc.nearest_metro or '-')}",
         f"Телефон: {e(svc.phone or '-')}",
         f"Telegram: {e(svc.telegram_handle or '-')}",
         f"Рабочие дни: {e(wd or '-')}",
@@ -229,6 +258,10 @@ def _format_profile(svc: Service) -> str:
         f"Входит в стоимость: {'Да' if svc.diagnostics_included else 'Нет'}",
         f"Доступен: {'Да' if svc.is_available else 'Нет'}",
     ]
+    if is_moscow_city(svc.city):
+        lines.insert(7, f"Метро: {e(svc.nearest_metro or '-')}")
+    else:
+        lines.insert(7, "Метро: не используется")
     return "\n".join(lines)
 
 
@@ -354,9 +387,12 @@ async def edit_profile(message: types.Message, state: FSMContext) -> None:
         await message.answer("Анкета не найдена.")
         return
     await state.clear()
+    owner_city = (
+        getattr(owner, "draft_city", None) or getattr(svc, "city", None) or "Москва"
+    )
     await message.answer(
         _format_draft(owner) + "\n\nВыберите поле для изменения:",
-        reply_markup=draft_edit_kb(owner.draft_service_type),
+        reply_markup=draft_edit_kb(owner.draft_service_type, city=owner_city),
     )
 
 
@@ -527,7 +563,7 @@ async def profile_toggle_hydro(
 
     await callback.message.answer(
         _format_profile(updated) if updated else "Профиль обновлён.",
-        reply_markup=profile_edit_fields_kb(),
+        reply_markup=_profile_edit_kb(updated.city if updated else svc.city),
     )
     await callback.answer()
 
@@ -543,6 +579,12 @@ async def select_field(callback: types.CallbackQuery, state: FSMContext) -> None
     if field == "telegram":
         await callback.answer(
             "Поле Telegram недоступно для редактирования.", show_alert=True
+        )
+        return
+    if field == "metro" and not is_moscow_city((svc.city or "Москва")):
+        await callback.answer(
+            "Для выбранного города поле метро не используется.",
+            show_alert=True,
         )
         return
     if field == "hydro":
@@ -581,6 +623,8 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
     try:
         if field == "name":
             ServiceNameInput(text=text)
+        elif field == "city":
+            CityInput(text=text)
         elif field == "address":
             AddressInput(text=text)
         elif field == "phone":
@@ -654,6 +698,45 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         )
         return
 
+    location_changed = field in {"city", "address"}
+    new_city = svc.city or "Москва"
+    new_address = svc.address
+    new_metro = svc.nearest_metro
+
+    if field == "city":
+        new_city = text
+        if not is_moscow_city(new_city):
+            new_metro = None
+    elif field == "address":
+        new_address = text
+    elif field == "metro":
+        if not is_moscow_city((svc.city or "Москва")):
+            await message.answer("Для выбранного города поле метро не используется.")
+            return
+        new_metro = text
+
+    coords: tuple[float, float] | None = None
+    if location_changed:
+        if not new_city or not new_address:
+            await message.answer("Сначала заполните город и адрес сервиса.")
+            return
+        can_skip_geocode = (
+            field == "city" and is_moscow_city(new_city) and not new_metro
+        )
+        if is_moscow_city(new_city) and not new_metro and not can_skip_geocode:
+            await message.answer(
+                "Для Москвы необходимо указать метро, чтобы обновить координаты."
+            )
+            return
+        if not can_skip_geocode:
+            coords = await _geocode_service_location(new_city, new_address, new_metro)
+            if coords is None:
+                await message.answer(
+                    "Не удалось определить координаты. "
+                    "Проверьте город/адрес/метро и попробуйте снова."
+                )
+                return
+
     async with async_session() as session:
         db_svc = (
             await session.execute(select(Service).where(Service.id == service_id))
@@ -674,6 +757,12 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
         if field == "name":
             db_svc.name = text
             db_owner.draft_name = text
+        elif field == "city":
+            db_svc.city = text
+            db_owner.draft_city = text
+            if not is_moscow_city(text):
+                db_svc.nearest_metro = None
+                db_owner.draft_metro = None
         elif field == "address":
             db_svc.address = text
             db_owner.draft_address = text
@@ -699,6 +788,17 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
             db_svc.has_hydroisolation = True
             db_owner.draft_hydro_price = text
             db_owner.draft_hydroisolation = True
+
+        if location_changed and coords is not None:
+            db_svc.latitude = coords[0]
+            db_svc.longitude = coords[1]
+            db_owner.draft_latitude = coords[0]
+            db_owner.draft_longitude = coords[1]
+        elif field == "city" and is_moscow_city(text) and not db_svc.nearest_metro:
+            db_svc.latitude = None
+            db_svc.longitude = None
+            db_owner.draft_latitude = None
+            db_owner.draft_longitude = None
 
         db_svc.partnership_status = "активный"
         db_owner.status = "активный"
@@ -860,6 +960,6 @@ async def back_to_profile(callback: types.CallbackQuery, state: FSMContext) -> N
     await state.clear()
     await callback.message.edit_text(
         _format_profile(svc),
-        reply_markup=profile_edit_fields_kb(),
+        reply_markup=_profile_edit_kb(svc.city),
     )
     await callback.answer()

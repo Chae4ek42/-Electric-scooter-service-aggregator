@@ -208,6 +208,16 @@ def metro_confirm_kb(station_name: str) -> InlineKeyboardMarkup:
     )
 
 
+def city_confirm_kb(city_name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"Да, {city_name}", callback_data="city_ok")],
+            [InlineKeyboardButton(text="Искать заново", callback_data="city_retry")],
+            [BACK_BTN],
+        ]
+    )
+
+
 # ── Calendar ──────────────────────────────────────────────────
 
 
@@ -628,35 +638,40 @@ def admin_orders_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_order_detail_kb(order_id: int) -> InlineKeyboardMarkup:
-    """Action buttons in order detail view."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def admin_order_detail_kb(
+    order_id: int, service_id: int | None = None
+) -> InlineKeyboardMarkup:
+    """Navigation buttons in order detail view."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if service_id is not None:
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text="✅ Принята",
-                    callback_data=f"adm:setstatus:{order_id}:accepted",
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отменена",
-                    callback_data=f"adm:setstatus:{order_id}:cancelled",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚠️ Прервана",
-                    callback_data=f"adm:setstatus:{order_id}:interrupted",
-                ),
-                InlineKeyboardButton(
-                    text="✔️ Завершена",
-                    callback_data=f"adm:setstatus:{order_id}:completed",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Назад к списку", callback_data="adm:back_list"
+                    text="К сервису",
+                    callback_data=f"adm:service:{service_id}:{order_id}",
                 )
-            ],
-            [InlineKeyboardButton(text="Главное меню", callback_data="adm:main")],
-        ]
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="Назад к списку", callback_data="adm:back_list")]
     )
+    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="adm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_service_detail_kb(order_id: int | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if order_id is not None:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="К заявке",
+                    callback_data=f"adm:order:{order_id}",
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="К списку заявок", callback_data="adm:back_list")]
+    )
+    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="adm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

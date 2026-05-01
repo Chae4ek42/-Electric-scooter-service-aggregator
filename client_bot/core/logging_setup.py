@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import uuid
+from logging.handlers import RotatingFileHandler
 from typing import Any
 
 _LOG_CONTEXT: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
@@ -27,6 +28,16 @@ class _ContextFilter(logging.Filter):
         record.user_id = ctx.get("user_id", "-")
         record.chat_id = ctx.get("chat_id", "-")
         return True
+
+
+class _BusinessLoggerFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.name.startswith("esas.business")
+
+
+class _NonBusinessLoggerFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.name.startswith("esas.business")
 
 
 class _JsonFormatter(logging.Formatter):
@@ -75,14 +86,58 @@ def setup_logging(service_name: str, *, default_level: str = "INFO") -> None:
     level = _resolve_log_level(default_level)
     log_format = os.getenv("LOG_FORMAT", "text").strip().lower()
 
-    handler = logging.StreamHandler(sys.stdout)
-    handler.addFilter(_ContextFilter(service_name=service_name))
-    if log_format == "json":
-        handler.setFormatter(_JsonFormatter())
-    else:
-        handler.setFormatter(_TextFormatter())
+    try:
+        file_max_mb = max(1, int(os.getenv("LOG_FILE_MAX_MB", "30")))
+    except ValueError:
+        file_max_mb = 30
+    try:
+        file_backups = max(1, int(os.getenv("LOG_FILE_BACKUPS", "5")))
+    except ValueError:
+        file_backups = 5
 
-    logging.basicConfig(level=level, handlers=[handler], force=True)
+    log_dir = os.getenv("LOG_DIR", os.path.join("data", "logs"))
+    os.makedirs(log_dir, exist_ok=True)
+
+    service_slug = service_name.replace(" ", "-")
+    app_log_path = os.path.join(log_dir, f"{service_slug}.app.log")
+    business_log_path = os.path.join(log_dir, f"{service_slug}.business.log")
+
+    formatter: logging.Formatter
+    if log_format == "json":
+        formatter = _JsonFormatter()
+    else:
+        formatter = _TextFormatter()
+
+    handlers: list[logging.Handler] = []
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.addFilter(_ContextFilter(service_name=service_name))
+    stream_handler.setFormatter(formatter)
+    handlers.append(stream_handler)
+
+    app_file_handler = RotatingFileHandler(
+        app_log_path,
+        maxBytes=file_max_mb * 1024 * 1024,
+        backupCount=file_backups,
+        encoding="utf-8",
+    )
+    app_file_handler.addFilter(_ContextFilter(service_name=service_name))
+    app_file_handler.addFilter(_NonBusinessLoggerFilter())
+    app_file_handler.setFormatter(formatter)
+    handlers.append(app_file_handler)
+
+    business_file_handler = RotatingFileHandler(
+        business_log_path,
+        maxBytes=file_max_mb * 1024 * 1024,
+        backupCount=file_backups,
+        encoding="utf-8",
+    )
+    business_file_handler.addFilter(_ContextFilter(service_name=service_name))
+    business_file_handler.addFilter(_BusinessLoggerFilter())
+    business_file_handler.setFormatter(formatter)
+    handlers.append(business_file_handler)
+
+    logging.basicConfig(level=level, handlers=handlers, force=True)
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
 

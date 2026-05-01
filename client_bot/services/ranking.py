@@ -26,7 +26,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from client_bot.core.config import MAX_SERVICE_DISTANCE_KM
 from client_bot.domain.models import MetroStation, Service
+from client_bot.services.city_search import is_moscow_city, normalize_city_name
 from client_bot.services.metro_graph import metro_transfer_distance
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,16 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         * math.sin(d_lon / 2) ** 2
     )
     return _EARTH_RADIUS_KM * 2 * math.asin(math.sqrt(a))
+
+
+def euclidean_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Евклидово расстояние в километрах в локальном приближении."""
+    lat_scale_km = 111.32
+    avg_lat_rad = math.radians((lat1 + lat2) / 2)
+    lon_scale_km = 111.32 * max(0.1, math.cos(avg_lat_rad))
+    dx = (lon2 - lon1) * lon_scale_km
+    dy = (lat2 - lat1) * lat_scale_km
+    return math.sqrt(dx * dx + dy * dy)
 
 
 def find_nearest_metro_by_coords(
@@ -129,6 +141,8 @@ class RankingContext:
     scheduled_date: str | None = None
     """Выбранная пользователем дата (DD.MM.YYYY) — для фильтрации по рабочим дням"""
 
+    user_city: str | None = None
+
     user_lat: float | None = None
     user_lon: float | None = None
 
@@ -146,6 +160,7 @@ class ServiceMatch:
     score: float  # итоговый скор 0.0 – 1.0
     proximity_score: float
     rating_score: float
+    distance_km: float | None = None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -499,6 +514,7 @@ async def rank_services(
     session: AsyncSession,
     *,
     proximity: ProximityStrategy | None = None,
+    max_distance_km: float = MAX_SERVICE_DISTANCE_KM,
     limit: int = 10,
 ) -> RankingResult:
     """
@@ -532,12 +548,41 @@ async def rank_services(
 
     services = [s for s in services if _svc_matches_category_filters(s, ctx)]
 
+    non_moscow_flow = bool(ctx.user_city) and not is_moscow_city(ctx.user_city)
+    normalized_city = normalize_city_name(ctx.user_city)
+
+    if non_moscow_flow:
+        if ctx.user_lat is None or ctx.user_lon is None:
+            logger.warning(
+                "Ranking in non-Moscow flow without user coordinates: city=%r",
+                ctx.user_city,
+            )
+            return RankingResult(matches=[])
+        services = [
+            svc for svc in services if normalize_city_name(svc.city) == normalized_city
+        ]
+
     if not services:
         return RankingResult(matches=[])
 
     ranked_all: list[ServiceMatch] = []
     for svc in services:
-        prox = proximity.score(svc, ctx)
+        distance_km: float | None = None
+        if non_moscow_flow:
+            if svc.latitude is None or svc.longitude is None:
+                continue
+            distance_km = euclidean_km(
+                ctx.user_lat,
+                ctx.user_lon,
+                svc.latitude,
+                svc.longitude,
+            )
+            if distance_km > max_distance_km:
+                continue
+            prox = max(0.0, 1.0 - (distance_km / max_distance_km))
+        else:
+            prox = proximity.score(svc, ctx)
+
         if svc.yandex_rating is not None:
             rating = min(svc.yandex_rating, MAX_YANDEX_RATING) / MAX_YANDEX_RATING
         else:
@@ -550,16 +595,19 @@ async def rank_services(
                 score=round(total, 4),
                 proximity_score=prox,
                 rating_score=rating,
+                distance_km=distance_km,
             )
         )
 
     ranked_all.sort(key=lambda m: (m.score, m.service.yandex_rating or 0), reverse=True)
 
-    # Фильтрация по рабочему дню и времени
+    if not ranked_all:
+        return RankingResult(matches=[])
+
     slot_compatible = [
-        s
-        for s in services
-        if _svc_covers_slot(s, ctx.scheduled_date, ctx.scheduled_time)
+        match
+        for match in ranked_all
+        if _svc_covers_slot(match.service, ctx.scheduled_date, ctx.scheduled_time)
     ]
 
     if not slot_compatible:
@@ -569,8 +617,8 @@ async def rank_services(
         fallback_service_id: int | None = None
         fallback_service_name: str | None = None
 
-        top_service = ranked_all[0].service if ranked_all else None
-        if top_service and ctx.scheduled_date:
+        top_service = ranked_all[0].service
+        if ctx.scheduled_date:
             suggested_slots = _collect_service_slots(
                 top_service,
                 base_date=ctx.scheduled_date,
@@ -580,7 +628,7 @@ async def rank_services(
             fallback_service_id = top_service.id
             fallback_service_name = top_service.name
 
-        if not suggested_slots and top_service and ctx.scheduled_time:
+        if not suggested_slots and ctx.scheduled_time:
             nearest = _find_nearest_valid_time(top_service, ctx.scheduled_time)
             if nearest:
                 suggested_slots = [("", nearest)]
@@ -601,27 +649,4 @@ async def rank_services(
             fallback_service_name=fallback_service_name,
         )
 
-    target_services = slot_compatible
-
-    # Ранжирование
-    results: list[ServiceMatch] = []
-    for svc in target_services:
-        prox = proximity.score(svc, ctx)
-        if svc.yandex_rating is not None:
-            rating = min(svc.yandex_rating, MAX_YANDEX_RATING) / MAX_YANDEX_RATING
-        else:
-            rating = 0.5
-
-        total = WEIGHT_PROXIMITY * prox + WEIGHT_RATING * rating
-        results.append(
-            ServiceMatch(
-                service=svc,
-                score=round(total, 4),
-                proximity_score=prox,
-                rating_score=rating,
-            )
-        )
-
-    # Сортировка: при равном скоре — по рейтингу Яндекс Карт
-    results.sort(key=lambda m: (m.score, m.service.yandex_rating or 0), reverse=True)
-    return RankingResult(matches=results[:limit])
+    return RankingResult(matches=slot_compatible[:limit])

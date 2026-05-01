@@ -63,7 +63,10 @@ class Service(Base):
     # значения: 'repair' | 'upgrade' | 'complex'
     service_type: Mapped[str] = mapped_column(String(20), nullable=False)
     is_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    city: Mapped[str | None] = mapped_column(String(120), nullable=True)
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     yandex_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     nearest_metro: Mapped[str | None] = mapped_column(String(200), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -151,7 +154,10 @@ class ServiceDraft(Base):
     draft_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     draft_service_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     draft_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    draft_city: Mapped[str | None] = mapped_column(String(120), nullable=True)
     draft_address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    draft_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    draft_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     draft_metro: Mapped[str | None] = mapped_column(String(200), nullable=True)
     draft_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     draft_telegram: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -261,6 +267,10 @@ class Order(Base):
     service_id: Mapped[int | None] = mapped_column(
         ForeignKey("services.id"), nullable=True
     )
+    city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    client_address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    client_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    client_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     model_id: Mapped[int | None] = mapped_column(ForeignKey("models.id"), nullable=True)
     metro_station: Mapped[str | None] = mapped_column(String(200), nullable=True)
     scheduled_date: Mapped[str | None] = mapped_column(String(10), nullable=True)

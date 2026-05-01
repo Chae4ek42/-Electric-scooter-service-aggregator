@@ -18,6 +18,7 @@ from aiogram.types import (
 )
 
 from client_bot.core.config import app_config
+from client_bot.core.resilience import register_runtime_error
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,9 @@ class FSMActivityMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        user = None
-        if isinstance(event, Message):
-            user = event.from_user
-        elif isinstance(event, CallbackQuery):
-            user = event.from_user
+        user = getattr(event, "from_user", None)
+
+        result = await handler(event, data)
 
         state: FSMContext | None = data.get("state")
         if user and state:
@@ -76,33 +75,54 @@ class FSMActivityMiddleware(BaseMiddleware):
                 _activity.pop(key, None)
                 _reminded.discard(key)
 
-        return await handler(event, data)
+        return result
 
 
 async def fsm_reminder_loop(bot: Bot, bot_key: str) -> None:
     """Background loop: send reminders after 30 min of inactivity."""
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
-        now = time.monotonic()
-        stale_keys = []
-        for key, ts in list(_activity.items()):
-            bk, user_id = key
-            if bk != bot_key:
-                continue
-            if now - ts >= REMINDER_SECONDS and key not in _reminded:
-                stale_keys.append(key)
+        try:
+            now = time.monotonic()
+            stale_keys = []
+            for key, ts in list(_activity.items()):
+                bk, user_id = key
+                if bk != bot_key:
+                    continue
+                if now - ts >= REMINDER_SECONDS and key not in _reminded:
+                    stale_keys.append(key)
 
-        for key in stale_keys:
-            _, user_id = key
-            try:
-                await bot.send_message(
-                    user_id,
-                    "Вы не завершили заполнение формы. " "Продолжите или отмените.",
-                    reply_markup=_REMINDER_KB,
-                )
-                _reminded.add(key)
-                logger.info("Sent inactivity reminder to user %s", user_id)
-            except Exception:
-                logger.debug("Could not send reminder to %s", user_id, exc_info=True)
-                # Remove stale entry
-                _activity.pop(key, None)
+            for key in stale_keys:
+                _, user_id = key
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "Вы не завершили заполнение формы. " "Продолжите или отмените.",
+                        reply_markup=_REMINDER_KB,
+                    )
+                    _reminded.add(key)
+                    logger.info("Sent inactivity reminder to user %s", user_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not send reminder to %s",
+                        user_id,
+                        exc_info=True,
+                    )
+                    await register_runtime_error(
+                        action_type="fsm_reminder_send_error",
+                        error=exc,
+                        user_id=user_id,
+                        payload=f"bot={bot_key}",
+                        status="warning",
+                    )
+                    # Remove stale entry
+                    _activity.pop(key, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("FSM reminder loop iteration failed | bot=%s", bot_key)
+            await register_runtime_error(
+                action_type="fsm_reminder_loop_error",
+                error=exc,
+                payload=f"bot={bot_key}",
+            )

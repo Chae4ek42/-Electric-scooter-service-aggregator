@@ -6,6 +6,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class OrderFSM(StatesGroup):
+    city_search = State()  # waiting for city input
+    city_confirm = State()  # confirm fuzzy city match
     service_type = State()  # repair / upgrade
     brand = State()  # choose brand
     brand_custom = State()  # text input for custom brand name
@@ -19,12 +21,15 @@ class OrderFSM(StatesGroup):
     location_method = State()  # geo / metro text-search
     metro_search = State()  # waiting for text input of metro name
     metro_confirm = State()  # confirm fuzzy match result
+    address = State()  # non-Moscow flow: client address input
     calendar_date = State()  # choose date
     calendar_time = State()  # choose time
     confirm = State()  # final confirmation
 
 
 class RegistrationFSM(StatesGroup):
+    reg_city_search = State()
+    reg_city_confirm = State()
     reg_name = State()
     reg_service_type = State()
     reg_category = State()

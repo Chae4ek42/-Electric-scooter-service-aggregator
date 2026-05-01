@@ -18,6 +18,7 @@ import redis.asyncio as aioredis
 from client_bot.core.config import REDIS_URL, THROTTLE_RATE
 from client_bot.core.database import async_session
 from client_bot.core.logging_setup import bind_update_log_context, reset_log_context
+from client_bot.core.resilience import register_runtime_error
 from client_bot.domain.models import UserAction
 
 logger = logging.getLogger(__name__)
@@ -292,31 +293,34 @@ class ErrorMiddleware(BaseMiddleware):
             logger.exception("Unhandled error%s: %s", user_id_ctx, exc)
             try:
                 user_id = None
+                state_str = None
+                payload = ""
+                fsm: FSMContext | None = data.get("state")
+                if fsm:
+                    state_str = await fsm.get_state()
+
                 if isinstance(event, Message):
                     user_id = event.from_user.id if event.from_user else None
+                    payload = (event.text or "<non-text message>")[:500]
                     await event.answer(
                         "Произошла техническая ошибка. Пожалуйста, попробуйте позже"
                     )
                 elif isinstance(event, CallbackQuery):
                     user_id = event.from_user.id if event.from_user else None
+                    payload = (event.data or "<no-callback-data>")[:500]
                     await event.answer(
                         "Произошла техническая ошибка. Пожалуйста, попробуйте позже",
                         show_alert=True,
                     )
 
                 if user_id:
-                    async with async_session() as session:
-                        session.add(
-                            UserAction(
-                                user_id=user_id,
-                                state=None,
-                                action_type="system_error",
-                                payload="",
-                                status="system_error",
-                                error_context=traceback.format_exc()[-1000:],
-                            )
-                        )
-                        await session.commit()
+                    await register_runtime_error(
+                        action_type="system_error",
+                        error=exc,
+                        user_id=user_id,
+                        state=state_str,
+                        payload=payload,
+                    )
             except Exception:
                 logger.exception("Failed to handle error gracefully")
             return None

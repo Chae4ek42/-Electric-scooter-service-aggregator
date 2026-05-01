@@ -18,6 +18,7 @@ class SheetsConfig(BaseModel):
     tab_orders: str
     tab_clients: str
     tab_bank_details: str = "Реквизиты"
+    tab_service_metrics: str = "Метрики сервисов"
     columns: List[str]
 
 
@@ -41,6 +42,10 @@ class FSMReminderConfig(BaseModel):
     check_interval: int = Field(60, ge=10, description="Интервал проверки (сек)")
 
 
+class MatchingConfig(BaseModel):
+    max_distance_km: float = Field(30.0, gt=0, le=500)
+
+
 class AppConfig(BaseModel):
     redis_url: str
     database_url: str
@@ -53,6 +58,7 @@ class AppConfig(BaseModel):
     calendar: CalendarConfig
     throttle_rate: float = Field(None, ge=0.0, le=10.0)
     fsm_reminder: FSMReminderConfig
+    matching: MatchingConfig = Field(default_factory=MatchingConfig)
 
 
 def _load_app_config() -> AppConfig:
@@ -71,6 +77,7 @@ CLIENT_BOT_TOKEN: str = os.getenv("CLIENT_BOT_TOKEN") or os.getenv(
     "CLINET_BOT_TOKEN", ""
 )
 PARTNER_BOT_TOKEN: str = os.getenv("PARTNER_BOT_TOKEN", "")
+YANDEX_GEOCODER_API_KEY: str = os.getenv("YANDEX_GEOCODER_API_KEY", "")
 
 SUPPORT_USER: str = app_config.support_user
 COOPERATION_USER: str = app_config.cooperation_user
@@ -89,9 +96,11 @@ SHEETS_TAB_SERVICES: str = app_config.sheets.tab_services
 SHEETS_TAB_ORDERS: str = app_config.sheets.tab_orders
 SHEETS_TAB_CLIENTS: str = app_config.sheets.tab_clients
 SHEETS_TAB_BANK_DETAILS: str = app_config.sheets.tab_bank_details
+SHEETS_TAB_SERVICE_METRICS: str = app_config.sheets.tab_service_metrics
 
 THROTTLE_RATE: float = app_config.throttle_rate
 CALENDAR_DAYS: int = app_config.calendar.days
 WORK_HOUR_START: int = app_config.calendar.work_hour_start
 WORK_HOUR_END: int = app_config.calendar.work_hour_end
 TIME_SLOT_MINUTES: int = app_config.calendar.time_slot_minutes
+MAX_SERVICE_DISTANCE_KM: float = app_config.matching.max_distance_km

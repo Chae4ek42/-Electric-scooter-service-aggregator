@@ -7,7 +7,7 @@ import datetime
 import logging
 import math
 from dataclasses import dataclass
-from typing import Union
+from typing import Sequence, Union
 
 from aiogram import F, Router, types
 from aiogram.exceptions import TelegramBadRequest
@@ -19,6 +19,7 @@ from sqlalchemy.orm import selectinload
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
+from client_bot.core.resilience import create_guarded_task
 from client_bot.domain.models import (
     Order,
     Service,
@@ -34,6 +35,8 @@ from partner_bot.ui.keyboards import (
     padm_partner_detail_kb,
     padm_partners_kb,
     padm_service_detail_kb,
+    padm_service_order_detail_kb,
+    padm_service_orders_kb,
     padm_services_kb,
     partner_main_menu_kb,
 )
@@ -43,6 +46,7 @@ router = Router(name="partner_admin")
 
 PARTNER_PAGE_SIZE = 10
 SERVICE_PAGE_SIZE = 10
+SERVICE_ORDERS_PAGE_SIZE = 10
 _STATUS_RU = PARTNER_STATUS_RU
 
 
@@ -72,7 +76,13 @@ def _schedule_service_sheet_sync(service_id: int) -> None:
         except Exception:
             logger.exception("Failed to update approved service in Sheets")
 
-    asyncio.create_task(_run())
+    create_guarded_task(
+        _run(),
+        logger=logger,
+        task_name=f"partner_admin_sheet_sync:{service_id}",
+        action_type="partner_admin_sheet_sync_error",
+        payload=f"service_id={service_id}",
+    )
 
 
 class IsAdmin(BaseFilter):
@@ -217,10 +227,132 @@ async def _service_status_breakdown(service_id: int) -> dict[str, int]:
     return {status: int(cnt) for status, cnt in rows}
 
 
-def _format_service_stats_text(service: Service, by_status: dict[str, int]) -> str:
-    total_orders = sum(by_status.values())
+async def _service_orders_snapshot(service_id: int) -> list[Order]:
+    async with async_session() as session:
+        return (
+            (
+                await session.execute(
+                    select(Order)
+                    .where(Order.service_id == service_id)
+                    .order_by(Order.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def _service_orders_page(
+    service_id: int,
+    page: int,
+) -> tuple[list[Order], int, int, int]:
+    async with async_session() as session:
+        total = (
+            await session.execute(
+                select(func.count())
+                .select_from(Order)
+                .where(Order.service_id == service_id)
+            )
+        ).scalar_one()
+
+        if total == 0:
+            return [], 0, 1, 0
+
+        total_pages = max(1, math.ceil(total / SERVICE_ORDERS_PAGE_SIZE))
+        safe_page = max(0, min(page, total_pages - 1))
+        orders = (
+            (
+                await session.execute(
+                    select(Order)
+                    .where(Order.service_id == service_id)
+                    .order_by(Order.created_at.desc())
+                    .offset(safe_page * SERVICE_ORDERS_PAGE_SIZE)
+                    .limit(SERVICE_ORDERS_PAGE_SIZE)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    return list(orders), safe_page, total_pages, int(total)
+
+
+def _orders_status_breakdown(orders: Sequence[Order]) -> dict[str, int]:
+    breakdown: dict[str, int] = {}
+    for order in orders:
+        breakdown[order.status] = breakdown.get(order.status, 0) + 1
+    return breakdown
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _order_model_text(order: Order) -> str:
+    if order.brand_custom_name:
+        if order.model_custom_name:
+            return f"{order.brand_custom_name} / {order.model_custom_name}"
+        return order.brand_custom_name
+    if order.model_custom_name:
+        if order.model and order.model.brand:
+            return f"{order.model.brand.name} / {order.model_custom_name}"
+        return order.model_custom_name
+    if order.model and order.model.brand:
+        return f"{order.model.brand.name} {order.model.name}"
+    if order.model:
+        return order.model.name
+    return "—"
+
+
+def _format_service_stats_text(
+    service: Service,
+    by_status: dict[str, int],
+    orders: Sequence[Order],
+) -> str:
+    total_orders = len(orders)
     completed = by_status.get("completed", 0)
+    paid = by_status.get("paid", 0)
+    accepted_flow = sum(
+        by_status.get(key, 0)
+        for key in ("accepted", "in_progress", "ready_for_pickup", "completed")
+    )
+    failed = sum(
+        by_status.get(key, 0)
+        for key in (
+            "cancelled",
+            "rejected_by_partner",
+            "client_refused",
+            "interrupted",
+            "disputed",
+        )
+    )
+
+    completed_costs = [
+        float(order.total_cost)
+        for order in orders
+        if order.status == "completed" and order.total_cost is not None
+    ]
+    revenue = sum(completed_costs)
+    avg_check = (revenue / len(completed_costs)) if completed_costs else 0.0
+    median_check = _median(completed_costs)
+
+    cycle_hours = [
+        (order.completed_at - order.created_at).total_seconds() / 3600
+        for order in orders
+        if order.status == "completed"
+        and order.completed_at is not None
+        and order.created_at is not None
+    ]
+    avg_cycle_hours = sum(cycle_hours) / len(cycle_hours) if cycle_hours else 0.0
+
     conversion = (completed / total_orders * 100) if total_orders else 0.0
+    accepted_conversion = (accepted_flow / total_orders * 100) if total_orders else 0.0
 
     lines = [
         f"<b>Сервис #{service.id}</b>",
@@ -231,8 +363,17 @@ def _format_service_stats_text(service: Service, by_status: dict[str, int]) -> s
         f"<b>Метро:</b> {e(service.nearest_metro or '—')}",
         f"<b>Телефон:</b> {e(service.phone or '—')}",
         "",
+        "<b>Бизнес-метрики:</b>",
         f"<b>Всего заявок:</b> {total_orders}",
+        f"<b>Оплачено:</b> {paid}",
+        f"<b>Дошли до работы:</b> {accepted_flow}",
         f"<b>Завершено:</b> {completed}",
+        f"<b>Негативные исходы:</b> {failed}",
+        f"<b>Выручка (completed):</b> {revenue:.0f} ₽",
+        f"<b>Средний чек (completed):</b> {avg_check:.0f} ₽",
+        f"<b>Медианный чек (completed):</b> {median_check:.0f} ₽",
+        f"<b>Средний цикл до завершения:</b> {avg_cycle_hours:.1f} ч",
+        f"<b>Конверсия в работу:</b> {accepted_conversion:.1f}%",
         f"<b>Конверсия в завершение:</b> {conversion:.1f}%",
         "",
         "<b>Статусы:</b>",
@@ -245,6 +386,45 @@ def _format_service_stats_text(service: Service, by_status: dict[str, int]) -> s
 
     if all(not by_status.get(k) for k in ORDER_STATUS_RU):
         lines.append("• Пока нет заявок")
+
+    return "\n".join(lines)
+
+
+def _format_service_order_detail_text(order: Order) -> str:
+    created_at = (
+        order.created_at.strftime("%d.%m.%Y %H:%M") if order.created_at else "—"
+    )
+    slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
+    lines = [
+        f"<b>Заявка #{order.id}</b>",
+        f"<b>Статус:</b> {ORDER_STATUS_RU.get(order.status, order.status)}",
+        f"<b>Создана:</b> {created_at}",
+        f"<b>Клиент TG ID:</b> <code>{order.user_id}</code>",
+        f"<b>Модель:</b> {e(_order_model_text(order))}",
+        f"<b>Метро:</b> {e(order.metro_station or '—')}",
+        f"<b>Слот:</b> {e(slot)}",
+    ]
+
+    if order.order_code:
+        lines.append(f"<b>Код заказа:</b> <code>{order.order_code}</code>")
+    if order.upgrade_category:
+        lines.append(f"<b>Категория апгрейда:</b> {e(order.upgrade_category)}")
+    if order.problem_description:
+        lines.append(f"<b>Описание:</b> {e(order.problem_description)}")
+    if order.diagnostics_price is not None:
+        lines.append(f"<b>Диагностика:</b> {order.diagnostics_price:.0f} ₽")
+    if order.estimate_cost is not None:
+        lines.append(f"<b>Смета:</b> {order.estimate_cost:.0f} ₽")
+    if order.total_cost is not None:
+        lines.append(f"<b>Итоговая стоимость:</b> {order.total_cost:.0f} ₽")
+    if order.partner_comment:
+        lines.append(f"<b>Комментарий партнёра:</b> {e(order.partner_comment)}")
+    if order.reject_reason:
+        lines.append(f"<b>Причина отклонения:</b> {e(order.reject_reason)}")
+    if order.refusal_reason:
+        lines.append(f"<b>Причина отказа клиента:</b> {e(order.refusal_reason)}")
+    if order.dispute_reason:
+        lines.append(f"<b>Причина спора:</b> {e(order.dispute_reason)}")
 
     return "\n".join(lines)
 
@@ -391,10 +571,86 @@ async def padm_service_detail(cb: types.CallbackQuery) -> None:
         await cb.answer("Сервис не найден.", show_alert=True)
         return
 
-    breakdown = await _service_status_breakdown(service_id)
+    orders_snapshot = await _service_orders_snapshot(service_id)
+    breakdown = _orders_status_breakdown(orders_snapshot)
     await cb.message.edit_text(
-        _format_service_stats_text(service, breakdown),
-        reply_markup=padm_service_detail_kb(from_page),
+        _format_service_stats_text(service, breakdown, orders_snapshot),
+        reply_markup=padm_service_detail_kb(from_page, service_id),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("padm:service_orders:"))
+async def padm_service_orders_list(cb: types.CallbackQuery) -> None:
+    parts = cb.data.split(":")
+    if len(parts) < 4:
+        await cb.answer("Некорректный запрос.", show_alert=True)
+        return
+
+    service_id = int(parts[2])
+    page = int(parts[3])
+    from_page = 0
+    if len(parts) >= 6 and parts[4] == "from":
+        from_page = int(parts[5])
+
+    orders, safe_page, total_pages, total = await _service_orders_page(service_id, page)
+    if not orders:
+        await cb.message.edit_text(
+            f"По сервису #{service_id} пока нет заявок.",
+            reply_markup=padm_service_orders_kb(
+                service_id,
+                [],
+                safe_page,
+                total_pages,
+                from_page,
+            ),
+        )
+        await cb.answer()
+        return
+
+    await cb.message.edit_text(
+        f"<b>Заявки сервиса #{service_id}:</b> {total} "
+        f"(стр. {safe_page + 1}/{total_pages})",
+        reply_markup=padm_service_orders_kb(
+            service_id,
+            orders,
+            safe_page,
+            total_pages,
+            from_page,
+        ),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("padm:service_order:"))
+async def padm_service_order_detail(cb: types.CallbackQuery) -> None:
+    parts = cb.data.split(":")
+    if len(parts) < 5:
+        await cb.answer("Некорректный запрос.", show_alert=True)
+        return
+
+    service_id = int(parts[2])
+    order_id = int(parts[3])
+    page = int(parts[4])
+    from_page = 0
+    if len(parts) >= 7 and parts[5] == "from":
+        from_page = int(parts[6])
+
+    async with async_session() as session:
+        order = (
+            await session.execute(
+                select(Order)
+                .where(Order.id == order_id)
+                .where(Order.service_id == service_id)
+            )
+        ).scalar_one_or_none()
+    if not order:
+        await cb.answer("Заявка не найдена.", show_alert=True)
+        return
+
+    await cb.message.edit_text(
+        _format_service_order_detail_text(order),
+        reply_markup=padm_service_order_detail_kb(service_id, page, from_page),
     )
     await cb.answer()
 
@@ -414,7 +670,7 @@ async def padm_partner_detail(cb: types.CallbackQuery) -> None:
 
     await cb.message.edit_text(
         _fmt_partner(owner),
-        reply_markup=padm_partner_detail_kb(owner.id, owner.status),
+        reply_markup=padm_partner_detail_kb(owner.id, owner.status, owner.service_id),
     )
     await cb.answer()
 
@@ -567,7 +823,9 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
     if owner:
         await cb.message.edit_text(
             _fmt_partner(owner),
-            reply_markup=padm_partner_detail_kb(owner.id, owner.status),
+            reply_markup=padm_partner_detail_kb(
+                owner.id, owner.status, owner.service_id
+            ),
         )
 
 
@@ -621,7 +879,9 @@ async def padm_reject_partner(cb: types.CallbackQuery) -> None:
     if owner:
         await cb.message.edit_text(
             _fmt_partner(owner),
-            reply_markup=padm_partner_detail_kb(owner.id, owner.status),
+            reply_markup=padm_partner_detail_kb(
+                owner.id, owner.status, owner.service_id
+            ),
         )
 
 
@@ -663,7 +923,9 @@ async def padm_suspend_partner(cb: types.CallbackQuery) -> None:
     if owner:
         await cb.message.edit_text(
             _fmt_partner(owner),
-            reply_markup=padm_partner_detail_kb(owner.id, owner.status),
+            reply_markup=padm_partner_detail_kb(
+                owner.id, owner.status, owner.service_id
+            ),
         )
 
 
@@ -705,7 +967,9 @@ async def padm_unsuspend_partner(cb: types.CallbackQuery) -> None:
     if owner:
         await cb.message.edit_text(
             _fmt_partner(owner),
-            reply_markup=padm_partner_detail_kb(owner.id, owner.status),
+            reply_markup=padm_partner_detail_kb(
+                owner.id, owner.status, owner.service_id
+            ),
         )
 
 

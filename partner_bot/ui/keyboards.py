@@ -10,7 +10,7 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
-from client_bot.texts import Btn
+from client_bot.texts import Btn, ORDER_STATUS_RU
 
 BACK_BTN = InlineKeyboardButton(text="Назад", callback_data="back")
 
@@ -262,32 +262,66 @@ def metro_confirm_kb(station_name: str) -> InlineKeyboardMarkup:
     )
 
 
+def reg_city_confirm_kb(city_name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"Да, {city_name}", callback_data="reg_city_ok"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Искать заново", callback_data="reg_city_retry"
+                )
+            ],
+            [BACK_BTN],
+        ]
+    )
+
+
 # ── Draft edit ────────────────────────────────────────────────
 
 
-def draft_edit_kb(service_type: str | None = None) -> InlineKeyboardMarkup:
-    fields = [
-        ("Название", "edit_draft:name"),
-        ("Тип услуг", "edit_draft:service_type"),
+def draft_edit_kb(
+    service_type: str | None = None,
+    *,
+    started_fields: set[str] | None = None,
+    city: str | None = None,
+) -> InlineKeyboardMarkup:
+    fields: list[tuple[str, str, str]] = [
+        ("city", "Город", "edit_draft:city"),
+        ("name", "Название", "edit_draft:name"),
+        ("service_type", "Тип услуг", "edit_draft:service_type"),
     ]
     if service_type in ("upgrade", "complex"):
-        fields.append(("Категории апгрейда", "edit_draft:upgrade_cats"))
+        fields.append(("upgrade_cats", "Категории апгрейда", "edit_draft:upgrade_cats"))
     if service_type in ("repair", "complex"):
-        fields.append(("Категория ремонта", "edit_draft:category"))
+        fields.append(("category", "Категория ремонта", "edit_draft:category"))
     fields += [
-        ("Гидроизоляция", "edit_draft:hydro"),
-        ("Цена гидроизоляции", "edit_draft:hydro_price"),
-        ("Адрес", "edit_draft:address"),
-        ("Метро", "edit_draft:metro"),
-        ("Телефон", "edit_draft:phone"),
-        ("Рабочие дни", "edit_draft:working_days"),
-        ("Время работы", "edit_draft:hours"),
-        ("Диагностика", "edit_draft:diagnostics"),
-        ("Входит в стоимость", "edit_draft:diag_included"),
+        ("hydro", "Гидроизоляция", "edit_draft:hydro"),
+        ("hydro_price", "Цена гидроизоляции", "edit_draft:hydro_price"),
+        ("address", "Адрес", "edit_draft:address"),
+        ("phone", "Телефон", "edit_draft:phone"),
+        ("working_days", "Рабочие дни", "edit_draft:working_days"),
+        ("hours", "Время работы", "edit_draft:hours"),
+        ("diagnostics", "Диагностика", "edit_draft:diagnostics"),
+        ("diag_included", "Входит в стоимость", "edit_draft:diag_included"),
     ]
-    rows = [
-        [InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in fields
-    ]
+    if city and city.strip().lower() == "москва":
+        fields.insert(7, ("metro", "Метро", "edit_draft:metro"))
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for key, label, cb in fields:
+        if started_fields is not None and key not in started_fields:
+            continue
+        rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
+
+    if not rows:
+        rows.append(
+            [InlineKeyboardButton(text="Название", callback_data="edit_draft:name")]
+        )
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -501,17 +535,19 @@ def orders_filter_kb() -> InlineKeyboardMarkup:
 # ── Profile ───────────────────────────────────────────────────
 
 
-def profile_edit_fields_kb() -> InlineKeyboardMarkup:
+def profile_edit_fields_kb(*, show_metro: bool = True) -> InlineKeyboardMarkup:
     fields = [
+        ("Город", "pedit:city"),
         ("Название", "pedit:name"),
         ("Адрес", "pedit:address"),
-        ("Метро", "pedit:metro"),
         ("Телефон", "pedit:phone"),
         ("Время работы", "pedit:hours"),
         ("Диагностика", "pedit:diagnostics"),
         ("Гидроизоляция", "pedit:hydro"),
         ("Цена гидроизоляции", "pedit:hydro_price"),
     ]
+    if show_metro:
+        fields.insert(3, ("Метро", "pedit:metro"))
     rows = [
         [InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in fields
     ]
@@ -657,13 +693,103 @@ def padm_services_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def padm_service_detail_kb(from_page: int) -> InlineKeyboardMarkup:
+def padm_service_detail_kb(from_page: int, service_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="Заявки сервиса",
+                    callback_data=f"padm:service_orders:{service_id}:0:from:{from_page}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="К списку сервисов",
                     callback_data=f"padm:services:{from_page}",
+                )
+            ],
+            [InlineKeyboardButton(text="Главное меню", callback_data="padm:main")],
+        ]
+    )
+
+
+def padm_service_orders_kb(
+    service_id: int,
+    orders: Sequence,
+    page: int,
+    total_pages: int,
+    from_page: int,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for order in orders:
+        status = ORDER_STATUS_RU.get(order.status, order.status)
+        date = order.scheduled_date or "?"
+        label = f"#{order.id} | {date} | {status}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=(
+                        f"padm:service_order:{service_id}:{order.id}:{page}:from:{from_page}"
+                    ),
+                )
+            ]
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                text="◄ Назад",
+                callback_data=f"padm:service_orders:{service_id}:{page - 1}:from:{from_page}",
+            )
+        )
+    nav.append(
+        InlineKeyboardButton(
+            text=f"{page + 1}/{total_pages}",
+            callback_data="padm:noop",
+        )
+    )
+    if page < total_pages - 1:
+        nav.append(
+            InlineKeyboardButton(
+                text="Вперёд ►",
+                callback_data=f"padm:service_orders:{service_id}:{page + 1}:from:{from_page}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="К сервису",
+                callback_data=f"padm:service:{service_id}:from:{from_page}",
+            )
+        ]
+    )
+    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="padm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def padm_service_order_detail_kb(
+    service_id: int,
+    page: int,
+    from_page: int,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="К списку заявок",
+                    callback_data=f"padm:service_orders:{service_id}:{page}:from:{from_page}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="К сервису",
+                    callback_data=f"padm:service:{service_id}:from:{from_page}",
                 )
             ],
             [InlineKeyboardButton(text="Главное меню", callback_data="padm:main")],
@@ -713,7 +839,11 @@ def padm_partners_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def padm_partner_detail_kb(owner_id: int, status: str) -> InlineKeyboardMarkup:
+def padm_partner_detail_kb(
+    owner_id: int,
+    status: str,
+    service_id: int | None = None,
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if status == "ожидает":
         rows.append(
@@ -739,6 +869,15 @@ def padm_partner_detail_kb(owner_id: int, status: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="Восстановить", callback_data=f"padm:unsuspend:{owner_id}"
+                )
+            ]
+        )
+    if service_id is not None:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="К сервису",
+                    callback_data=f"padm:service:{service_id}:from:0",
                 )
             ]
         )

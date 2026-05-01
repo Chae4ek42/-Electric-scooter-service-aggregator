@@ -108,6 +108,16 @@ def test_metro_search_and_graph_smoke() -> None:
     assert match.name == "Арбатская"
 
 
+def test_city_search_dataset_smoke() -> None:
+    from client_bot.services.city_search import best_city_match, city_candidates
+
+    cities = city_candidates()
+
+    assert len(cities) >= 1000
+    assert "Долгопрудный" in cities
+    assert best_city_match("долгопруд", cities) == "Долгопрудный"
+
+
 def test_schema_validation_smoke() -> None:
     from client_bot.domain.schemas import MetroTextInput, ProblemDescription
 

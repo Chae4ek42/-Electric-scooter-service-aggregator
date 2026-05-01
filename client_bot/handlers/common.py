@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import FSInputFile
 
 from client_bot.core.config import ADMIN_USERNAMES, SUPPORT_USER, COOPERATION_USER
+from client_bot.core.healthcheck import run_self_check
 from client_bot.ui.keyboards import main_menu_kb, support_kb
 from client_bot.core.database import async_session
 from client_bot.domain.models import User
@@ -89,3 +90,18 @@ async def cmd_client(message: types.Message, state: FSMContext) -> None:
         Client.Common.MAIN_MENU,
         reply_markup=main_menu_kb(is_admin=_is_admin(message.from_user.username)),
     )
+
+
+@router.message(Command("health"))
+async def cmd_health(message: types.Message) -> None:
+    if not _is_admin(message.from_user.username):
+        await message.answer(Client.Common.UNAVAILABLE)
+        return
+
+    await message.answer("Выполняю self-check инфраструктуры...")
+    healthy, report = await run_self_check(
+        source="client_bot_command",
+        user_id=message.from_user.id,
+    )
+    title = "Self-check: OK" if healthy else "Self-check: DEGRADED"
+    await message.answer(f"{title}\n\n{report}")

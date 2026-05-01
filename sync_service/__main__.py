@@ -5,6 +5,10 @@ import logging
 
 from client_bot.core.config import SHEETS_SYNC_INTERVAL
 from client_bot.core.logging_setup import setup_logging
+from client_bot.core.resilience import (
+    install_runtime_exception_handlers,
+    register_runtime_error,
+)
 from client_bot.services.seed import init_db
 from client_bot.services.sheets_sync import run_full_sync
 
@@ -16,12 +20,18 @@ async def _sync_loop(interval: int) -> None:
         try:
             await run_full_sync()
         except Exception as exc:
-            logger.error("Sheets sync error: %s", exc)
+            logger.exception("Sheets sync error")
+            await register_runtime_error(
+                action_type="sheets_sync_loop_error",
+                error=exc,
+                payload="sync-service",
+            )
 
 
 async def main() -> None:
     setup_logging(service_name="sync-service")
     logger = logging.getLogger(__name__)
+    install_runtime_exception_handlers(service_name="sync-service", logger=logger)
 
     logger.info("Initialising database …")
     await init_db()

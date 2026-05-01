@@ -16,10 +16,12 @@ from sqlalchemy import select
 from client_bot.core.config import ADMIN_USERNAMES, SUPPORT_USER, COOPERATION_USER
 from client_bot.core.formatting import e
 from client_bot.core.database import async_session
+from client_bot.core.resilience import create_guarded_task
 from client_bot.texts import Btn, Client, ORDER_STATUS_RU
 from client_bot.ui.keyboards import (
     brands_kb,
     calendar_kb,
+    city_confirm_kb,
     client_confirm_estimate_kb,
     client_pay_confirm_kb,
     client_ready_kb,
@@ -39,6 +41,12 @@ from client_bot.ui.keyboards import (
     time_slots_kb,
     upgrade_category_kb,
 )
+from client_bot.services.city_search import (
+    city_candidates,
+    is_moscow_city,
+    top_city_matches,
+)
+from client_bot.services.geocoder import build_geocode_query, geocode_address
 from client_bot.services.metro_search import best_metro_match, top_metro_matches
 from client_bot.services.notifications import send_by_token, send_with_retry
 from client_bot.services.order_lifecycle import (
@@ -53,7 +61,9 @@ from client_bot.domain.order_rules import (
     money,
 )
 from client_bot.domain.schemas import (
+    AddressInput,
     BrandNameInput,
+    CityInput,
     MetroTextInput,
     ModelNameInput,
     ProblemDescription,
@@ -107,6 +117,47 @@ def _is_generated_test_brand_name(name: str) -> bool:
     return bool(_TEST_BRAND_RE.match(name.strip()))
 
 
+async def _load_city_options() -> list[str]:
+    async with async_session() as session:
+        db_cities = (
+            (
+                await session.execute(
+                    select(Service.city).where(Service.city.is_not(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    cleaned = [city for city in db_cities if city and city.strip()]
+    return city_candidates(cleaned)
+
+
+def _is_moscow_flow(data: dict) -> bool:
+    return is_moscow_city(data.get("city"))
+
+
+async def _generate_unique_order_code(session, *, attempts: int = 50) -> str:
+    """Generate a unique six-digit order code."""
+    for _ in range(attempts):
+        code = f"{random.randint(0, 999999):06d}"
+        exists = (
+            await session.execute(select(Order.id).where(Order.order_code == code))
+        ).scalar_one_or_none()
+        if exists is None:
+            return code
+
+    base = int(datetime.datetime.now(tz=datetime.timezone.utc).timestamp()) % 1_000_000
+    for offset in range(1_000_000):
+        code = f"{(base + offset) % 1_000_000:06d}"
+        exists = (
+            await session.execute(select(Order.id).where(Order.order_code == code))
+        ).scalar_one_or_none()
+        if exists is None:
+            return code
+
+    return f"{random.randint(0, 999999):06d}"
+
+
 async def _load_client_brands(session) -> list[Brand]:
     brands = (await session.execute(select(Brand).order_by(Brand.name))).scalars().all()
     filtered = [b for b in brands if not _is_generated_test_brand_name(b.name or "")]
@@ -136,10 +187,8 @@ async def _handle_menu_interrupt(message: types.Message, state: FSMContext) -> b
     await state.clear()
     await message.answer(Client.PROCEDURE_INTERRUPTED)
     if message.text == Btn.SUBMIT_ORDER:
-        await state.set_state(OrderFSM.service_type)
-        await message.answer(
-            Client.Order.SELECT_SERVICE_TYPE, reply_markup=service_type_kb()
-        )
+        await state.set_state(OrderFSM.city_search)
+        await message.answer("Введите ваш город:")
     elif message.text == Btn.MY_ORDERS:
         await my_orders_interrupt(message, state)
     elif message.text == Btn.SUPPORT:
@@ -156,14 +205,110 @@ async def _handle_menu_interrupt(message: types.Message, state: FSMContext) -> b
 @router.message(F.text == Btn.SUBMIT_ORDER)
 async def start_order(message: types.Message, state: FSMContext) -> None:
     await state.clear()
-    await state.set_state(OrderFSM.service_type)
+    await state.set_state(OrderFSM.city_search)
     logger.info("user=%s started order flow", message.from_user.id)
-    await message.answer(
-        Client.Order.SELECT_SERVICE_TYPE, reply_markup=service_type_kb()
-    )
+    await message.answer("Введите ваш город:")
 
 
 # 2. SERVICE TYPE
+
+
+@router.message(OrderFSM.city_search, F.text)
+async def pick_city(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
+    try:
+        validated = CityInput(text=message.text)
+    except ValidationError as exc:
+        await message.answer(_pydantic_msg(exc))
+        return
+
+    options = await _load_city_options()
+    matches = top_city_matches(validated.text, options, limit=5)
+    if not matches:
+        await message.answer("Город не найден. Попробуйте ввести название точнее:")
+        return
+
+    if len(matches) == 1 or matches[0][1] > 0.85:
+        city = matches[0][0]
+        await state.update_data(pending_city=city, city_options=[city])
+        await state.set_state(OrderFSM.city_confirm)
+        await message.answer(
+            f"Найден город: <b>{e(city)}</b>. Всё верно?",
+            reply_markup=city_confirm_kb(city),
+        )
+        return
+
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    city_options = [city for city, _ in matches]
+    await state.update_data(city_options=city_options)
+    await state.set_state(OrderFSM.city_confirm)
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=city,
+                callback_data=f"city_pick:{idx}",
+            )
+        ]
+        for idx, city in enumerate(city_options)
+    ]
+    rows.append(
+        [InlineKeyboardButton(text="Ввести заново", callback_data="city_retry")]
+    )
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="back")])
+    await message.answer(
+        "Найдено несколько городов. Выберите нужный:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(OrderFSM.city_confirm, F.data == "city_ok")
+async def confirm_city(callback: types.CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    city = data.get("pending_city")
+    if not city:
+        await callback.answer("Город не выбран", show_alert=True)
+        return
+    await state.update_data(city=city, pending_city=None, city_options=[])
+    await state.set_state(OrderFSM.service_type)
+    await _safe_edit_or_answer(
+        callback,
+        Client.Order.SELECT_SERVICE_TYPE,
+        service_type_kb(),
+    )
+
+
+@router.callback_query(OrderFSM.city_confirm, F.data.startswith("city_pick:"))
+async def pick_city_from_list(callback: types.CallbackQuery, state: FSMContext) -> None:
+    try:
+        idx = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Некорректный выбор", show_alert=True)
+        return
+
+    data = await state.get_data()
+    options = data.get("city_options", [])
+    if not isinstance(options, list) or idx < 0 or idx >= len(options):
+        await callback.answer("Город не найден", show_alert=True)
+        return
+
+    city = options[idx]
+    await state.update_data(city=city, pending_city=None, city_options=[])
+    await state.set_state(OrderFSM.service_type)
+    logger.info("user=%s picked city=%s", callback.from_user.id, city)
+    await _safe_edit_or_answer(
+        callback,
+        Client.Order.SELECT_SERVICE_TYPE,
+        service_type_kb(),
+    )
+
+
+@router.callback_query(OrderFSM.city_confirm, F.data == "city_retry")
+async def retry_city(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(OrderFSM.city_search)
+    await _safe_edit_or_answer(callback, "Введите ваш город:")
 
 
 @router.callback_query(OrderFSM.service_type, F.data.startswith("stype:"))
@@ -294,6 +439,27 @@ async def _proceed_after_model(
         )
 
 
+async def _go_to_location_step(
+    event: types.CallbackQuery | types.Message,
+    state: FSMContext,
+) -> None:
+    data = await state.get_data()
+    if _is_moscow_flow(data):
+        await state.set_state(OrderFSM.location_method)
+        await _safe_edit_or_answer(
+            event,
+            Client.Order.CHOOSE_METRO,
+            location_method_kb(),
+        )
+        return
+
+    await state.set_state(OrderFSM.address)
+    await _safe_edit_or_answer(
+        event,
+        "Введите ваш адрес (улица, дом):",
+    )
+
+
 # 5. MALFUNCTION TYPE (repair)
 
 
@@ -317,12 +483,7 @@ async def pick_upgrade_category(
     await state.update_data(upgrade_category=cat, malfunction_category=None)
     logger.info("user=%s picked upgrade_category=%s", callback.from_user.id, cat)
     if cat == "Гидроизоляция":
-        await state.set_state(OrderFSM.location_method)
-        await _safe_edit_or_answer(
-            callback,
-            Client.Order.CHOOSE_METRO,
-            location_method_kb(),
-        )
+        await _go_to_location_step(callback, state)
     else:
         await state.set_state(OrderFSM.problem_description)
         await _safe_edit_or_answer(callback, Client.Order.DESCRIBE_UPGRADE)
@@ -348,11 +509,7 @@ async def pick_problem_description(message: types.Message, state: FSMContext) ->
         len(validated.text),
     )
     await state.update_data(problem_description=validated.text)
-    await state.set_state(OrderFSM.location_method)
-    await message.answer(
-        Client.Order.CHOOSE_METRO,
-        reply_markup=location_method_kb(),
-    )
+    await _go_to_location_step(message, state)
 
 
 # 6. LOCATION / METRO
@@ -360,15 +517,57 @@ async def pick_problem_description(message: types.Message, state: FSMContext) ->
 
 @router.callback_query(OrderFSM.location_method, F.data == "loc:metro")
 async def choose_metro_text(callback: types.CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not _is_moscow_flow(data):
+        await state.set_state(OrderFSM.address)
+        await _safe_edit_or_answer(callback, "Введите ваш адрес (улица, дом):")
+        return
     await state.set_state(OrderFSM.metro_search)
     await _safe_edit_or_answer(
         callback, "Введите название станции метро (или его часть):"
     )
 
 
+@router.message(OrderFSM.address, F.text)
+async def handle_client_address(message: types.Message, state: FSMContext) -> None:
+    if await _handle_menu_interrupt(message, state):
+        return
+    try:
+        validated = AddressInput(text=message.text)
+    except ValidationError as exc:
+        await message.answer(_pydantic_msg(exc))
+        return
+
+    data = await state.get_data()
+    city = (data.get("city") or "").strip()
+    query = build_geocode_query(city, validated.text)
+    coords = await geocode_address(query)
+    if coords is None:
+        await message.answer(
+            "Не удалось определить координаты по адресу. "
+            "Проверьте город и адрес, затем попробуйте ещё раз."
+        )
+        return
+
+    lat, lon = coords
+    await state.update_data(
+        client_address=validated.text,
+        user_lat=lat,
+        user_lon=lon,
+        metro_station=None,
+    )
+    await state.set_state(OrderFSM.calendar_date)
+    await message.answer(Client.Order.SELECT_DATE, reply_markup=calendar_kb())
+
+
 @router.message(OrderFSM.metro_search, F.text)
 async def handle_metro_text(message: types.Message, state: FSMContext) -> None:
     if await _handle_menu_interrupt(message, state):
+        return
+    data = await state.get_data()
+    if not _is_moscow_flow(data):
+        await state.set_state(OrderFSM.address)
+        await message.answer("Введите ваш адрес (улица, дом):")
         return
     try:
         validated = MetroTextInput(text=message.text)
@@ -504,8 +703,11 @@ async def _process_time_choice(
             malfunction_category=data.get("malfunction_category"),
             upgrade_category=data.get("upgrade_category"),
             user_metro=data.get("metro_station"),
+            user_city=data.get("city"),
             scheduled_time=time_str,
             scheduled_date=data.get("scheduled_date"),
+            user_lat=data.get("user_lat"),
+            user_lon=data.get("user_lon"),
         )
         result = await rank_services(ctx, session, limit=1)
 
@@ -598,8 +800,9 @@ async def _process_time_choice(
 
     if service_id is None:
         logger.warning(
-            "user=%s no services found: type=%s malf=%s upcat=%s metro=%s date=%s time=%s",
+            "user=%s no services found: city=%s type=%s malf=%s upcat=%s metro=%s date=%s time=%s",
             callback.from_user.id,
+            data.get("city"),
             data.get("service_type"),
             data.get("malfunction_category"),
             data.get("upgrade_category"),
@@ -623,9 +826,15 @@ async def _process_time_choice(
                 session.add(user)
                 await session.flush()
 
+            order_code = await _generate_unique_order_code(session)
+
             order = Order(
                 user_id=callback.from_user.id,
                 service_id=None,
+                city=data.get("city"),
+                client_address=data.get("client_address"),
+                client_latitude=data.get("user_lat"),
+                client_longitude=data.get("user_lon"),
                 model_id=data.get("model_id"),
                 model_custom_name=data.get("model_custom_name"),
                 brand_custom_name=data.get("brand_custom_name"),
@@ -635,12 +844,13 @@ async def _process_time_choice(
                 problem_description=data.get("problem_description"),
                 upgrade_category=data.get("upgrade_category"),
                 diagnostics_price=None,
-                order_code=str(random.randint(100000, 999999)),
+                order_code=order_code,
                 status="no_center",
             )
             session.add(order)
             await session.commit()
             order_id = order.id
+            order_code = order.order_code
         logger.info(
             "user=%s order #%s created with no_center", callback.from_user.id, order_id
         )
@@ -648,6 +858,7 @@ async def _process_time_choice(
         await _safe_edit_or_answer(
             callback,
             f"Заявка №{order_id} создана.\n"
+            f"Код заказа: {order_code}\n"
             "К сожалению, подходящих сервис-центров не найдено.\n"
             "Мы уведомим вас, когда появится подходящий сервис.",
         )
@@ -705,10 +916,16 @@ async def _process_time_choice(
     if svc_rating is not None:
         rating_line = f"\nРейтинг сервиса: {svc_rating}"
 
+    if _is_moscow_flow(data):
+        location_line = f"Метро: {e(data.get('metro_station', ''))}"
+    else:
+        location_line = f"Адрес: {e(data.get('client_address', ''))}"
+
     summary = (
         "<b>Подтвердите заявку:</b>\n\n"
+        f"Город: {e(data.get('city', ''))}\n"
         f"Модель: {e(model_display)}\n"
-        f"Метро: {e(data.get('metro_station', ''))}\n"
+        f"{location_line}\n"
         f"Дата: {data.get('scheduled_date', '')}\n"
         f"Время: {e(time_str)}"
         f"{rating_line}"
@@ -791,9 +1008,15 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
             await _safe_edit_or_answer(callback, Client.Order.SERVICE_UNAVAILABLE)
             return
 
+        order_code = await _generate_unique_order_code(session)
+
         order = Order(
             user_id=callback.from_user.id,
             service_id=data["service_id"],
+            city=data.get("city"),
+            client_address=data.get("client_address"),
+            client_latitude=data.get("user_lat"),
+            client_longitude=data.get("user_lon"),
             model_id=data.get("model_id"),
             model_custom_name=data.get("model_custom_name"),
             brand_custom_name=data.get("brand_custom_name"),
@@ -803,7 +1026,7 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
             problem_description=data.get("problem_description"),
             upgrade_category=data.get("upgrade_category"),
             diagnostics_price=data.get("diagnostics_price"),
-            order_code=str(random.randint(100000, 999999)),
+            order_code=order_code,
             status="awaiting_payment",
         )
         session.add(order)
@@ -825,7 +1048,6 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
     )
 
     # Auto-complete payment after 10 seconds (mock)
-    import asyncio
 
     async def _auto_pay_diagnostics():
         await asyncio.sleep(10)
@@ -866,7 +1088,14 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
                     o, _build_partner_new_order_text(order_id, o, model_str)
                 )
 
-    asyncio.create_task(_auto_pay_diagnostics())
+    create_guarded_task(
+        _auto_pay_diagnostics(),
+        logger=logger,
+        task_name=f"order_auto_pay_diagnostics:{order_id}",
+        action_type="order_auto_pay_diagnostics_error",
+        user_id=callback.from_user.id,
+        payload=f"order_id={order_id}",
+    )
     await callback.message.answer(
         "Главное меню:",
         reply_markup=main_menu_kb(is_admin=_is_admin(callback.from_user.username)),
@@ -890,8 +1119,6 @@ async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> N
     await state.clear()
 
     await _safe_edit_or_answer(callback, "⏳ Обработка оплаты...")
-
-    import asyncio
 
     async def _auto_pay():
         await asyncio.sleep(10)
@@ -929,7 +1156,14 @@ async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> N
                     o, _build_partner_new_order_text(order_id, o, model_str)
                 )
 
-    asyncio.create_task(_auto_pay())
+    create_guarded_task(
+        _auto_pay(),
+        logger=logger,
+        task_name=f"order_auto_pay:{order_id}",
+        action_type="order_auto_pay_error",
+        user_id=callback.from_user.id,
+        payload=f"order_id={order_id}",
+    )
 
 
 @router.callback_query(F.data.startswith("pay:cancel:"))
@@ -971,9 +1205,20 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
     current = await state.get_state()
     data = await state.get_data()
 
-    if current is None or current == OrderFSM.service_type.state:
+    if current is None or current == OrderFSM.city_search.state:
         await state.clear()
-        await _safe_edit_or_answer(callback, "Выберите тип услуги:", service_type_kb())
+        await state.set_state(OrderFSM.city_search)
+        await _safe_edit_or_answer(callback, "Введите ваш город:")
+        return
+
+    if current == OrderFSM.city_confirm.state:
+        await state.set_state(OrderFSM.city_search)
+        await _safe_edit_or_answer(callback, "Введите ваш город:")
+        return
+
+    if current == OrderFSM.service_type.state:
+        await state.set_state(OrderFSM.city_search)
+        await _safe_edit_or_answer(callback, "Введите ваш город:")
         return
 
     if current == OrderFSM.brand.state:
@@ -1072,7 +1317,7 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
                 callback, "Выберите категорию апгрейда:", upgrade_category_kb()
             )
 
-    elif current == OrderFSM.location_method.state:
+    elif current in (OrderFSM.location_method.state, OrderFSM.address.state):
         upcat = data.get("upgrade_category")
         stype = data.get("service_type", "repair")
         if upcat == "Гидроизоляция":
@@ -1096,12 +1341,16 @@ async def universal_back(callback: types.CallbackQuery, state: FSMContext) -> No
         )
 
     elif current == OrderFSM.calendar_date.state:
-        await state.set_state(OrderFSM.location_method)
-        await _safe_edit_or_answer(
-            callback,
-            "Выберете ближайшее к вам метро (Подберем самый ближайший сервис, под вашу проблему)",
-            location_method_kb(),
-        )
+        if _is_moscow_flow(data):
+            await state.set_state(OrderFSM.location_method)
+            await _safe_edit_or_answer(
+                callback,
+                "Выберете ближайшее к вам метро (Подберем самый ближайший сервис, под вашу проблему)",
+                location_method_kb(),
+            )
+        else:
+            await state.set_state(OrderFSM.address)
+            await _safe_edit_or_answer(callback, "Введите ваш адрес (улица, дом):")
 
     elif current == OrderFSM.calendar_time.state:
         await state.set_state(OrderFSM.calendar_date)
@@ -1158,8 +1407,13 @@ def _build_client_order_short_text(order: Order) -> str:
         f"Модель: {e(model_name)}",
         f"Сервис: {e(service_name)}",
         f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+        f"Город: {e(order.city or 'Москва')}",
         f"Дата: {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}".rstrip(),
     ]
+    if is_moscow_city(order.city):
+        lines.append(f"Метро: {e(order.metro_station or '—')}")
+    else:
+        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
     if order.upgrade_category:
         lines.append(f"Категория: {e(order.upgrade_category)}")
     return "\n".join(lines)
@@ -1185,10 +1439,15 @@ def _build_client_order_full_text(order: Order, title: str | None = None) -> str
             f"Модель: {e(model_name)}",
             f"Сервис: {e(service_name)}",
             f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
-            f"Метро: {e(order.metro_station or '—')}",
+            f"Город: {e(order.city or 'Москва')}",
             f"Дата: {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}".rstrip(),
         ]
     )
+
+    if is_moscow_city(order.city):
+        lines.append(f"Метро: {e(order.metro_station or '—')}")
+    else:
+        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
 
     if order.order_code:
         lines.append(f"Код заказа: {e(order.order_code)}")
@@ -1588,7 +1847,14 @@ def _notify_partner(order: Order, text: str) -> None:
                 order.service_id,
             )
 
-    asyncio.create_task(_send())
+    create_guarded_task(
+        _send(),
+        logger=logger,
+        task_name=f"partner_notify:{order.id}",
+        action_type="partner_notify_task_error",
+        user_id=order.user_id,
+        payload=f"order_id={order.id}; service_id={order.service_id}",
+    )
 
 
 def _build_partner_new_order_text(order_id: int, order: Order, model_str: str) -> str:
@@ -1611,9 +1877,13 @@ def _build_partner_new_order_text(order_id: int, order: Order, model_str: str) -
         f"Устройство: {e(model_str)}",
         f"Клиент: {e(client_info)} (ID: {order.user_id})",
         f"Тип услуги: {_SERVICE_TYPE_RU.get(service_type, service_type)}",
-        f"Метро: {e(order.metro_station or '—')}",
+        f"Город: {e(order.city or 'Москва')}",
         f"Дата: {e(slot)}",
     ]
+    if is_moscow_city(order.city):
+        lines.append(f"Метро: {e(order.metro_station or '—')}")
+    else:
+        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
     if order.upgrade_category:
         lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
     if order.problem_description:
@@ -1872,7 +2142,14 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
                 f"Итого: {total:.0f} руб.",
             )
 
-    asyncio.create_task(_auto_pay_final())
+    create_guarded_task(
+        _auto_pay_final(),
+        logger=logger,
+        task_name=f"order_auto_pay_final:{order_id}",
+        action_type="order_auto_pay_final_error",
+        user_id=callback.from_user.id,
+        payload=f"order_id={order_id}",
+    )
 
 
 @router.callback_query(F.data.startswith("cord:pay_cancel:"))

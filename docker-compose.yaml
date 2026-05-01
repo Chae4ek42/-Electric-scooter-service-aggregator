@@ -17,8 +17,11 @@ services:
     env_file: .env
     environment:
       - TZ=Europe/Moscow
-      - LOG_FORMAT=json
+      - LOG_FORMAT=text
       - LOG_LEVEL=INFO
+      - LOG_DIR=/app/data/logs
+      - LOG_FILE_MAX_MB=30
+      - LOG_FILE_BACKUPS=5
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
@@ -39,8 +42,11 @@ services:
     env_file: .env
     environment:
       - TZ=Europe/Moscow
-      - LOG_FORMAT=json
+      - LOG_FORMAT=text
       - LOG_LEVEL=INFO
+      - LOG_DIR=/app/data/logs
+      - LOG_FILE_MAX_MB=30
+      - LOG_FILE_BACKUPS=5
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
@@ -61,8 +67,11 @@ services:
     env_file: .env
     environment:
       - TZ=Europe/Moscow
-      - LOG_FORMAT=json
+      - LOG_FORMAT=text
       - LOG_LEVEL=INFO
+      - LOG_DIR=/app/data/logs
+      - LOG_FILE_MAX_MB=30
+      - LOG_FILE_BACKUPS=5
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
@@ -73,47 +82,5 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  loki:
-    image: grafana/loki:2.9.8
-    profiles: ["observability"]
-    restart: unless-stopped
-    command: -config.file=/etc/loki/config.yaml
-    ports:
-      - "3100:3100"
-    volumes:
-      - ./observability/loki-config.yaml:/etc/loki/config.yaml:ro
-      - loki_data:/loki
-
-  promtail:
-    image: grafana/promtail:2.9.8
-    profiles: ["observability"]
-    restart: unless-stopped
-    command: -config.file=/etc/promtail/config.yaml
-    depends_on:
-      - loki
-    volumes:
-      - ./observability/promtail-config.yaml:/etc/promtail/config.yaml:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - promtail_positions:/tmp
-
-  grafana:
-    image: grafana/grafana:10.4.6
-    profiles: ["observability"]
-    restart: unless-stopped
-    depends_on:
-      - loki
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
-
 volumes:
   redis_data:
-  loki_data:
-  promtail_positions:
-  grafana_data:

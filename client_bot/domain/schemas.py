@@ -18,6 +18,22 @@ class MetroTextInput(BaseModel):
         return v
 
 
+class CityInput(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Введите хотя бы 2 символа для поиска города")
+        if len(v) > 120:
+            raise ValueError("Название города слишком длинное")
+        if not any(ch.isalpha() for ch in v):
+            raise ValueError("Введите корректное название города")
+        return v
+
+
 class ProblemDescription(BaseModel):
     text: str
 

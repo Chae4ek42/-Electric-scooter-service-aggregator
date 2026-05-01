@@ -22,6 +22,7 @@ sheets:
     tab_orders: "Заявки"
     tab_clients: "Клиенты"
     tab_bank_details: "Реквизиты"
+    tab_service_metrics: "Метрики сервисов"
     columns:
         - "ID"
         - "Название"
@@ -54,6 +55,10 @@ calendar:
 
 # Антифлуд
 throttle_rate: 0.2 # мин. интервал между запросами (сек)
+
+# Подбор сервиса
+matching:
+    max_distance_km: 30
 
 # FSM-напоминание о незавершённой
 fsm_reminder:

@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
+from client_bot.core.healthcheck import run_self_check
 from client_bot.domain.models import ServiceDraft, User
 from client_bot.domain.states import (
     RegistrationFSM,
@@ -34,6 +35,7 @@ from partner_bot.ui.keyboards import (
 )
 
 from client_bot.core.formatting import e
+from client_bot.services.city_search import is_moscow_city
 from client_bot.texts import (
     TYPE_RU,
     PARTNER_STATUS_RU,
@@ -74,7 +76,9 @@ async def _get_owner(tg_id: int) -> ServiceDraft | None:
 
 def _draft_complete(owner: ServiceDraft) -> bool:
     """Returns True when all main required fields are filled."""
+    city = (owner.draft_city or "").strip()
     required = [
+        city,
         owner.draft_name,
         owner.draft_service_type,
         owner.draft_address,
@@ -83,6 +87,8 @@ def _draft_complete(owner: ServiceDraft) -> bool:
         owner.draft_close_time,
         owner.draft_working_days,
     ]
+    if is_moscow_city(city):
+        required.append(owner.draft_metro)
     if owner.draft_service_type == "upgrade":
         required.append(owner.draft_upgrade_categories)
     if owner.draft_service_type == "repair":
@@ -102,6 +108,7 @@ def _format_draft(owner: ServiceDraft) -> str:
     lines = [
         "Анкета сервисного центра:",
         "",
+        f"Город: {e(owner.draft_city or '(не заполнено)')}",
         f"Название: {e(owner.draft_name or '(не заполнено)')}",
         f"Тип услуг: {type_label}",
     ]
@@ -119,12 +126,18 @@ def _format_draft(owner: ServiceDraft) -> str:
         )
     lines += [
         f"Адрес: {e(owner.draft_address or '(не заполнено)')}",
-        f"Метро: {e(owner.draft_metro or '(не заполнено)')}",
         f"Телефон: {e(owner.draft_phone or '(не заполнено)')}",
         f"Telegram: {e(owner.draft_telegram or '—')}",
         f"Рабочие дни: {e(_sort_days(owner.draft_working_days) or '(не выбрано)')}",
         f"Время работы: {owner.draft_open_time or '?'}-{owner.draft_close_time or '?'}",
     ]
+    if is_moscow_city(owner.draft_city):
+        lines.insert(
+            len(lines) - 4,
+            f"Метро: {e(owner.draft_metro or '(не заполнено)')}",
+        )
+    else:
+        lines.insert(len(lines) - 4, "Метро: не требуется для выбранного города")
     if owner.draft_diagnostics_price is not None and owner.draft_diagnostics_price > 0:
         lines.append(f"Диагностика: {int(owner.draft_diagnostics_price)} руб.")
     else:
@@ -250,10 +263,10 @@ async def show_profile(message: types.Message) -> None:
 
     wd = _sort_days(svc.working_days)
     lines = [
+        f"Город: {e(svc.city or '-')}",
         f"Название: {e(svc.name)}",
         f"Тип: {_TYPE_RU.get(svc.service_type, svc.service_type)}",
         f"Адрес: {e(svc.address or '-')}",
-        f"Метро: {e(svc.nearest_metro or '-')}",
         f"Телефон: {e(svc.phone or '-')}",
         f"Telegram: {e(svc.telegram_handle or '-')}",
         f"Рабочие дни: {e(wd or '-')}",
@@ -265,6 +278,10 @@ async def show_profile(message: types.Message) -> None:
         f"Рейтинг: {svc.yandex_rating or '-'}",
         f"Доступен: {'Да' if svc.is_available else 'Нет'}",
     ]
+    if is_moscow_city(svc.city):
+        lines.insert(4, f"Метро: {e(svc.nearest_metro or '-')}")
+    else:
+        lines.insert(4, "Метро: не используется")
     if svc.upgrade_categories:
         lines.append(
             f"Категории апгрейда: {e(svc.upgrade_categories.replace(',', ', '))}"
@@ -333,6 +350,22 @@ async def cmd_client_mode(message: types.Message, state: FSMContext) -> None:
         )
 
 
+@router.message(Command("health"))
+async def cmd_health(message: types.Message) -> None:
+    uname = message.from_user.username or ""
+    if uname.lower() not in ADMIN_USERNAMES:
+        await message.answer(Client.Common.UNAVAILABLE)
+        return
+
+    await message.answer("Выполняю self-check инфраструктуры...")
+    healthy, report = await run_self_check(
+        source="partner_bot_command",
+        user_id=message.from_user.id,
+    )
+    title = "Self-check: OK" if healthy else "Self-check: DEGRADED"
+    await message.answer(f"{title}\n\n{report}")
+
+
 # ── FSM reminder handlers ────────────────────────────────────
 
 
@@ -365,6 +398,19 @@ async def fsm_remind_continue(callback: types.CallbackQuery, state: FSMContext) 
     # ── RegistrationFSM ──
     if current == RegistrationFSM.reg_name.state:
         await callback.message.answer("Введите название сервиса:")
+    elif current == RegistrationFSM.reg_city_search.state:
+        await callback.message.answer("Введите город сервисного центра:")
+    elif current == RegistrationFSM.reg_city_confirm.state:
+        city = data.get("pending_city", "")
+        if city:
+            from partner_bot.ui.keyboards import reg_city_confirm_kb
+
+            await callback.message.answer(
+                f"Ваш город — {city}?",
+                reply_markup=reg_city_confirm_kb(city),
+            )
+        else:
+            await callback.message.answer("Введите город сервисного центра:")
     elif current == RegistrationFSM.reg_service_type.state:
         await callback.message.answer(
             "Выберите тип услуг:", reply_markup=reg_service_type_kb()

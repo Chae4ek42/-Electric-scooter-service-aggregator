@@ -522,6 +522,10 @@ async def init_db() -> None:
         cursor = await raw_conn.execute("PRAGMA table_info('orders')")
         order_cols = {row[1] for row in await cursor.fetchall()}
         for col_name, col_type in (
+            ("city", "TEXT"),
+            ("client_address", "TEXT"),
+            ("client_latitude", "REAL"),
+            ("client_longitude", "REAL"),
             ("model_custom_name", "TEXT"),
             ("brand_custom_name", "TEXT"),
             ("problem_description", "TEXT"),
@@ -549,6 +553,12 @@ async def init_db() -> None:
                 )
                 logger.info("Migration: added orders.%s", col_name)
 
+        await raw_conn.execute("""
+            UPDATE orders
+            SET city = CASE WHEN metro_station IS NOT NULL THEN 'Москва' ELSE city END
+            WHERE city IS NULL OR TRIM(city) = ''
+            """)
+
         await raw_conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_orders_service_status_created_at "
             "ON orders(service_id, status, created_at)"
@@ -558,8 +568,7 @@ async def init_db() -> None:
             "ON orders(user_id, status, created_at)"
         )
 
-        await raw_conn.execute(
-            """
+        await raw_conn.execute("""
             CREATE TABLE IF NOT EXISTS order_status_history (
                 id INTEGER PRIMARY KEY,
                 order_id INTEGER NOT NULL,
@@ -571,8 +580,7 @@ async def init_db() -> None:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(order_id) REFERENCES orders(id)
             )
-            """
-        )
+            """)
         await raw_conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_order_status_history_order_id_created_at "
             "ON order_status_history(order_id, created_at)"
@@ -580,8 +588,12 @@ async def init_db() -> None:
 
         cursor = await raw_conn.execute("PRAGMA table_info('services')")
         svc_cols = {row[1] for row in await cursor.fetchall()}
+
         for col_name, col_type in (
+            ("city", "TEXT"),
             ("address", "TEXT"),
+            ("latitude", "REAL"),
+            ("longitude", "REAL"),
             ("yandex_rating", "REAL"),
             ("nearest_metro", "TEXT"),
             ("phone", "TEXT"),
@@ -606,11 +618,27 @@ async def init_db() -> None:
                 )
                 logger.info("Migration: added services.%s", col_name)
 
+        await raw_conn.execute("""
+            UPDATE services
+            SET city = 'Москва'
+            WHERE (city IS NULL OR TRIM(city) = '')
+              AND nearest_metro IS NOT NULL
+            """)
+
         cursor = await raw_conn.execute("PRAGMA table_info('services')")
         svc_cols = {row[1] for row in await cursor.fetchall()}
 
-        await raw_conn.execute(
-            """
+        await raw_conn.execute("""
+            UPDATE orders
+            SET city = COALESCE(
+                city,
+                (SELECT s.city FROM services s WHERE s.id = orders.service_id),
+                CASE WHEN metro_station IS NOT NULL THEN 'Москва' ELSE city END
+            )
+            WHERE city IS NULL OR TRIM(city) = ''
+            """)
+
+        await raw_conn.execute("""
             CREATE TABLE IF NOT EXISTS service_drafts (
                 id INTEGER PRIMARY KEY,
                 owner_user_id INTEGER NOT NULL UNIQUE,
@@ -622,7 +650,10 @@ async def init_db() -> None:
                 draft_name TEXT NULL,
                 draft_service_type TEXT NULL,
                 draft_category TEXT NULL,
+                draft_city TEXT NULL,
                 draft_address TEXT NULL,
+                draft_latitude REAL NULL,
+                draft_longitude REAL NULL,
                 draft_metro TEXT NULL,
                 draft_phone TEXT NULL,
                 draft_telegram TEXT NULL,
@@ -645,15 +676,37 @@ async def init_db() -> None:
                 registration_complete INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(service_id) REFERENCES services(id)
             )
-            """
-        )
+            """)
         await raw_conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_service_drafts_status_registration_complete "
             "ON service_drafts(status, registration_complete)"
         )
 
-        await raw_conn.execute(
-            """
+        cursor = await raw_conn.execute("PRAGMA table_info('service_drafts')")
+        draft_cols = {row[1] for row in await cursor.fetchall()}
+        for col_name, col_type in (
+            ("draft_city", "TEXT"),
+            ("draft_latitude", "REAL"),
+            ("draft_longitude", "REAL"),
+        ):
+            if col_name not in draft_cols:
+                await raw_conn.execute(
+                    f"ALTER TABLE service_drafts ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info("Migration: added service_drafts.%s", col_name)
+
+        await raw_conn.execute("""
+            UPDATE service_drafts
+            SET draft_city = COALESCE(
+                draft_city,
+                (SELECT s.city FROM services s WHERE s.id = service_drafts.service_id),
+                'Москва'
+            )
+            WHERE (draft_city IS NULL OR TRIM(draft_city) = '')
+              AND (draft_metro IS NOT NULL OR draft_address IS NOT NULL)
+            """)
+
+        await raw_conn.execute("""
             CREATE TABLE IF NOT EXISTS service_bank_details (
                 service_id INTEGER PRIMARY KEY,
                 legal_form TEXT NULL,
@@ -667,8 +720,7 @@ async def init_db() -> None:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(service_id) REFERENCES services(id)
             )
-            """
-        )
+            """)
 
         # Legacy migration: services table used to hold draft/owner fields.
         legacy_cols = {
@@ -685,8 +737,7 @@ async def init_db() -> None:
             "draft_close_time",
         }
         if legacy_cols.issubset(svc_cols):
-            await raw_conn.execute(
-                """
+            await raw_conn.execute("""
                 INSERT OR IGNORE INTO service_drafts (
                     owner_user_id,
                     service_id,
@@ -697,7 +748,10 @@ async def init_db() -> None:
                     draft_name,
                     draft_service_type,
                     draft_category,
+                    draft_city,
                     draft_address,
+                    draft_latitude,
+                    draft_longitude,
                     draft_metro,
                     draft_phone,
                     draft_telegram,
@@ -729,7 +783,10 @@ async def init_db() -> None:
                     COALESCE(draft_name, name),
                     COALESCE(draft_service_type, service_type),
                     draft_category,
+                    COALESCE(city, 'Москва'),
                     COALESCE(draft_address, address),
+                    latitude,
+                    longitude,
                     draft_metro,
                     COALESCE(draft_phone, phone),
                     COALESCE(draft_telegram, telegram_handle),
@@ -752,8 +809,7 @@ async def init_db() -> None:
                     COALESCE(registration_complete, 0)
                 FROM services
                 WHERE telegram_id IS NOT NULL
-                """
-            )
+                """)
 
             if {
                 "draft_legal_form",
@@ -765,8 +821,7 @@ async def init_db() -> None:
                 "draft_org_name",
                 "draft_inn",
             }.issubset(svc_cols):
-                await raw_conn.execute(
-                    """
+                await raw_conn.execute("""
                     INSERT OR IGNORE INTO service_bank_details (
                         service_id,
                         legal_form,
@@ -796,8 +851,7 @@ async def init_db() -> None:
                         COALESCE(draft_corr_account, '') <> '' OR
                         COALESCE(draft_org_name, '') <> '' OR
                         COALESCE(draft_inn, '') <> ''
-                    """
-                )
+                    """)
 
         # Drop legacy owner/draft columns from services after data migration.
         # Some old schemas had NOT NULL draft columns without defaults and broke inserts.
@@ -847,15 +901,17 @@ async def init_db() -> None:
 
             await raw_conn.execute("PRAGMA foreign_keys=OFF")
             await raw_conn.execute("DROP TABLE IF EXISTS services_new")
-            await raw_conn.execute(
-                """
+            await raw_conn.execute("""
                 CREATE TABLE services_new (
                     id INTEGER PRIMARY KEY,
                     category_id INTEGER NULL,
                     name TEXT NOT NULL,
                     service_type TEXT NOT NULL,
                     is_available INTEGER NOT NULL DEFAULT 1,
+                    city TEXT NULL,
                     address TEXT NULL,
+                    latitude REAL NULL,
+                    longitude REAL NULL,
                     yandex_rating REAL NULL,
                     nearest_metro TEXT NULL,
                     phone TEXT NULL,
@@ -874,18 +930,19 @@ async def init_db() -> None:
                     registration_complete INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY(category_id) REFERENCES service_categories(id)
                 )
-                """
-            )
+                """)
 
-            await raw_conn.execute(
-                f"""
+            await raw_conn.execute(f"""
                 INSERT INTO services_new (
                     id,
                     category_id,
                     name,
                     service_type,
                     is_available,
+                    city,
                     address,
+                    latitude,
+                    longitude,
                     yandex_rating,
                     nearest_metro,
                     phone,
@@ -909,7 +966,10 @@ async def init_db() -> None:
                     {_coalesce_sql('name', default="'Без названия'")},
                     {_coalesce_sql('service_type', default="'repair'")},
                     {_coalesce_sql('is_available', default='1')},
+                    {_coalesce_sql('city', default="'Москва'")},
                     {_coalesce_sql('address', 'draft_address')},
+                    {_coalesce_sql('latitude')},
+                    {_coalesce_sql('longitude')},
                     {_coalesce_sql('yandex_rating')},
                     {_coalesce_sql('nearest_metro', 'draft_metro')},
                     {_coalesce_sql('phone', 'draft_phone')},
@@ -927,8 +987,7 @@ async def init_db() -> None:
                     {_coalesce_sql('pause_until')},
                     {_coalesce_sql('registration_complete', default='0')}
                 FROM services
-                """
-            )
+                """)
 
             await raw_conn.execute("DROP TABLE services")
             await raw_conn.execute("ALTER TABLE services_new RENAME TO services")
@@ -952,8 +1011,7 @@ async def init_db() -> None:
             settings_cols = {row[1] for row in await cursor.fetchall()}
 
             if "service_id" not in settings_cols and "owner_id" in settings_cols:
-                await raw_conn.execute(
-                    """
+                await raw_conn.execute("""
                     CREATE TABLE service_owner_settings_new (
                         service_id INTEGER PRIMARY KEY,
                         owner_user_id INTEGER NOT NULL UNIQUE,
@@ -961,10 +1019,8 @@ async def init_db() -> None:
                         notif_cancel INTEGER NOT NULL DEFAULT 1,
                         FOREIGN KEY(service_id) REFERENCES services(id)
                     )
-                    """
-                )
-                await raw_conn.execute(
-                    """
+                    """)
+                await raw_conn.execute("""
                     INSERT OR IGNORE INTO service_owner_settings_new (
                         service_id,
                         owner_user_id,
@@ -979,8 +1035,7 @@ async def init_db() -> None:
                     FROM service_owner_settings sos
                     LEFT JOIN service_drafts sd ON sd.service_id = sos.owner_id
                     WHERE sos.owner_id IS NOT NULL
-                    """
-                )
+                    """)
                 await raw_conn.execute("DROP TABLE service_owner_settings")
                 await raw_conn.execute(
                     "ALTER TABLE service_owner_settings_new RENAME TO service_owner_settings"
@@ -990,8 +1045,7 @@ async def init_db() -> None:
                     await raw_conn.execute(
                         "ALTER TABLE service_owner_settings ADD COLUMN owner_user_id INTEGER"
                     )
-                await raw_conn.execute(
-                    """
+                await raw_conn.execute("""
                     UPDATE service_owner_settings
                     SET owner_user_id = COALESCE(
                         owner_user_id,
@@ -1003,11 +1057,9 @@ async def init_db() -> None:
                         ),
                         service_id
                     )
-                    """
-                )
+                    """)
         else:
-            await raw_conn.execute(
-                """
+            await raw_conn.execute("""
                 CREATE TABLE service_owner_settings (
                     service_id INTEGER PRIMARY KEY,
                     owner_user_id INTEGER NOT NULL UNIQUE,
@@ -1015,12 +1067,10 @@ async def init_db() -> None:
                     notif_cancel INTEGER NOT NULL DEFAULT 1,
                     FOREIGN KEY(service_id) REFERENCES services(id)
                 )
-                """
-            )
+                """)
 
         # Ensure default owner settings for every linked draft.
-        await raw_conn.execute(
-            """
+        await raw_conn.execute("""
             INSERT OR IGNORE INTO service_owner_settings (
                 service_id,
                 owner_user_id,
@@ -1030,8 +1080,7 @@ async def init_db() -> None:
             SELECT service_id, owner_user_id, 1, 1
             FROM service_drafts
             WHERE service_id IS NOT NULL
-            """
-        )
+            """)
 
         cursor = await raw_conn.execute("PRAGMA table_info('metro_stations')")
         metro_cols = {row[1] for row in await cursor.fetchall()}

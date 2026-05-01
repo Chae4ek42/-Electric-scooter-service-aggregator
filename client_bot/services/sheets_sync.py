@@ -653,6 +653,7 @@ async def run_full_sync(*, first_run: bool = False, dry_run: bool = False) -> No
     from client_bot.services.sheets_writer import (
         sync_all_clients_to_sheet,
         sync_all_orders_to_sheet,
+        sync_all_service_metrics_to_sheet,
     )
 
     try:
@@ -684,3 +685,8 @@ async def run_full_sync(*, first_run: bool = False, dry_run: bool = False) -> No
         await asyncio.to_thread(sync_all_clients_to_sheet)
     except Exception as exc:
         logger.warning("SYNC_CLIENTS_ERR | error=%s", exc)
+
+    try:
+        await asyncio.to_thread(sync_all_service_metrics_to_sheet)
+    except Exception as exc:
+        logger.warning("SYNC_SERVICE_METRICS_ERR | error=%s", exc)
