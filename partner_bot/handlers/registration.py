@@ -1647,9 +1647,9 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
             scope=ADMIN_SCOPE_PARTNER,
             event_key="partner_application",
             text=(
-                "📋 Новая заявка на партнёрство!\n"
-                f"Сервис: {owner.draft_name or '—'}\n"
-                f"Тип: {_stype_label or '—'}\n"
+                "Новая заявка на партнёрство.\n"
+                f"<b>Сервис:</b> {e(owner.draft_name or '—')}\n"
+                f"<b>Тип:</b> {e(_stype_label or '—')}\n"
                 "Откройте /start → Панель администратора для проверки."
             ),
             dedupe_prefix=f"partner_application:{owner.id}",

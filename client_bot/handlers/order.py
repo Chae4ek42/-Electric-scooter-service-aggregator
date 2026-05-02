@@ -873,13 +873,13 @@ async def _process_time_choice(
             "Мы уведомим вас, когда появится подходящий сервис.",
         )
         admin_text = (
-            f"⚠️ Не найден сервис для заявки #{order_id}/{order_code}\n"
-            f"Клиент ID: {callback.from_user.id}\n"
-            f"Город: {data.get('city') or '—'}\n"
-            f"Тип услуги: {_SERVICE_TYPE_RU.get(data.get('service_type') or '', data.get('service_type') or '—')}\n"
-            f"Метро: {data.get('metro_station') or '—'}\n"
-            f"Адрес: {data.get('client_address') or '—'}\n"
-            f"Дата: {data.get('scheduled_date') or '—'} {data.get('scheduled_time') or ''}".rstrip()
+            f"Не найден сервис для заявки #{order_id}/{order_code}\n"
+            f"<b>Клиент ID:</b> {callback.from_user.id}\n"
+            f"<b>Город:</b> {e(data.get('city') or '—')}\n"
+            f"<b>Тип услуги:</b> {_SERVICE_TYPE_RU.get(data.get('service_type') or '', data.get('service_type') or '—')}\n"
+            f"<b>Метро:</b> {e(data.get('metro_station') or '—')}\n"
+            f"<b>Адрес:</b> {e(data.get('client_address') or '—')}\n"
+            f"<b>Дата:</b> {e(data.get('scheduled_date') or '—')} {e(data.get('scheduled_time') or '')}".rstrip()
         )
         _notify_client_admins(
             event_key="no_center",
@@ -1790,17 +1790,17 @@ async def my_order_contact(callback: types.CallbackQuery) -> None:
 
     lines = [
         f"Контакты сервиса по заявке №{order_id}:",
-        f"Сервис: {e(service.name or '—')}",
+        f"<b>Сервис:</b> {e(service.name or '—')}",
     ]
     if service.address:
-        lines.append(f"Адрес: {e(service.address)}")
+        lines.append(f"<b>Адрес:</b> {e(service.address)}")
     if service.phone:
-        lines.append(f"Телефон: {e(service.phone)}")
+        lines.append(f"<b>Телефон:</b> {e(service.phone)}")
     if service.telegram_handle:
         handle = service.telegram_handle
         if handle and not handle.startswith("@"):
             handle = f"@{handle}"
-        lines.append(f"Telegram: {e(handle)}")
+        lines.append(f"<b>Telegram:</b> {e(handle)}")
 
     await callback.message.answer("\n".join(lines))
     await callback.answer()
@@ -2020,25 +2020,25 @@ def _build_partner_new_order_text(order_id: int, order: Order, model_str: str) -
     slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
     order_code = _display_order_code(order)
     lines = [
-        f"🆕 Новая заявка #{order_id}",
-        f"Код заявки: {e(order_code)}",
+        f"Новая заявка #{order_id}",
+        f"<b>Код заявки:</b> {e(order_code)}",
         "",
-        f"Устройство: {e(model_str)}",
-        f"Клиент: {e(client_info)} (ID: {order.user_id})",
-        f"Тип услуги: {_SERVICE_TYPE_RU.get(service_type, service_type)}",
-        f"Город: {e(order.city or 'Москва')}",
-        f"Дата: {e(slot)}",
+        f"<b>Устройство:</b> {e(model_str)}",
+        f"<b>Клиент:</b> {e(client_info)} (ID: {order.user_id})",
+        f"<b>Тип услуги:</b> {_SERVICE_TYPE_RU.get(service_type, service_type)}",
+        f"<b>Город:</b> {e(order.city or 'Москва')}",
+        f"<b>Дата:</b> {e(slot)}",
     ]
     if is_moscow_city(order.city):
-        lines.append(f"Метро: {e(order.metro_station or '—')}")
+        lines.append(f"<b>Метро:</b> {e(order.metro_station or '—')}")
     else:
-        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
+        lines.append(f"<b>Адрес клиента:</b> {e(order.client_address or '—')}")
     if order.upgrade_category:
-        lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
+        lines.append(f"<b>Категория апгрейда:</b> {e(order.upgrade_category)}")
     if order.problem_description:
-        lines.append(f"Описание: {e(order.problem_description)}")
+        lines.append(f"<b>Описание:</b> {e(order.problem_description)}")
     if order.diagnostics_price is not None:
-        lines.append(f"Диагностика: {order.diagnostics_price:.0f} руб.")
+        lines.append(f"<b>Диагностика:</b> {order.diagnostics_price:.0f} руб.")
     lines.append("Клиенту нужно назвать номер заказа при визите.")
     return "\n".join(lines)
 
@@ -2048,46 +2048,50 @@ def _build_partner_client_cancel_text(
 ) -> str:
     slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
     lines = [
-        f"❌ Клиент отменил заявку #{order_id}",
-        f"Код заявки: {e(_display_order_code(order))}",
+        f"Клиент отменил заявку #{order_id}",
+        f"<b>Код заявки:</b> {e(_display_order_code(order))}",
         "",
-        f"Устройство: {e(model_str)}",
-        f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
-        f"Город: {e(order.city or 'Москва')}",
-        f"Дата: {e(slot)}",
+        f"<b>Устройство:</b> {e(model_str)}",
+        f"<b>Тип услуги:</b> {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+        f"<b>Город:</b> {e(order.city or 'Москва')}",
+        f"<b>Дата:</b> {e(slot)}",
     ]
     if is_moscow_city(order.city):
-        lines.append(f"Метро: {e(order.metro_station or '—')}")
+        lines.append(f"<b>Метро:</b> {e(order.metro_station or '—')}")
     else:
-        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
+        lines.append(f"<b>Адрес клиента:</b> {e(order.client_address or '—')}")
     return "\n".join(lines)
 
 
 def _build_admin_client_cancel_text(order: Order, model_str: str) -> str:
     slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
     client_name = order.user.full_name if order.user else "—"
-    client_username = f"@{order.user.username}" if order.user and order.user.username else "—"
+    client_username = (
+        f"@{order.user.username}" if order.user and order.user.username else "—"
+    )
     return "\n".join(
         [
-            f"❌ Клиент отменил заявку #{order.id}/{_display_order_code(order)}",
-            f"Клиент: {client_name} ({client_username}, ID: {order.user_id})",
-            f"Устройство: {model_str}",
-            f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
-            f"Дата: {slot}",
-            f"Город: {order.city or 'Москва'}",
+            f"Клиент отменил заявку #{order.id}/{_display_order_code(order)}",
+            f"<b>Клиент:</b> {e(client_name)} ({e(client_username)}, ID: {order.user_id})",
+            f"<b>Устройство:</b> {e(model_str)}",
+            f"<b>Тип услуги:</b> {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+            f"<b>Дата:</b> {e(slot)}",
+            f"<b>Город:</b> {e(order.city or 'Москва')}",
         ]
     )
 
 
 def _build_admin_completed_text(order: Order, total: float) -> str:
     client_name = order.user.full_name if order.user else "—"
-    client_username = f"@{order.user.username}" if order.user and order.user.username else "—"
+    client_username = (
+        f"@{order.user.username}" if order.user and order.user.username else "—"
+    )
     return "\n".join(
         [
-            f"✅ Завершена заявка #{order.id}/{_display_order_code(order)}",
-            f"Клиент: {client_name} ({client_username}, ID: {order.user_id})",
-            f"Сервис: {order.service.name if order.service else '—'} (ID: {order.service_id})",
-            f"Итоговая стоимость: {total:.0f} руб.",
+            f"Завершена заявка #{order.id}/{_display_order_code(order)}",
+            f"<b>Клиент:</b> {e(client_name)} ({e(client_username)}, ID: {order.user_id})",
+            f"<b>Сервис:</b> {e(order.service.name) if order.service else '—'} (ID: {order.service_id})",
+            f"<b>Итоговая стоимость:</b> {total:.0f} руб.",
         ]
     )
 

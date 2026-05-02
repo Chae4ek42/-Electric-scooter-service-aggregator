@@ -269,28 +269,28 @@ async def show_profile(message: types.Message) -> None:
 
     wd = _sort_days(svc.working_days)
     lines = [
-        f"Город: {e(svc.city or '-')}",
-        f"Название: {e(svc.name)}",
-        f"Тип: {_TYPE_RU.get(svc.service_type, svc.service_type)}",
-        f"Адрес: {e(svc.address or '-')}",
-        f"Телефон: {e(svc.phone or '-')}",
-        f"Telegram: {e(svc.telegram_handle or '-')}",
-        f"Рабочие дни: {e(wd or '-')}",
-        f"Время работы: {svc.open_time or '?'}\u2014{svc.close_time or '?'}",
-        f"Гидроизоляция: {'Да' if svc.has_hydroisolation else 'Нет'}",
-        f"Цена гидроизоляции: {e(svc.hydroisolation_price or '-')}",
-        f"Диагностика: {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
-        f"Входит в стоимость: {'Да' if svc.diagnostics_included else 'Нет'}",
-        f"Рейтинг: {svc.yandex_rating or '-'}",
-        f"Доступен: {'Да' if svc.is_available else 'Нет'}",
+        f"<b>Город:</b> {e(svc.city or '-')}",
+        f"<b>Название:</b> {e(svc.name)}",
+        f"<b>Тип:</b> {_TYPE_RU.get(svc.service_type, svc.service_type)}",
+        f"<b>Адрес:</b> {e(svc.address or '-')}",
+        f"<b>Телефон:</b> {e(svc.phone or '-')}",
+        f"<b>Telegram:</b> {e(svc.telegram_handle or '-')}",
+        f"<b>Рабочие дни:</b> {e(wd or '-')}",
+        f"<b>Время работы:</b> {svc.open_time or '?'}\u2014{svc.close_time or '?'}",
+        f"<b>Гидроизоляция:</b> {'Да' if svc.has_hydroisolation else 'Нет'}",
+        f"<b>Цена гидроизоляции:</b> {e(svc.hydroisolation_price or '-')}",
+        f"<b>Диагностика:</b> {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
+        f"<b>Входит в стоимость:</b> {'Да' if svc.diagnostics_included else 'Нет'}",
+        f"<b>Рейтинг:</b> {svc.yandex_rating or '-'}",
+        f"<b>Доступен:</b> {'Да' if svc.is_available else 'Нет'}",
     ]
     if is_moscow_city(svc.city):
-        lines.insert(4, f"Метро: {e(svc.nearest_metro or '-')}")
+        lines.insert(4, f"<b>Метро:</b> {e(svc.nearest_metro or '-')}")
     else:
-        lines.insert(4, "Метро: не используется")
+        lines.insert(4, "<b>Метро:</b> не используется")
     if svc.upgrade_categories:
         lines.append(
-            f"Категории апгрейда: {e(svc.upgrade_categories.replace(',', ', '))}"
+            f"<b>Категории апгрейда:</b> {e(svc.upgrade_categories.replace(',', ', '))}"
         )
     await message.answer("\n".join(lines))
 

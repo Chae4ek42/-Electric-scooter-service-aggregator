@@ -85,7 +85,9 @@ async def get_or_create_owner_settings(
 ) -> ServiceOwnerSettings:
     settings = (
         await session.execute(
-            select(ServiceOwnerSettings).where(ServiceOwnerSettings.service_id == service_id)
+            select(ServiceOwnerSettings).where(
+                ServiceOwnerSettings.service_id == service_id
+            )
         )
     ).scalar_one_or_none()
 

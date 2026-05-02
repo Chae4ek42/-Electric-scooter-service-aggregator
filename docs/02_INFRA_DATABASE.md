@@ -43,12 +43,12 @@
 ## Матрица уведомлений
 
 - `service_owner_settings`:
-	- master-switch `notif_enabled`;
-	- события владельца: `notif_new_order`, `notif_cancel`, `notif_client_comment`, `notif_estimate`, `notif_dispute`, `notif_completed`.
+    - master-switch `notif_enabled`;
+    - события владельца: `notif_new_order`, `notif_cancel`, `notif_client_comment`, `notif_estimate`, `notif_dispute`, `notif_completed`.
 - `admin_notification_settings`:
-	- ключ `(admin_user_id, scope)`;
-	- `scope=client`: `notif_client_dispute`, `notif_client_cancel`, `notif_no_center`, `notif_order_completed`;
-	- `scope=partner`: `notif_partner_application`, `notif_partner_profile_update`, `notif_partner_status_change`.
+    - ключ `(admin_user_id, scope)`;
+    - `scope=client`: `notif_client_dispute`, `notif_client_cancel`, `notif_no_center`, `notif_order_completed`;
+    - `scope=partner`: `notif_partner_application`, `notif_partner_profile_update`, `notif_partner_status_change`.
 
 ## Миграции и совместимость
 
@@ -62,8 +62,8 @@
 6. Создание `schema_versions` и фиксация применённых версий миграций.
 7. Приведение `sheets_retry_queue` к схеме delayed-retry (next_retry_at/last_error).
 8. Приведение схем уведомлений:
-	- расширение `service_owner_settings` новыми флагами;
-	- создание `admin_notification_settings` и индекса по `scope`.
+    - расширение `service_owner_settings` новыми флагами;
+    - создание `admin_notification_settings` и индекса по `scope`.
 
 ## Доступ к БД
 

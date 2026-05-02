@@ -6,6 +6,8 @@ import time
 from typing import Any
 
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 logger = logging.getLogger("esas.tech.notifications")
 
@@ -78,7 +80,10 @@ async def send_by_token(
     dedupe_key: str | None = None,
     max_attempts: int = 3,
 ) -> bool:
-    bot = Bot(token=token)
+    bot = Bot(
+        token=token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     try:
         return await send_with_retry(
             bot,

@@ -511,16 +511,12 @@ async def _run_migrations(conn: Any) -> None:
 
 
 async def _ensure_schema_versions_table(conn: Any) -> None:
-    await conn.execute(
-        text(
-            """
+    await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS schema_versions (
                 version VARCHAR(128) PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
-    )
+            """))
 
 
 async def _is_schema_version_applied(conn: Any, version: str) -> bool:
@@ -535,13 +531,11 @@ async def _is_schema_version_applied(conn: Any, version: str) -> bool:
 
 async def _mark_schema_version(conn: Any, version: str) -> None:
     await conn.execute(
-        text(
-            """
+        text("""
             INSERT INTO schema_versions(version)
             VALUES (:version)
             ON CONFLICT(version) DO NOTHING
-            """
-        ),
+            """),
         {"version": version},
     )
 
@@ -551,19 +545,13 @@ async def _run_postgres_migrations(conn: Any) -> None:
     await conn.execute(
         text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_code VARCHAR(6)")
     )
-    await conn.execute(
-        text(
-            """
+    await conn.execute(text("""
             UPDATE orders
             SET order_code = LPAD((id % 1000000)::text, 6, '0')
             WHERE order_code IS NULL OR BTRIM(order_code) = ''
-            """
-        )
-    )
+            """))
 
-    await conn.execute(
-        text(
-            """
+    await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS sheets_retry_queue (
                 id SERIAL PRIMARY KEY,
                 service_id INTEGER NULL,
@@ -575,9 +563,7 @@ async def _run_postgres_migrations(conn: Any) -> None:
                 last_error TEXT NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
-    )
+            """))
     await conn.execute(
         text(
             "CREATE INDEX IF NOT EXISTS ix_sheets_retry_queue_next_retry_at "
@@ -619,9 +605,7 @@ async def _run_postgres_notifications_migrations(conn: Any) -> None:
         )
     )
 
-    await conn.execute(
-        text(
-            """
+    await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS admin_notification_settings (
                 admin_user_id BIGINT NOT NULL,
                 scope VARCHAR(20) NOT NULL,
@@ -636,9 +620,7 @@ async def _run_postgres_notifications_migrations(conn: Any) -> None:
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (admin_user_id, scope)
             )
-            """
-        )
-    )
+            """))
     await conn.execute(
         text(
             "CREATE INDEX IF NOT EXISTS ix_admin_notification_settings_scope "
@@ -712,13 +694,11 @@ async def init_db() -> None:
                 )
                 logger.info("Migration: added orders.%s", col_name)
 
-        await raw_conn.execute(
-            """
+        await raw_conn.execute("""
             UPDATE orders
             SET order_code = substr('000000' || CAST(id % 1000000 AS TEXT), -6, 6)
             WHERE order_code IS NULL OR TRIM(order_code) = ''
-            """
-        )
+            """)
 
         await raw_conn.execute("""
             UPDATE orders
@@ -1345,14 +1325,12 @@ async def init_db() -> None:
             )
             logger.info("Migration: seeded service category 'Электрика + механика'")
 
-        await raw_conn.execute(
-            """
+        await raw_conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_versions (
                 version TEXT PRIMARY KEY,
                 applied_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
+            """)
 
         cursor = await raw_conn.execute(
             "SELECT 1 FROM schema_versions WHERE version = '2026_01_sheets_retry_queue_v2' LIMIT 1"
@@ -1365,12 +1343,13 @@ async def init_db() -> None:
             queue_exists = await cursor.fetchone()
             queue_cols: set[str] = set()
             if queue_exists:
-                cursor = await raw_conn.execute("PRAGMA table_info('sheets_retry_queue')")
+                cursor = await raw_conn.execute(
+                    "PRAGMA table_info('sheets_retry_queue')"
+                )
                 queue_cols = {row[1] for row in await cursor.fetchall()}
 
             await raw_conn.execute("DROP TABLE IF EXISTS sheets_retry_queue_new")
-            await raw_conn.execute(
-                """
+            await raw_conn.execute("""
                 CREATE TABLE sheets_retry_queue_new (
                     id INTEGER PRIMARY KEY,
                     service_id INTEGER NULL,
@@ -1382,12 +1361,13 @@ async def init_db() -> None:
                     last_error TEXT NULL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
-                """
-            )
+                """)
 
             if queue_exists:
                 service_expr = "service_id" if "service_id" in queue_cols else "NULL"
-                operation_expr = "operation" if "operation" in queue_cols else "'sync_full'"
+                operation_expr = (
+                    "operation" if "operation" in queue_cols else "'sync_full'"
+                )
                 payload_expr = (
                     "payload_json" if "payload_json" in queue_cols else "NULL"
                 )
@@ -1395,10 +1375,11 @@ async def init_db() -> None:
                 last_attempt_expr = (
                     "last_attempt_at" if "last_attempt_at" in queue_cols else "NULL"
                 )
-                created_expr = "created_at" if "created_at" in queue_cols else "CURRENT_TIMESTAMP"
+                created_expr = (
+                    "created_at" if "created_at" in queue_cols else "CURRENT_TIMESTAMP"
+                )
 
-                await raw_conn.execute(
-                    f"""
+                await raw_conn.execute(f"""
                     INSERT INTO sheets_retry_queue_new (
                         id,
                         service_id,
@@ -1421,8 +1402,7 @@ async def init_db() -> None:
                         NULL,
                         {created_expr}
                     FROM sheets_retry_queue
-                    """
-                )
+                    """)
 
             await raw_conn.execute("DROP TABLE IF EXISTS sheets_retry_queue")
             await raw_conn.execute(
