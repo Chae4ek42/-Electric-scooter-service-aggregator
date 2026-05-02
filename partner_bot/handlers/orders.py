@@ -95,48 +95,48 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплексный"}
 
     lines = [
-        f"Заявка #{order.id}",
-        f"Код заявки: {e(_display_order_code(order))}",
-        f"Устройство: {model_str}",
-        f"Тип: {type_map.get(stype, stype) if stype else '—'}",
-        f"Город: {e(order.city or 'Москва')}",
+        f"<b>Заявка #{order.id}</b>",
+        f"<b>Код заявки:</b> {e(_display_order_code(order))}",
+        f"<b>Устройство:</b> {model_str}",
+        f"<b>Тип:</b> {type_map.get(stype, stype) if stype else '—'}",
+        f"<b>Город:</b> {e(order.city or 'Москва')}",
     ]
     if is_moscow_city(order.city):
-        lines.append(f"Метро: {e(order.metro_station or '—')}")
+        lines.append(f"<b>Метро:</b> {e(order.metro_station or '—')}")
     else:
-        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
+        lines.append(f"<b>Адрес клиента:</b> {e(order.client_address or '—')}")
     if order.upgrade_category:
-        lines.append(f"Категория: {e(order.upgrade_category)}")
+        lines.append(f"<b>Категория:</b> {e(order.upgrade_category)}")
     if order.problem_description:
-        lines.append(f"Проблема: {e(order.problem_description)}")
-    lines.append(f"Дата: {order.scheduled_date or '—'} {order.scheduled_time or ''}")
-    lines.append(f"Статус: {_STATUS_RU.get(order.status, order.status)}")
+        lines.append(f"<b>Проблема:</b> {e(order.problem_description)}")
+    lines.append(f"<b>Дата:</b> {order.scheduled_date or '—'} {order.scheduled_time or ''}")
+    lines.append(f"<b>Статус:</b> {_STATUS_RU.get(order.status, order.status)}")
 
     if show_client and order.user:
         u = order.user
         client_info = e(f"@{u.username}" if u.username else u.full_name)
-        lines.append(f"Клиент: {client_info}")
+        lines.append(f"<b>Клиент:</b> {client_info}")
 
     if order.total_cost is not None:
-        lines.append(f"Итоговая стоимость: {order.total_cost:.0f} руб.")
+        lines.append(f"<b>Итоговая стоимость:</b> {order.total_cost:.0f} руб.")
     if order.estimate_cost is not None:
-        lines.append(f"Смета: {order.estimate_cost:.0f} руб.")
+        lines.append(f"<b>Смета:</b> {order.estimate_cost:.0f} руб.")
     if order.estimate_items:
-        lines.append(f"Работы: {e(order.estimate_items)}")
+        lines.append(f"<b>Работы:</b> {e(order.estimate_items)}")
     if order.estimate_deadline:
-        lines.append(f"Срок: {e(order.estimate_deadline)}")
+        lines.append(f"<b>Срок:</b> {e(order.estimate_deadline)}")
     if order.estimate_description:
-        lines.append(f"Описание: {e(order.estimate_description)}")
+        lines.append(f"<b>Описание:</b> {e(order.estimate_description)}")
     if order.partner_comment:
-        lines.append(f"Комментарий: {e(order.partner_comment)}")
+        lines.append(f"<b>Комментарий:</b> {e(order.partner_comment)}")
     if order.reject_reason:
-        lines.append(f"Причина отказа: {e(order.reject_reason)}")
+        lines.append(f"<b>Причина отказа:</b> {e(order.reject_reason)}")
     if order.refusal_reason:
-        lines.append(f"Причина отказа клиента: {e(order.refusal_reason)}")
+        lines.append(f"<b>Причина отказа клиента:</b> {e(order.refusal_reason)}")
     if order.dispute_reason:
-        lines.append(f"Причина оспаривания: {e(order.dispute_reason)}")
+        lines.append(f"<b>Причина оспаривания:</b> {e(order.dispute_reason)}")
     if order.client_visited is not None:
-        lines.append(f"Клиент был в сервисе: {'Да' if order.client_visited else 'Нет'}")
+        lines.append(f"<b>Клиент был в сервисе:</b> {'Да' if order.client_visited else 'Нет'}")
 
     return "\n".join(lines)
 
@@ -153,51 +153,51 @@ def _build_client_order_notification(
     lines = [
         title,
         "",
-        f"Заявка #{order.id}",
-        f"Код заказа: {e(_display_order_code(order))}",
+        f"<b>Заявка #{order.id}</b>",
+        f"<b>Код заказа:</b> {e(_display_order_code(order))}",
         "По прибытии в сервис назовите номер заказа.",
-        f"Статус: {_STATUS_RU.get(order.status, order.status)}",
-        f"Устройство: {e(_model_name(order))}",
-        f"Тип услуги: {type_map.get(stype, stype) if stype else '—'}",
-        f"Дата: {order.scheduled_date or '—'} {order.scheduled_time or ''}".rstrip(),
+        f"<b>Статус:</b> {_STATUS_RU.get(order.status, order.status)}",
+        f"<b>Устройство:</b> {e(_model_name(order))}",
+        f"<b>Тип услуги:</b> {type_map.get(stype, stype) if stype else '—'}",
+        f"<b>Дата:</b> {order.scheduled_date or '—'} {order.scheduled_time or ''}".rstrip(),
     ]
 
     if order.service:
-        lines.append(f"Сервис: {e(order.service.name or '—')}")
+        lines.append(f"<b>Сервис:</b> {e(order.service.name or '—')}")
         if order.service.address:
-            lines.append(f"Адрес: {e(order.service.address)}")
+            lines.append(f"<b>Адрес:</b> {e(order.service.address)}")
         if order.service.phone:
-            lines.append(f"Телефон: {e(order.service.phone)}")
+            lines.append(f"<b>Телефон:</b> {e(order.service.phone)}")
         if order.service.telegram_handle:
             handle = order.service.telegram_handle
             if handle and not handle.startswith("@"):
                 handle = f"@{handle}"
-            lines.append(f"Telegram: {e(handle)}")
+            lines.append(f"<b>Telegram:</b> {e(handle)}")
 
     if order.upgrade_category:
-        lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
+        lines.append(f"<b>Категория апгрейда:</b> {e(order.upgrade_category)}")
     if order.problem_description:
-        lines.append(f"Описание проблемы: {e(order.problem_description)}")
+        lines.append(f"<b>Описание проблемы:</b> {e(order.problem_description)}")
     if order.diagnostics_price is not None:
-        lines.append(f"Диагностика: {order.diagnostics_price:.0f} руб.")
+        lines.append(f"<b>Диагностика:</b> {order.diagnostics_price:.0f} руб.")
     if order.estimate_cost is not None:
-        lines.append(f"Смета: {order.estimate_cost:.0f} руб.")
+        lines.append(f"<b>Смета:</b> {order.estimate_cost:.0f} руб.")
     if order.estimate_items:
-        lines.append(f"Работы: {e(order.estimate_items)}")
+        lines.append(f"<b>Работы:</b> {e(order.estimate_items)}")
     if order.estimate_deadline:
-        lines.append(f"Срок: {e(order.estimate_deadline)}")
+        lines.append(f"<b>Срок:</b> {e(order.estimate_deadline)}")
     if order.estimate_description:
-        lines.append(f"Описание сметы: {e(order.estimate_description)}")
+        lines.append(f"<b>Описание сметы:</b> {e(order.estimate_description)}")
     if order.total_cost is not None:
-        lines.append(f"Итоговая стоимость: {order.total_cost:.0f} руб.")
+        lines.append(f"<b>Итоговая стоимость:</b> {order.total_cost:.0f} руб.")
     if order.reject_reason:
-        lines.append(f"Причина отказа: {e(order.reject_reason)}")
+        lines.append(f"<b>Причина отказа:</b> {e(order.reject_reason)}")
     if order.refusal_reason:
-        lines.append(f"Причина отказа клиента: {e(order.refusal_reason)}")
+        lines.append(f"<b>Причина отказа клиента:</b> {e(order.refusal_reason)}")
     if order.dispute_reason:
-        lines.append(f"Причина оспаривания: {e(order.dispute_reason)}")
+        lines.append(f"<b>Причина оспаривания:</b> {e(order.dispute_reason)}")
     if order.price_change_reason:
-        lines.append(f"Причина изменения цены: {e(order.price_change_reason)}")
+        lines.append(f"<b>Причина изменения цены:</b> {e(order.price_change_reason)}")
 
     if extra_lines:
         lines.append("")

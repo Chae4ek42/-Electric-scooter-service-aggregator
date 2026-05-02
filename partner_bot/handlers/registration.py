@@ -1643,10 +1643,10 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await _safe_edit_or_answer(
         callback,
-        "Ваша анкета отправлена на модерацию. Мы уведомим вас после проверки.",
-    )
-    await callback.message.answer(
-        "Ожидайте одобрения.",
+        (
+            "Ваша анкета отправлена на модерацию. "
+            "Мы уведомим вас после проверки. Ожидайте одобрения."
+        ),
         reply_markup=partner_pending_menu_kb(has_draft=False),
     )
 

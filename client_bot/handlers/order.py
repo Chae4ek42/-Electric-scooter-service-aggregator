@@ -863,7 +863,7 @@ async def _process_time_choice(
         await _safe_edit_or_answer(
             callback,
             f"Заявка №{order_id}/{order_code} создана.\n"
-            f"Код заказа: {order_code}\n"
+            f"<b>Код заказа:</b> {order_code}\n"
             "К сожалению, подходящих сервис-центров не найдено.\n"
             "Мы уведомим вас, когда появится подходящий сервис.",
         )
@@ -922,17 +922,17 @@ async def _process_time_choice(
         rating_line = f"\nРейтинг сервиса: {svc_rating}"
 
     if _is_moscow_flow(data):
-        location_line = f"Метро: {e(data.get('metro_station', ''))}"
+        location_line = f"<b>Метро:</b> {e(data.get('metro_station', ''))}"
     else:
-        location_line = f"Адрес: {e(data.get('client_address', ''))}"
+        location_line = f"<b>Адрес:</b> {e(data.get('client_address', ''))}"
 
     summary = (
         "<b>Подтвердите заявку:</b>\n\n"
-        f"Город: {e(data.get('city', ''))}\n"
-        f"Модель: {e(model_display)}\n"
+        f"<b>Город:</b> {e(data.get('city', ''))}\n"
+        f"<b>Модель:</b> {e(model_display)}\n"
         f"{location_line}\n"
-        f"Дата: {data.get('scheduled_date', '')}\n"
-        f"Время: {e(time_str)}"
+        f"<b>Дата:</b> {data.get('scheduled_date', '')}\n"
+        f"<b>Время:</b> {e(time_str)}"
         f"{rating_line}"
         f"{price_line}"
     )
@@ -1050,11 +1050,9 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
     await _safe_edit_or_answer(
         callback,
         f"<b>Заявка №{order_id}/{order_code} создана!</b>\n"
-        f"Код заказа: <code>{order_code}</code>\n\n"
+        f"<b>Код заказа:</b> <code>{order_code}</code>\n\n"
         "⏳ Обработка оплаты...",
     )
-
-    # Auto-complete payment after 10 seconds (mock)
 
     async def _auto_pay_diagnostics():
         await asyncio.sleep(10)
@@ -1090,9 +1088,10 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
                         order_id,
                     )
 
-                # Notify partner
                 _notify_partner(
-                    o, _build_partner_new_order_text(order_id, o, model_str)
+                    o,
+                    _build_partner_new_order_text(order_id, o, model_str),
+                    notify_kind="new_order",
                 )
 
     create_guarded_task(
@@ -1160,7 +1159,9 @@ async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> N
 
                 # Notify partner
                 _notify_partner(
-                    o, _build_partner_new_order_text(order_id, o, model_str)
+                    o,
+                    _build_partner_new_order_text(order_id, o, model_str),
+                    notify_kind="new_order",
                 )
 
     create_guarded_task(
@@ -1178,6 +1179,8 @@ async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> No
     parts = callback.data.split(":")
     order_id = int(parts[2])
     order_code = f"{order_id:06d}"
+    notify_order: Order | None = None
+    notify_text: str | None = None
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
@@ -1192,6 +1195,9 @@ async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> No
             )
             await session.commit()
             order_code = _display_order_code(order)
+            model_str = _client_model_name(order)
+            notify_order = order
+            notify_text = _build_partner_client_cancel_text(order_id, order, model_str)
             logger.info(
                 "user=%s cancelled order #%s via payment",
                 callback.from_user.id,
@@ -1202,6 +1208,8 @@ async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> No
         callback,
         f"Заявка №{order_id}/{order_code} отменена.",
     )
+    if notify_order and notify_text:
+        _notify_partner(notify_order, notify_text, notify_kind="client_cancel")
 
 
 @router.callback_query(F.data == "noop")
@@ -1422,19 +1430,19 @@ def _build_client_order_short_text(order: Order) -> str:
 
     lines = [
         f"<b>Заявка №{order.id}</b> - {e(status_text)}",
-        f"Код заявки: <code>{e(order_code)}</code>",
-        f"Модель: {e(model_name)}",
-        f"Сервис: {e(service_name)}",
-        f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
-        f"Город: {e(order.city or 'Москва')}",
-        f"Дата: {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}".rstrip(),
+        f"<b>Код заявки:</b> <code>{e(order_code)}</code>",
+        f"<b>Модель:</b> {e(model_name)}",
+        f"<b>Сервис:</b> {e(service_name)}",
+        f"<b>Тип услуги:</b> {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+        f"<b>Город:</b> {e(order.city or 'Москва')}",
+        f"<b>Дата:</b> {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}".rstrip(),
     ]
     if is_moscow_city(order.city):
-        lines.append(f"Метро: {e(order.metro_station or '—')}")
+        lines.append(f"<b>Метро:</b> {e(order.metro_station or '—')}")
     else:
-        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
+        lines.append(f"<b>Адрес клиента:</b> {e(order.client_address or '—')}")
     if order.upgrade_category:
-        lines.append(f"Категория: {e(order.upgrade_category)}")
+        lines.append(f"<b>Категория:</b> {e(order.upgrade_category)}")
     return "\n".join(lines)
 
 
@@ -1454,52 +1462,52 @@ def _build_client_order_full_text(order: Order, title: str | None = None) -> str
 
     lines.extend(
         [
-            f"Заявка №{order.id}",
-            f"Код заказа: {e(order_code)}",
+            f"<b>Заявка №{order.id}</b>",
+            f"<b>Код заказа:</b> {e(order_code)}",
             "По прибытии в сервис назовите номер заказа.",
-            f"Статус: {e(status_text)}",
-            f"Модель: {e(model_name)}",
-            f"Сервис: {e(service_name)}",
-            f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
-            f"Город: {e(order.city or 'Москва')}",
-            f"Дата: {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}".rstrip(),
+            f"<b>Статус:</b> {e(status_text)}",
+            f"<b>Модель:</b> {e(model_name)}",
+            f"<b>Сервис:</b> {e(service_name)}",
+            f"<b>Тип услуги:</b> {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+            f"<b>Город:</b> {e(order.city or 'Москва')}",
+            f"<b>Дата:</b> {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}".rstrip(),
         ]
     )
 
     if is_moscow_city(order.city):
-        lines.append(f"Метро: {e(order.metro_station or '—')}")
+        lines.append(f"<b>Метро:</b> {e(order.metro_station or '—')}")
     else:
-        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
+        lines.append(f"<b>Адрес клиента:</b> {e(order.client_address or '—')}")
 
     if order.upgrade_category:
-        lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
+        lines.append(f"<b>Категория апгрейда:</b> {e(order.upgrade_category)}")
     if order.problem_description:
-        lines.append(f"Описание проблемы: {e(order.problem_description)}")
+        lines.append(f"<b>Описание проблемы:</b> {e(order.problem_description)}")
     if order.diagnostics_price is not None:
-        lines.append(f"Диагностика: {order.diagnostics_price:.0f} руб.")
+        lines.append(f"<b>Диагностика:</b> {order.diagnostics_price:.0f} руб.")
     if order.estimate_cost is not None:
-        lines.append(f"Смета: {order.estimate_cost:.0f} руб.")
+        lines.append(f"<b>Смета:</b> {order.estimate_cost:.0f} руб.")
     if order.total_cost is not None:
-        lines.append(f"Итоговая стоимость: {order.total_cost:.0f} руб.")
+        lines.append(f"<b>Итоговая стоимость:</b> {order.total_cost:.0f} руб.")
     if order.partner_comment:
-        lines.append(f"Комментарий по заявке: {e(order.partner_comment)}")
+        lines.append(f"<b>Комментарий по заявке:</b> {e(order.partner_comment)}")
     if order.reject_reason:
-        lines.append(f"Причина отказа: {e(order.reject_reason)}")
+        lines.append(f"<b>Причина отказа:</b> {e(order.reject_reason)}")
     if order.refusal_reason:
-        lines.append(f"Причина отказа клиента: {e(order.refusal_reason)}")
+        lines.append(f"<b>Причина отказа клиента:</b> {e(order.refusal_reason)}")
     if order.dispute_reason:
-        lines.append(f"Причина оспаривания: {e(order.dispute_reason)}")
+        lines.append(f"<b>Причина оспаривания:</b> {e(order.dispute_reason)}")
 
     if order.service and _can_contact_or_comment(order):
         if order.service.address:
-            lines.append(f"Адрес сервиса: {e(order.service.address)}")
+            lines.append(f"<b>Адрес сервиса:</b> {e(order.service.address)}")
         if order.service.phone:
-            lines.append(f"Телефон сервиса: {e(order.service.phone)}")
+            lines.append(f"<b>Телефон:</b> {e(order.service.phone)}")
         if order.service.telegram_handle:
             handle = order.service.telegram_handle
             if handle and not handle.startswith("@"):
                 handle = f"@{handle}"
-            lines.append(f"Telegram сервиса: {e(handle)}")
+            lines.append(f"<b>Telegram:</b> {e(handle)}")
 
     return "\n".join(lines)
 
@@ -1628,6 +1636,12 @@ async def orders_select(callback: types.CallbackQuery) -> None:
             )
             await session.commit()
             order_code = _display_order_code(order)
+            model_str = _client_model_name(order)
+            _notify_partner(
+                order,
+                _build_partner_client_cancel_text(order_id, order, model_str),
+                notify_kind="client_cancel",
+            )
             logger.info("user=%s cancelled order #%s", callback.from_user.id, order_id)
             await callback.message.answer(f"Заявка №{order_id}/{order_code} отменена.")
             await callback.answer()
@@ -1647,6 +1661,8 @@ async def orders_select(callback: types.CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("myord:cancel:"))
 async def my_order_cancel(callback: types.CallbackQuery) -> None:
     order_id = int(callback.data.split(":")[2])
+    notify_order: Order | None = None
+    notify_text: str | None = None
 
     async with async_session() as session:
         order = (
@@ -1667,9 +1683,14 @@ async def my_order_cancel(callback: types.CallbackQuery) -> None:
             reason="my_orders_cancel",
         )
         order_code = _display_order_code(order)
+        model_str = _client_model_name(order)
+        notify_order = order
+        notify_text = _build_partner_client_cancel_text(order_id, order, model_str)
         await session.commit()
 
     await callback.message.answer(f"Заявка №{order_id}/{order_code} отменена.")
+    if notify_order and notify_text:
+        _notify_partner(notify_order, notify_text, notify_kind="client_cancel")
     await callback.answer("Заявка отменена")
 
 
@@ -1827,7 +1848,7 @@ async def my_order_comment_input(message: types.Message, state: FSMContext) -> N
 # ══════════════════════════════════════════════════════════════
 
 
-def _notify_partner(order: Order, text: str) -> None:
+def _notify_partner(order: Order, text: str, notify_kind: str | None = None) -> None:
     """Fire-and-forget partner notification (runs in background)."""
     import asyncio
 
@@ -1837,7 +1858,33 @@ def _notify_partner(order: Order, text: str) -> None:
         try:
             # Find partner owner linked to service
             async with async_session() as session:
-                from client_bot.domain.models import ServiceDraft
+                from client_bot.domain.models import ServiceDraft, ServiceOwnerSettings
+
+                settings = (
+                    await session.execute(
+                        select(ServiceOwnerSettings).where(
+                            ServiceOwnerSettings.service_id == order.service_id
+                        )
+                    )
+                ).scalar_one_or_none()
+
+                if notify_kind == "new_order" and settings and not settings.notif_new_order:
+                    logger.info(
+                        "PARTNER_NOTIFY_SKIPPED | order=%s | service=%s | kind=%s",
+                        order.id,
+                        order.service_id,
+                        notify_kind,
+                    )
+                    return
+
+                if notify_kind == "client_cancel" and settings and not settings.notif_cancel:
+                    logger.info(
+                        "PARTNER_NOTIFY_SKIPPED | order=%s | service=%s | kind=%s",
+                        order.id,
+                        order.service_id,
+                        notify_kind,
+                    )
+                    return
 
                 owner = (
                     await session.execute(
@@ -1917,6 +1964,24 @@ def _build_partner_new_order_text(order_id: int, order: Order, model_str: str) -
     if order.diagnostics_price is not None:
         lines.append(f"Диагностика: {order.diagnostics_price:.0f} руб.")
     lines.append("Клиенту нужно назвать номер заказа при визите.")
+    return "\n".join(lines)
+
+
+def _build_partner_client_cancel_text(order_id: int, order: Order, model_str: str) -> str:
+    slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
+    lines = [
+        f"❌ Клиент отменил заявку #{order_id}",
+        f"Код заявки: {e(_display_order_code(order))}",
+        "",
+        f"Устройство: {e(model_str)}",
+        f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+        f"Город: {e(order.city or 'Москва')}",
+        f"Дата: {e(slot)}",
+    ]
+    if is_moscow_city(order.city):
+        lines.append(f"Метро: {e(order.metro_station or '—')}")
+    else:
+        lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
     return "\n".join(lines)
 
 

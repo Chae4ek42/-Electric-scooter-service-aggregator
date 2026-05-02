@@ -106,58 +106,60 @@ def _format_draft(owner: ServiceDraft) -> str:
         owner.draft_service_type or "", owner.draft_service_type or "(не заполнено)"
     )
     lines = [
-        "Анкета сервисного центра:",
+        "<b>Анкета сервисного центра:</b>",
         "",
-        f"Город: {e(owner.draft_city or '(не заполнено)')}",
-        f"Название: {e(owner.draft_name or '(не заполнено)')}",
-        f"Тип услуг: {type_label}",
+        f"<b>Город:</b> {e(owner.draft_city or '(не заполнено)')}",
+        f"<b>Название:</b> {e(owner.draft_name or '(не заполнено)')}",
+        f"<b>Тип услуг:</b> {type_label}",
     ]
     if owner.draft_service_type in ("upgrade", "complex"):
         cats = (owner.draft_upgrade_categories or "").replace(
             ",", ", "
         ) or "(не выбрано)"
-        lines.append(f"Категории апгрейда: {e(cats)}")
+        lines.append(f"<b>Категории апгрейда:</b> {e(cats)}")
     if owner.draft_service_type in ("repair", "complex"):
-        lines.append(f"Категория ремонта: {e(owner.draft_category or '(не выбрано)')}")
-    lines.append(f"Гидроизоляция: {'Да' if owner.draft_hydroisolation else 'Нет'}")
+        lines.append(
+            f"<b>Категория ремонта:</b> {e(owner.draft_category or '(не выбрано)')}"
+        )
+    lines.append(f"<b>Гидроизоляция:</b> {'Да' if owner.draft_hydroisolation else 'Нет'}")
     if owner.draft_hydroisolation:
         lines.append(
-            f"Цена гидроизоляции: {e(owner.draft_hydro_price or '(не указана)')}"
+            f"<b>Цена гидроизоляции:</b> {e(owner.draft_hydro_price or '(не указана)')}"
         )
     lines += [
-        f"Адрес: {e(owner.draft_address or '(не заполнено)')}",
-        f"Телефон: {e(owner.draft_phone or '(не заполнено)')}",
-        f"Telegram: {e(owner.draft_telegram or '—')}",
-        f"Рабочие дни: {e(_sort_days(owner.draft_working_days) or '(не выбрано)')}",
-        f"Время работы: {owner.draft_open_time or '?'}-{owner.draft_close_time or '?'}",
+        f"<b>Адрес:</b> {e(owner.draft_address or '(не заполнено)')}",
+        f"<b>Телефон:</b> {e(owner.draft_phone or '(не заполнено)')}",
+        f"<b>Telegram:</b> {e(owner.draft_telegram or '—')}",
+        f"<b>Рабочие дни:</b> {e(_sort_days(owner.draft_working_days) or '(не выбрано)')}",
+        f"<b>Время работы:</b> {owner.draft_open_time or '?'}-{owner.draft_close_time or '?'}",
     ]
     if is_moscow_city(owner.draft_city):
         lines.insert(
             len(lines) - 4,
-            f"Метро: {e(owner.draft_metro or '(не заполнено)')}",
+            f"<b>Метро:</b> {e(owner.draft_metro or '(не заполнено)')}",
         )
     else:
-        lines.insert(len(lines) - 4, "Метро: не требуется для выбранного города")
+        lines.insert(len(lines) - 4, "<b>Метро:</b> не требуется для выбранного города")
     if owner.draft_diagnostics_price is not None and owner.draft_diagnostics_price > 0:
-        lines.append(f"Диагностика: {int(owner.draft_diagnostics_price)} руб.")
+        lines.append(f"<b>Диагностика:</b> {int(owner.draft_diagnostics_price)} руб.")
     else:
-        lines.append("Диагностика: бесплатно (0 руб.)")
-    lines.append(f"Входит в стоимость: {'Да' if owner.draft_diag_included else 'Нет'}")
+        lines.append("<b>Диагностика:</b> бесплатно (0 руб.)")
+    lines.append(f"<b>Входит в стоимость:</b> {'Да' if owner.draft_diag_included else 'Нет'}")
     if owner.draft_legal_form or owner.draft_tax_system or owner.draft_bank_account:
         lines.append("")
-        lines.append("Банковские реквизиты:")
+        lines.append("<b>Банковские реквизиты:</b>")
         if owner.draft_legal_form:
-            lines.append(f"  Форма: {e(owner.draft_legal_form)}")
+            lines.append(f"  <b>Форма:</b> {e(owner.draft_legal_form)}")
         if owner.draft_tax_system:
-            lines.append(f"  Налогообложение: {e(owner.draft_tax_system)}")
+            lines.append(f"  <b>Налогообложение:</b> {e(owner.draft_tax_system)}")
         if owner.draft_bank_account:
             lines += [
-                f"  Расч. счёт: {e(owner.draft_bank_account)}",
-                f"  Банк: {e(owner.draft_bank_name or '—')}",
-                f"  БИК: {e(owner.draft_bik or '—')}",
-                f"  Корр. счёт: {e(owner.draft_corr_account or '—')}",
-                f"  Организация: {e(owner.draft_org_name or '—')}",
-                f"  ИНН: {e(owner.draft_inn or '—')}",
+                f"  <b>Расч. счёт:</b> {e(owner.draft_bank_account)}",
+                f"  <b>Банк:</b> {e(owner.draft_bank_name or '—')}",
+                f"  <b>БИК:</b> {e(owner.draft_bik or '—')}",
+                f"  <b>Корр. счёт:</b> {e(owner.draft_corr_account or '—')}",
+                f"  <b>Организация:</b> {e(owner.draft_org_name or '—')}",
+                f"  <b>ИНН:</b> {e(owner.draft_inn or '—')}",
             ]
     return "\n".join(lines)
 

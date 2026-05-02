@@ -247,28 +247,28 @@ def _profile_edit_kb(city: str | None):
 def _format_profile(svc: Service) -> str:
     wd = _sort_days(svc.working_days)
     lines = [
-        "Профиль сервисного центра:",
+        "<b>Профиль сервисного центра:</b>",
         "",
-        f"Город: {e(svc.city or '-')}",
-        f"Название: {e(svc.name)}",
-        f"Тип: {_TYPE_RU.get(svc.service_type, svc.service_type)}",
-        f"Категория ремонта: {e(svc.category_rel.name if svc.category_rel else '-')}",
-        f"Категории апгрейда: {e((svc.upgrade_categories or '-').replace(',', ', '))}",
-        f"Адрес: {e(svc.address or '-')}",
-        f"Телефон: {e(svc.phone or '-')}",
-        f"Telegram: {e(svc.telegram_handle or '-')}",
-        f"Рабочие дни: {e(wd or '-')}",
-        f"Время: {svc.open_time or '?'}-{svc.close_time or '?'}",
-        f"Гидроизоляция: {'Да' if svc.has_hydroisolation else 'Нет'}",
-        f"Цена гидроизоляции: {e(svc.hydroisolation_price or '-')}",
-        f"Диагностика: {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
-        f"Входит в стоимость: {'Да' if svc.diagnostics_included else 'Нет'}",
-        f"Доступен: {'Да' if svc.is_available else 'Нет'}",
+        f"<b>Город:</b> {e(svc.city or '-')}",
+        f"<b>Название:</b> {e(svc.name)}",
+        f"<b>Тип:</b> {_TYPE_RU.get(svc.service_type, svc.service_type)}",
+        f"<b>Категория ремонта:</b> {e(svc.category_rel.name if svc.category_rel else '-')}",
+        f"<b>Категории апгрейда:</b> {e((svc.upgrade_categories or '-').replace(',', ', '))}",
+        f"<b>Адрес:</b> {e(svc.address or '-')}",
+        f"<b>Телефон:</b> {e(svc.phone or '-')}",
+        f"<b>Telegram:</b> {e(svc.telegram_handle or '-')}",
+        f"<b>Рабочие дни:</b> {e(wd or '-')}",
+        f"<b>Время:</b> {svc.open_time or '?'}-{svc.close_time or '?'}",
+        f"<b>Гидроизоляция:</b> {'Да' if svc.has_hydroisolation else 'Нет'}",
+        f"<b>Цена гидроизоляции:</b> {e(svc.hydroisolation_price or '-')}",
+        f"<b>Диагностика:</b> {int(svc.diagnostics_price) if svc.diagnostics_price else 0} руб.",
+        f"<b>Входит в стоимость:</b> {'Да' if svc.diagnostics_included else 'Нет'}",
+        f"<b>Доступен:</b> {'Да' if svc.is_available else 'Нет'}",
     ]
     if is_moscow_city(svc.city):
-        lines.insert(7, f"Метро: {e(svc.nearest_metro or '-')}")
+        lines.insert(7, f"<b>Метро:</b> {e(svc.nearest_metro or '-')}")
     else:
-        lines.insert(7, "Метро: не используется")
+        lines.insert(7, "<b>Метро:</b> не используется")
     return "\n".join(lines)
 
 
