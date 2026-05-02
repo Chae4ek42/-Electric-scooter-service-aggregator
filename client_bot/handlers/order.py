@@ -862,7 +862,7 @@ async def _process_time_choice(
         await state.clear()
         await _safe_edit_or_answer(
             callback,
-            f"Заявка №{order_id} создана.\n"
+            f"Заявка №{order_id}/{order_code} создана.\n"
             f"Код заказа: {order_code}\n"
             "К сожалению, подходящих сервис-центров не найдено.\n"
             "Мы уведомим вас, когда появится подходящий сервис.",
@@ -1049,7 +1049,9 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext) -> Non
 
     await _safe_edit_or_answer(
         callback,
-        f"<b>Заявка №{order_id} создана!</b>\n\n⏳ Обработка оплаты...",
+        f"<b>Заявка №{order_id}/{order_code} создана!</b>\n"
+        f"Код заказа: <code>{order_code}</code>\n\n"
+        "⏳ Обработка оплаты...",
     )
 
     # Auto-complete payment after 10 seconds (mock)
@@ -1175,6 +1177,7 @@ async def payment_proceed(callback: types.CallbackQuery, state: FSMContext) -> N
 async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> None:
     parts = callback.data.split(":")
     order_id = int(parts[2])
+    order_code = f"{order_id:06d}"
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
@@ -1188,13 +1191,17 @@ async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> No
                 reason="payment_cancel",
             )
             await session.commit()
+            order_code = _display_order_code(order)
             logger.info(
                 "user=%s cancelled order #%s via payment",
                 callback.from_user.id,
                 order_id,
             )
     await state.clear()
-    await _safe_edit_or_answer(callback, f"Заявка №{order_id} отменена.")
+    await _safe_edit_or_answer(
+        callback,
+        f"Заявка №{order_id}/{order_code} отменена.",
+    )
 
 
 @router.callback_query(F.data == "noop")
@@ -1398,9 +1405,15 @@ def _service_type_code(order: Order) -> str:
     return "upgrade" if order.upgrade_category else "repair"
 
 
+def _display_order_code(order: Order) -> str:
+    code = (order.order_code or "").strip()
+    return code or f"{order.id:06d}"
+
+
 def _build_client_order_short_text(order: Order) -> str:
     model_name = _client_model_name(order)
     status_text = ORDER_STATUS_RU.get(order.status, order.status)
+    order_code = _display_order_code(order)
 
     if order.status == "awaiting_payment":
         service_name = "будет назначен после оплаты"
@@ -1409,6 +1422,7 @@ def _build_client_order_short_text(order: Order) -> str:
 
     lines = [
         f"<b>Заявка №{order.id}</b> - {e(status_text)}",
+        f"Код заявки: <code>{e(order_code)}</code>",
         f"Модель: {e(model_name)}",
         f"Сервис: {e(service_name)}",
         f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
@@ -1427,6 +1441,7 @@ def _build_client_order_short_text(order: Order) -> str:
 def _build_client_order_full_text(order: Order, title: str | None = None) -> str:
     model_name = _client_model_name(order)
     status_text = ORDER_STATUS_RU.get(order.status, order.status)
+    order_code = _display_order_code(order)
 
     if order.status == "awaiting_payment":
         service_name = "будет назначен после оплаты"
@@ -1440,6 +1455,8 @@ def _build_client_order_full_text(order: Order, title: str | None = None) -> str
     lines.extend(
         [
             f"Заявка №{order.id}",
+            f"Код заказа: {e(order_code)}",
+            "По прибытии в сервис назовите номер заказа.",
             f"Статус: {e(status_text)}",
             f"Модель: {e(model_name)}",
             f"Сервис: {e(service_name)}",
@@ -1454,9 +1471,6 @@ def _build_client_order_full_text(order: Order, title: str | None = None) -> str
     else:
         lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
 
-    if order.order_code:
-        lines.append(f"Код заказа: {e(order.order_code)}")
-        lines.append("По прибытии в сервис назовите номер заказа.")
     if order.upgrade_category:
         lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
     if order.problem_description:
@@ -1613,15 +1627,17 @@ async def orders_select(callback: types.CallbackQuery) -> None:
                 reason="orders_list_cancel",
             )
             await session.commit()
+            order_code = _display_order_code(order)
             logger.info("user=%s cancelled order #%s", callback.from_user.id, order_id)
-            await callback.message.answer(f"Заявка №{order_id} отменена.")
+            await callback.message.answer(f"Заявка №{order_id}/{order_code} отменена.")
             await callback.answer()
         elif action == "pay":
             if order.status != "awaiting_payment":
                 await callback.answer("Эта заявка не ожидает оплаты.", show_alert=True)
                 return
+            order_code = _display_order_code(order)
             await callback.message.answer(
-                f"Для оплаты заявки №{order_id} свяжитесь с оператором."
+                f"Для оплаты заявки №{order_id}/{order_code} свяжитесь с оператором."
             )
             await callback.answer()
         else:
@@ -1650,9 +1666,10 @@ async def my_order_cancel(callback: types.CallbackQuery) -> None:
             actor=ACTOR_CLIENT,
             reason="my_orders_cancel",
         )
+        order_code = _display_order_code(order)
         await session.commit()
 
-    await callback.message.answer(f"Заявка №{order_id} отменена.")
+    await callback.message.answer(f"Заявка №{order_id}/{order_code} отменена.")
     await callback.answer("Заявка отменена")
 
 
@@ -1671,7 +1688,9 @@ async def my_order_full(callback: types.CallbackQuery) -> None:
     await callback.message.answer(
         _build_client_order_full_text(
             order,
-            title=f"Полная информация по заявке №{order_id}",
+            title=(
+                f"Полная информация по заявке №{order_id}/{_display_order_code(order)}"
+            ),
         )
     )
     await callback.answer()
@@ -1876,8 +1895,10 @@ def _build_partner_new_order_text(order_id: int, order: Order, model_str: str) -
         client_info = "—"
 
     slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
+    order_code = _display_order_code(order)
     lines = [
         f"🆕 Новая заявка #{order_id}",
+        f"Код заявки: {e(order_code)}",
         "",
         f"Устройство: {e(model_str)}",
         f"Клиент: {e(client_info)} (ID: {order.user_id})",
@@ -1895,9 +1916,7 @@ def _build_partner_new_order_text(order_id: int, order: Order, model_str: str) -
         lines.append(f"Описание: {e(order.problem_description)}")
     if order.diagnostics_price is not None:
         lines.append(f"Диагностика: {order.diagnostics_price:.0f} руб.")
-    if order.order_code:
-        lines.append(f"Код заказа: {e(order.order_code)}")
-        lines.append("Клиенту нужно назвать номер заказа при визите.")
+    lines.append("Клиенту нужно назвать номер заказа при визите.")
     return "\n".join(lines)
 
 
@@ -2120,6 +2139,7 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
             await s.commit()
             total = money(o.total_cost or o.estimate_cost or 0)
             model_str = _client_model_name(o)
+            order_code = _display_order_code(o)
 
         logger.info("auto final payment for order #%s", order_id)
 
@@ -2127,7 +2147,10 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
             await callback.message.answer(
                 _build_client_order_full_text(
                     o,
-                    title=(f"✅ Заявка №{order_id} завершена.\n" "Оплата произведена."),
+                    title=(
+                        f"✅ Заявка №{order_id}/{order_code} завершена.\n"
+                        "Оплата произведена."
+                    ),
                 )
             )
         except Exception:
@@ -2141,7 +2164,7 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
         if o:
             _notify_partner(
                 o,
-                f"✅ Заявка #{order_id} завершена\n\n"
+                f"✅ Заявка #{order_id}/{order_code} завершена\n\n"
                 f"Клиент оплатил и забрал устройство.\n"
                 f"Устройство: {model_str}\n"
                 f"Итого: {total:.0f} руб.",
@@ -2244,6 +2267,7 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
         svc_name = order.service.name if order.service else ""
         svc_id = order.service_id
         model_str = _client_model_name(order)
+        order_code = _display_order_code(order)
         total = money(order.total_cost or order.estimate_cost or 0)
         prepayment = PaymentPolicy.prepayment(
             order.upgrade_category,
@@ -2253,7 +2277,7 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
 
     await state.clear()
     await message.answer(
-        f"⚠️ Заявка #{order_id} оспорена\n\n"
+        f"⚠️ Заявка #{order_id}/{order_code} оспорена\n\n"
         "Ваша жалоба принята. Администратор свяжется с вами "
         "в ближайшее время."
     )
@@ -2271,6 +2295,7 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
         client_name = user_obj.full_name if user_obj else ""
         admin_text = (
             f"⚠️ Оспаривание заявки #{order_id}\n\n"
+            f"Код заявки: {order_code}\n"
             f"Клиент: {client_name} ({client_info}, ID: {message.from_user.id})\n"
             f"Сервис: {svc_name} (ID: {svc_id})\n"
             f"Устройство: {model_str}\n\n"

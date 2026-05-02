@@ -53,6 +53,11 @@ def _model_name(order: Order) -> str:
     return "—"
 
 
+def _display_order_code(order: Order) -> str:
+    code = (order.order_code or "").strip()
+    return code or f"{order.id:06d}"
+
+
 _STATUS_RU = {
     "awaiting_payment": "Ожидает оплаты",
     "paid": "Оплачено",
@@ -91,6 +96,7 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
 
     lines = [
         f"Заявка #{order.id}",
+        f"Код заявки: {e(_display_order_code(order))}",
         f"Устройство: {model_str}",
         f"Тип: {type_map.get(stype, stype) if stype else '—'}",
         f"Город: {e(order.city or 'Москва')}",
@@ -148,6 +154,8 @@ def _build_client_order_notification(
         title,
         "",
         f"Заявка #{order.id}",
+        f"Код заказа: {e(_display_order_code(order))}",
+        "По прибытии в сервис назовите номер заказа.",
         f"Статус: {_STATUS_RU.get(order.status, order.status)}",
         f"Устройство: {e(_model_name(order))}",
         f"Тип услуги: {type_map.get(stype, stype) if stype else '—'}",
@@ -166,9 +174,6 @@ def _build_client_order_notification(
                 handle = f"@{handle}"
             lines.append(f"Telegram: {e(handle)}")
 
-    if order.order_code:
-        lines.append(f"Код заказа: {e(order.order_code)}")
-        lines.append("По прибытии в сервис назовите номер заказа.")
     if order.upgrade_category:
         lines.append(f"Категория апгрейда: {e(order.upgrade_category)}")
     if order.problem_description:
@@ -291,7 +296,7 @@ async def incoming_orders(message: types.Message, state: FSMContext) -> None:
         client_info = ""
         if o.user and o.user.username:
             client_info = f" | @{o.user.username}"
-        lines.append(f"#{o.id} | {m} | {stype}")
+        lines.append(f"#{o.id}/{_display_order_code(o)} | {m} | {stype}")
         lines.append(
             f"  {o.scheduled_date or '?'} {o.scheduled_time or ''}{client_info}"
         )
@@ -457,6 +462,7 @@ async def reject_order_reason(message: types.Message, state: FSMContext) -> None
             actor=ACTOR_PARTNER,
             reason="partner_reject",
         )
+        order_code = _display_order_code(order)
         order.reject_reason = v.text
         await session.commit()
 
@@ -464,7 +470,7 @@ async def reject_order_reason(message: types.Message, state: FSMContext) -> None
         "partner %s rejected order #%s: %s", message.from_user.id, order_id, v.text
     )
     await state.clear()
-    await message.answer(f"Заявка #{order_id} отклонена.")
+    await message.answer(f"Заявка #{order_id}/{order_code} отклонена.")
 
     # Notify client
     try:
@@ -550,6 +556,7 @@ async def client_refused_reason(message: types.Message, state: FSMContext) -> No
             actor=ACTOR_PARTNER,
             reason="partner_mark_client_refused",
         )
+        order_code = _display_order_code(order)
         order.refusal_reason = text
         order.completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
         await session.commit()
@@ -564,7 +571,7 @@ async def client_refused_reason(message: types.Message, state: FSMContext) -> No
         text,
     )
     await state.clear()
-    await message.answer(f"Заявка #{order_id} — клиент отказался.")
+    await message.answer(f"Заявка #{order_id}/{order_code} — клиент отказался.")
 
     # Notify client
     try:
@@ -748,6 +755,7 @@ async def estimate_confirm(callback: types.CallbackQuery, state: FSMContext) -> 
     desc = data.get("est_description")
 
     prepayment = ZERO_MONEY
+    order_code = "000000"
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
@@ -1066,6 +1074,7 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
             order.estimate_items = cost_items
         if order.estimate_cost is None:
             order.estimate_cost = money_to_float(cost)
+        order_code = _display_order_code(order)
         await session.commit()
         prepayment = PaymentPolicy.prepayment(
             order.upgrade_category,
@@ -1082,7 +1091,7 @@ async def set_cost_value(message: types.Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         f"Смета: {cost_items or '—'}\n"
-        f"Итоговая стоимость заявки #{order_id}: {cost:.0f} руб.\n"
+        f"Итоговая стоимость заявки #{order_id}/{order_code}: {cost:.0f} руб.\n"
         f"Предоплата: {prepayment:.0f} руб.\n"
         f"Остаток к оплате: {remainder:.0f} руб.\n"
         "Заявка переведена в статус «Готов к выдаче»."
@@ -1193,6 +1202,7 @@ async def update_price_reason_input(message: types.Message, state: FSMContext) -
 
     old_cost: float | None = None
     user_id: int | None = None
+    order_code = "000000"
     async with async_session() as session:
         order = (
             await session.execute(select(Order).where(Order.id == order_id))
@@ -1221,6 +1231,7 @@ async def update_price_reason_input(message: types.Message, state: FSMContext) -
 
         old_cost = order.total_cost
         user_id = order.user_id
+        order_code = _display_order_code(order)
         order.total_cost = money_to_float(new_cost)
         order.price_change_reason = reason
         order.price_updated_at = datetime.datetime.now(datetime.timezone.utc)
@@ -1229,7 +1240,7 @@ async def update_price_reason_input(message: types.Message, state: FSMContext) -
     await state.clear()
     old_str = f"{money(old_cost):.0f} руб." if old_cost is not None else "не указана"
     await message.answer(
-        f"Цена заявки #{order_id} обновлена.\n"
+        f"Цена заявки #{order_id}/{order_code} обновлена.\n"
         f"Было: {old_str} → Стало: {new_cost:.0f} руб."
     )
     logger.info(
@@ -1303,7 +1314,9 @@ async def _show_history(
     lines = [f"Заявки (стр. {page + 1}/{total_pages}):", ""]
     for o in orders:
         status = _STATUS_RU.get(o.status, o.status)
-        lines.append(f"#{o.id} | {o.scheduled_date or '?'} | {status}")
+        lines.append(
+            f"#{o.id}/{_display_order_code(o)} | {o.scheduled_date or '?'} | {status}"
+        )
 
     kb = partner_orders_list_kb(orders, page, total_pages)
     text = "\n".join(lines)

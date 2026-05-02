@@ -396,9 +396,19 @@ def partner_order_actions_kb(order_id: int, status: str) -> InlineKeyboardMarkup
 def partner_orders_list_kb(
     orders: Sequence, page: int, total_pages: int
 ) -> InlineKeyboardMarkup:
+    def _display_order_code(order) -> str:
+        code = str(getattr(order, "order_code", "") or "").strip()
+        if code:
+            return code
+        oid = getattr(order, "id", 0)
+        return f"{int(oid):06d}" if isinstance(oid, int) else "000000"
+
     rows: list[list[InlineKeyboardButton]] = []
     for o in orders:
-        label = f"#{o.id} | {o.scheduled_date or '?'} {o.scheduled_time or ''}"
+        label = (
+            f"#{o.id}/{_display_order_code(o)} | "
+            f"{o.scheduled_date or '?'} {o.scheduled_time or ''}"
+        )
         rows.append(
             [InlineKeyboardButton(text=label, callback_data=f"pord:detail:{o.id}")]
         )
@@ -720,12 +730,19 @@ def padm_service_orders_kb(
     total_pages: int,
     from_page: int,
 ) -> InlineKeyboardMarkup:
+    def _display_order_code(order) -> str:
+        code = str(getattr(order, "order_code", "") or "").strip()
+        if code:
+            return code
+        oid = getattr(order, "id", 0)
+        return f"{int(oid):06d}" if isinstance(oid, int) else "000000"
+
     rows: list[list[InlineKeyboardButton]] = []
 
     for order in orders:
         status = ORDER_STATUS_RU.get(order.status, order.status)
         date = order.scheduled_date or "?"
-        label = f"#{order.id} | {date} | {status}"
+        label = f"#{order.id}/{_display_order_code(order)} | {date} | {status}"
         rows.append(
             [
                 InlineKeyboardButton(

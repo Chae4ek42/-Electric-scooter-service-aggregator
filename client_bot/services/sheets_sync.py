@@ -660,7 +660,12 @@ async def sync_bank_details_from_sheet(*, dry_run: bool = False) -> int:
     return added + updated
 
 
-async def run_full_sync(*, first_run: bool = False, dry_run: bool = False) -> None:
+async def run_full_sync(
+    *,
+    first_run: bool = False,
+    dry_run: bool = False,
+    source: str = "manual",
+) -> bool:
     import asyncio
 
     from client_bot.services.sheets_writer import (
@@ -671,25 +676,51 @@ async def run_full_sync(*, first_run: bool = False, dry_run: bool = False) -> No
 
     if not _is_available():
         logger.debug("Sheets sync пропущен (GOOGLE_SHEET_ID не задан)")
-        return
+        return False
 
     if dry_run:
         business_logger.info(
             "SYNC_HEALTH_OK | mode=write_only | inbound_read=disabled",
         )
-        return
+        return True
+
+    success = True
 
     try:
-        await asyncio.to_thread(sync_all_orders_to_sheet)
+        orders_ok = await asyncio.to_thread(sync_all_orders_to_sheet)
+        if not orders_ok:
+            success = False
     except Exception as exc:
         logger.warning("SYNC_ORDERS_ERR | error=%s", exc)
+        success = False
 
     try:
-        await asyncio.to_thread(sync_all_clients_to_sheet)
+        clients_ok = await asyncio.to_thread(sync_all_clients_to_sheet)
+        if not clients_ok:
+            success = False
     except Exception as exc:
         logger.warning("SYNC_CLIENTS_ERR | error=%s", exc)
+        success = False
 
     try:
-        await asyncio.to_thread(sync_all_service_metrics_to_sheet)
+        metrics_ok = await asyncio.to_thread(sync_all_service_metrics_to_sheet)
+        if not metrics_ok:
+            success = False
     except Exception as exc:
         logger.warning("SYNC_SERVICE_METRICS_ERR | error=%s", exc)
+        success = False
+
+    if success:
+        logger.info(
+            "SYNC_FULL_OK | source=%s | first_run=%s",
+            source,
+            first_run,
+        )
+    else:
+        logger.warning(
+            "SYNC_FULL_PARTIAL_FAIL | source=%s | first_run=%s",
+            source,
+            first_run,
+        )
+
+    return success

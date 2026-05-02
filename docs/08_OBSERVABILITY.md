@@ -1,6 +1,9 @@
-# Логирование: файловый режим
+# Observability: логи + метрики
 
-Проект работает без Grafana/Loki/Promtail. Все сервисы пишут логи в файлы с ротацией.
+Проект использует два контура наблюдаемости:
+
+- файловые логи с ротацией,
+- Prometheus-метрики (через встроенный HTTP exporter в каждом сервисе).
 
 ## Что пишет каждый сервис
 
@@ -29,6 +32,28 @@
 
 - `LOG_FORMAT=text` или `LOG_FORMAT=json`.
 - Во всех записях доступен контекст: `request_id`, `user_id`, `chat_id`, `service`.
+
+## Prometheus метрики
+
+- `client-bot`: `:9101/metrics`
+- `partner-bot`: `:9102/metrics`
+- `sync-service`: `:9103/metrics`
+
+Основные метрики:
+
+- `esas_runtime_errors_total{action_type=...}`
+- `esas_sheets_sync_total{source=...,result=success|failure}`
+- `esas_sheets_retry_enqueued_total{operation=...}`
+- `esas_sheets_retry_processed_total{operation=...,result=...}`
+- `esas_sheets_retry_queue_size`
+
+Переменные окружения:
+
+- `METRICS_ENABLED=1|0`
+- `METRICS_HOST` (по умолчанию `0.0.0.0`)
+- `METRICS_PORT` (на сервис)
+
+В `docker-compose.yaml` добавлен контейнер `prometheus` с конфигом `observability/prometheus.yml` и правилами `observability/alerts.yml`.
 
 ## Регистрация ошибок
 
@@ -69,4 +94,10 @@ Get-Content .\data\logs\sync-service.business.log -Tail 200
 
 ```powershell
 Select-String -Path .\data\logs\*.app.log -Pattern "ERROR"
+```
+
+Открыть Prometheus UI:
+
+```text
+http://localhost:9090
 ```

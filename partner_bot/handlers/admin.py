@@ -50,6 +50,11 @@ SERVICE_ORDERS_PAGE_SIZE = 10
 _STATUS_RU = PARTNER_STATUS_RU
 
 
+def _display_order_code(order: Order) -> str:
+    code = (order.order_code or "").strip()
+    return code or f"{order.id:06d}"
+
+
 @dataclass
 class AdminServiceStatsItem:
     id: int
@@ -397,6 +402,7 @@ def _format_service_order_detail_text(order: Order) -> str:
     slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
     lines = [
         f"<b>Заявка #{order.id}</b>",
+        f"<b>Код заказа:</b> <code>{_display_order_code(order)}</code>",
         f"<b>Статус:</b> {ORDER_STATUS_RU.get(order.status, order.status)}",
         f"<b>Создана:</b> {created_at}",
         f"<b>Клиент TG ID:</b> <code>{order.user_id}</code>",
@@ -404,9 +410,6 @@ def _format_service_order_detail_text(order: Order) -> str:
         f"<b>Метро:</b> {e(order.metro_station or '—')}",
         f"<b>Слот:</b> {e(slot)}",
     ]
-
-    if order.order_code:
-        lines.append(f"<b>Код заказа:</b> <code>{order.order_code}</code>")
     if order.upgrade_category:
         lines.append(f"<b>Категория апгрейда:</b> {e(order.upgrade_category)}")
     if order.problem_description:

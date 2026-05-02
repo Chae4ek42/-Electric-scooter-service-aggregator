@@ -4,7 +4,7 @@
 
 - aiogram
 - SQLAlchemy (async)
-- SQLite
+- PostgreSQL (основной runtime), SQLite (локальный fallback)
 - Redis (FSM/throttling, с fallback)
 - gspread + Google Service Account
 - Ротационные файловые логи (`data/logs/*.app.log`, `data/logs/*.business.log`)
@@ -17,6 +17,8 @@
 - `service_owner_settings`: настройки уведомлений владельца.
 - `orders`: жизненный цикл клиентских заявок.
 - `order_status_history`: аудит переходов статусов заказа (`from_status`, `to_status`, `actor`, `reason`, `metadata_json`).
+- `sheets_retry_queue`: очередь отложенных ретраев write-back в Google Sheets.
+- `schema_versions`: версия применённых миграций схемы.
 - `users`, `brands`, `models`, `service_categories`, `metro_stations`, `user_actions`.
 
 ## Бизнес-слой переходов статусов
@@ -46,6 +48,8 @@
 3. Перенос legacy draft-данных в `service_drafts` и `service_bank_details`.
 4. Пересборку legacy-таблицы `services` в каноничную схему, чтобы убрать устаревшие owner/draft-колонки.
 5. Создание `order_status_history` и индексов `orders` / `service_drafts` для совместимости старых инсталляций.
+6. Создание `schema_versions` и фиксация применённых версий миграций.
+7. Приведение `sheets_retry_queue` к схеме delayed-retry (next_retry_at/last_error).
 
 ## Доступ к БД
 
@@ -55,5 +59,5 @@
 ## Операционный контур
 
 - `client_bot` и `partner_bot` работают поверх одной БД.
-- `sync_service` на старте выполняет dry-run health-check синка, затем боевой initial sync.
-- `sync_service` синхронизирует сервисы/реквизиты из Sheets в БД и выгружает заказы/клиентов обратно.
+- `client_bot` и `partner_bot` триггерят full Sheets sync по факту commit в релевантных таблицах (`orders/users/services/service_drafts/service_bank_details`).
+- `sync_service` на старте выполняет dry-run health-check и initial sync, затем обрабатывает delayed-retry очередь `sheets_retry_queue`.

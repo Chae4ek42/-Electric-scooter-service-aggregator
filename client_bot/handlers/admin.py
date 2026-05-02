@@ -72,6 +72,11 @@ _STATUS_RU = ORDER_STATUS_RU
 # ── Helpers ───────────────────────────────────────────────────
 
 
+def _display_order_code(order: Order) -> str:
+    code = (order.order_code or "").strip()
+    return code or f"{order.id:06d}"
+
+
 def _fmt_order(order: Order) -> str:
     """Format full order card in HTML."""
     _TYPE_RU = TYPE_RU
@@ -125,9 +130,8 @@ def _fmt_order(order: Order) -> str:
         f"<b>Время:</b> {order.scheduled_time or '—'}",
         "",
         f"<b>Статус:</b> {_STATUS_RU.get(order.status, order.status)}",
+        f"<b>Код заказа:</b> <code>{_display_order_code(order)}</code>",
     ]
-    if order.order_code:
-        lines.append(f"<b>Код заказа:</b> <code>{order.order_code}</code>")
     if order.upgrade_category:
         lines.append(f"<b>Категория апгрейда:</b> {e(order.upgrade_category)}")
     if order.diagnostics_price:

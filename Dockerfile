@@ -2,9 +2,9 @@ FROM python:3.12-slim AS base
 
 WORKDIR /app
 
-# System deps (for aiosqlite / cffi if needed)
+# System deps (sqlite/crypto/postgres client libs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libffi-dev \
+    gcc libffi-dev libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./

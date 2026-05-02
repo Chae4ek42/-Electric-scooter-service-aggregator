@@ -67,6 +67,7 @@ _BANK_HEADERS = [
 
 _ORDER_HEADERS = [
     "ID",
+    "Код заявки",
     "Клиент",
     "Клиент TG",
     "Сервис",
@@ -364,6 +365,7 @@ def sync_all_orders_to_sheet() -> bool:
                 rows.append(
                     [
                         o.id,
+                        (o.order_code or f"{o.id:06d}"),
                         user.full_name if user else "",
                         (
                             f"@{user.username}"

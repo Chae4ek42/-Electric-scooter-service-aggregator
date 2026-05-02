@@ -337,12 +337,20 @@ def orders_list_action_kb() -> InlineKeyboardMarkup:
 
 def order_select_kb(orders: list, action: str) -> InlineKeyboardMarkup:
     """Список заявок для выбора действия. action: 'pay' или 'cancel'."""
+
+    def _display_order_code(order) -> str:
+        code = str(getattr(order, "order_code", "") or "").strip()
+        if code:
+            return code
+        oid = getattr(order, "id", 0)
+        return f"{int(oid):06d}" if isinstance(oid, int) else "000000"
+
     rows: list[list[InlineKeyboardButton]] = []
     for o in orders:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"№{o.id}",
+                    text=f"№{o.id} · код {_display_order_code(o)}",
                     callback_data=f"orders:select:{action}:{o.id}",
                 )
             ]
@@ -603,12 +611,19 @@ def admin_orders_kb(
             return o.model.name
         return "—"
 
+    def _display_order_code(order) -> str:
+        code = str(getattr(order, "order_code", "") or "").strip()
+        if code:
+            return code
+        oid = getattr(order, "id", 0)
+        return f"{int(oid):06d}" if isinstance(oid, int) else "000000"
+
     rows: list[list[InlineKeyboardButton]] = []
     for o in orders:
         status = _STATUS_LABELS.get(o.status, o.status)
         date = _fmt_date(o.scheduled_date)
         model = _fmt_model(o)
-        label = f"№{o.id} · {date} · {status} · {model}"
+        label = f"№{o.id}/{_display_order_code(o)} · {date} · {status} · {model}"
         rows.append(
             [InlineKeyboardButton(text=label, callback_data=f"adm:order:{o.id}")]
         )

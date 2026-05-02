@@ -389,13 +389,17 @@ class SheetsRetryQueue(Base):
     __tablename__ = "sheets_retry_queue"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False)
-    operation: Mapped[str] = mapped_column(String(50), nullable=False)
+    service_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False)
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_attempt_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    next_retry_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

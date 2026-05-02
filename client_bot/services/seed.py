@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from client_bot.core.database import async_session, engine
 from client_bot.domain.models import Base, Brand, MetroStation, Model, ServiceCategory
@@ -510,10 +510,100 @@ async def _run_migrations(conn: Any) -> None:
     # category_id может быть NULL (SQLite не требует явного ALTER)
 
 
+async def _ensure_schema_versions_table(conn: Any) -> None:
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS schema_versions (
+                version VARCHAR(128) PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+
+
+async def _is_schema_version_applied(conn: Any, version: str) -> bool:
+    row = (
+        await conn.execute(
+            text("SELECT 1 FROM schema_versions WHERE version = :version LIMIT 1"),
+            {"version": version},
+        )
+    ).first()
+    return row is not None
+
+
+async def _mark_schema_version(conn: Any, version: str) -> None:
+    await conn.execute(
+        text(
+            """
+            INSERT INTO schema_versions(version)
+            VALUES (:version)
+            ON CONFLICT(version) DO NOTHING
+            """
+        ),
+        {"version": version},
+    )
+
+
+async def _run_postgres_migrations(conn: Any) -> None:
+    """Apply lightweight migrations for PostgreSQL deployments."""
+    await conn.execute(
+        text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_code VARCHAR(6)")
+    )
+    await conn.execute(
+        text(
+            """
+            UPDATE orders
+            SET order_code = LPAD((id % 1000000)::text, 6, '0')
+            WHERE order_code IS NULL OR BTRIM(order_code) = ''
+            """
+        )
+    )
+
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS sheets_retry_queue (
+                id SERIAL PRIMARY KEY,
+                service_id INTEGER NULL,
+                operation VARCHAR(64) NOT NULL,
+                payload_json TEXT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at TIMESTAMP WITH TIME ZONE NULL,
+                next_retry_at TIMESTAMP WITH TIME ZONE NULL,
+                last_error TEXT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sheets_retry_queue_next_retry_at "
+            "ON sheets_retry_queue(next_retry_at)"
+        )
+    )
+
+
 async def init_db() -> None:
     """Create all tables, run migrations, seed initial data."""
+    if engine.url.get_backend_name() != "sqlite":
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await _ensure_schema_versions_table(conn)
+            version = "2026_01_postgres_baseline"
+            if not await _is_schema_version_applied(conn, version):
+                await _run_postgres_migrations(conn)
+                await _mark_schema_version(conn, version)
+                logger.info("Migration: applied %s", version)
+
+        await seed_database()
+        return
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _ensure_schema_versions_table(conn)
 
         # Inline migrations for legacy SQLite databases.
         raw = await conn.get_raw_connection()
@@ -526,6 +616,7 @@ async def init_db() -> None:
             ("client_address", "TEXT"),
             ("client_latitude", "REAL"),
             ("client_longitude", "REAL"),
+            ("order_code", "TEXT"),
             ("model_custom_name", "TEXT"),
             ("brand_custom_name", "TEXT"),
             ("problem_description", "TEXT"),
@@ -552,6 +643,14 @@ async def init_db() -> None:
                     f"ALTER TABLE orders ADD COLUMN {col_name} {col_type}"
                 )
                 logger.info("Migration: added orders.%s", col_name)
+
+        await raw_conn.execute(
+            """
+            UPDATE orders
+            SET order_code = substr('000000' || CAST(id % 1000000 AS TEXT), -6, 6)
+            WHERE order_code IS NULL OR TRIM(order_code) = ''
+            """
+        )
 
         await raw_conn.execute("""
             UPDATE orders
@@ -1114,6 +1213,101 @@ async def init_db() -> None:
                 "INSERT INTO service_categories (name) VALUES ('Электрика + механика')"
             )
             logger.info("Migration: seeded service category 'Электрика + механика'")
+
+        await raw_conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_versions (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        cursor = await raw_conn.execute(
+            "SELECT 1 FROM schema_versions WHERE version = '2026_01_sheets_retry_queue_v2' LIMIT 1"
+        )
+        queue_v2_applied = await cursor.fetchone()
+        if not queue_v2_applied:
+            cursor = await raw_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='sheets_retry_queue'"
+            )
+            queue_exists = await cursor.fetchone()
+            queue_cols: set[str] = set()
+            if queue_exists:
+                cursor = await raw_conn.execute("PRAGMA table_info('sheets_retry_queue')")
+                queue_cols = {row[1] for row in await cursor.fetchall()}
+
+            await raw_conn.execute("DROP TABLE IF EXISTS sheets_retry_queue_new")
+            await raw_conn.execute(
+                """
+                CREATE TABLE sheets_retry_queue_new (
+                    id INTEGER PRIMARY KEY,
+                    service_id INTEGER NULL,
+                    operation TEXT NOT NULL,
+                    payload_json TEXT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT NULL,
+                    next_retry_at TEXT NULL,
+                    last_error TEXT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+            if queue_exists:
+                service_expr = "service_id" if "service_id" in queue_cols else "NULL"
+                operation_expr = "operation" if "operation" in queue_cols else "'sync_full'"
+                payload_expr = (
+                    "payload_json" if "payload_json" in queue_cols else "NULL"
+                )
+                attempts_expr = "attempts" if "attempts" in queue_cols else "0"
+                last_attempt_expr = (
+                    "last_attempt_at" if "last_attempt_at" in queue_cols else "NULL"
+                )
+                created_expr = "created_at" if "created_at" in queue_cols else "CURRENT_TIMESTAMP"
+
+                await raw_conn.execute(
+                    f"""
+                    INSERT INTO sheets_retry_queue_new (
+                        id,
+                        service_id,
+                        operation,
+                        payload_json,
+                        attempts,
+                        last_attempt_at,
+                        next_retry_at,
+                        last_error,
+                        created_at
+                    )
+                    SELECT
+                        id,
+                        {service_expr},
+                        {operation_expr},
+                        {payload_expr},
+                        {attempts_expr},
+                        {last_attempt_expr},
+                        NULL,
+                        NULL,
+                        {created_expr}
+                    FROM sheets_retry_queue
+                    """
+                )
+
+            await raw_conn.execute("DROP TABLE IF EXISTS sheets_retry_queue")
+            await raw_conn.execute(
+                "ALTER TABLE sheets_retry_queue_new RENAME TO sheets_retry_queue"
+            )
+            await raw_conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_sheets_retry_queue_next_retry_at "
+                "ON sheets_retry_queue(next_retry_at)"
+            )
+            await raw_conn.execute(
+                "INSERT OR IGNORE INTO schema_versions(version) VALUES ('2026_01_sheets_retry_queue_v2')"
+            )
+
+        await raw_conn.execute(
+            "INSERT OR IGNORE INTO schema_versions(version) VALUES ('2026_00_sqlite_legacy_bootstrap')"
+        )
 
         await raw_conn.commit()
 

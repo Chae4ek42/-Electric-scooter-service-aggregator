@@ -1,0 +1,29 @@
+groups:
+    - name: esas-bot
+      rules:
+          - alert: EsasSheetsSyncFailure
+            expr: increase(esas_sheets_sync_total{result="failure"}[10m]) > 0
+            for: 5m
+            labels:
+                severity: warning
+            annotations:
+                summary: "Sheets sync has failures"
+                description: "At least one Sheets sync failure happened in the last 10 minutes."
+
+          - alert: EsasSheetsRetryQueueHigh
+            expr: esas_sheets_retry_queue_size > 50
+            for: 10m
+            labels:
+                severity: warning
+            annotations:
+                summary: "Sheets retry queue is growing"
+                description: "Retry queue size is above 50 for 10 minutes."
+
+          - alert: EsasRuntimeErrorsBurst
+            expr: increase(esas_runtime_errors_total[5m]) > 5
+            for: 2m
+            labels:
+                severity: warning
+            annotations:
+                summary: "Runtime errors burst"
+                description: "More than 5 runtime errors were persisted in 5 minutes."

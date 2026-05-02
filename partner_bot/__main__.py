@@ -12,10 +12,16 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 from client_bot.core.config import PARTNER_BOT_TOKEN, REDIS_URL
 from client_bot.core.logging_setup import setup_logging
+from client_bot.core.metrics import start_metrics_server
 from client_bot.core.resilience import (
     create_guarded_task,
     install_runtime_exception_handlers,
     register_runtime_error,
+)
+from client_bot.core.startup import (
+    cancel_background_tasks,
+    run_with_retry,
+    wait_or_stop,
 )
 from client_bot.core.middlewares import (
     ActionLoggerMiddleware,
@@ -24,6 +30,10 @@ from client_bot.core.middlewares import (
     ThrottlingMiddleware,
 )
 from client_bot.services.fsm_reminder import FSMActivityMiddleware, fsm_reminder_loop
+from client_bot.services.sheets_events import (
+    start_event_driven_sync,
+    stop_event_driven_sync,
+)
 from client_bot.services.seed import init_db
 
 from partner_bot.handlers.common import router as common_router
@@ -40,7 +50,7 @@ except Exception:
     _MSK = None
 
 
-async def _pause_reopen_loop() -> None:
+async def _pause_reopen_loop(stop_event: asyncio.Event) -> None:
     """Auto-reopen services whose pause_until has passed."""
     import datetime
     from sqlalchemy import select
@@ -49,8 +59,9 @@ async def _pause_reopen_loop() -> None:
     from client_bot.services.sheets_writer import set_service_available
 
     logger = logging.getLogger(__name__)
-    while True:
-        await asyncio.sleep(_PAUSE_REOPEN_POLL_SECONDS)
+    while not stop_event.is_set():
+        if await wait_or_stop(stop_event, _PAUSE_REOPEN_POLL_SECONDS):
+            break
         try:
             now = (
                 datetime.datetime.now(tz=_MSK)
@@ -130,10 +141,59 @@ async def _make_storage(logger):
     return MemoryStorage()
 
 
+async def _set_commands(bot: Bot, logger: logging.Logger) -> None:
+    commands = [
+        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="admin", description="Панель администратора"),
+        BotCommand(command="client", description="Режим партнёра"),
+        BotCommand(command="health", description="Проверка инфраструктуры"),
+    ]
+
+    async def _op() -> None:
+        await bot.set_my_commands(commands)
+
+    await run_with_retry(
+        action_name="partner_set_my_commands",
+        operation=_op,
+        logger=logger,
+        attempts=6,
+        base_delay=1.0,
+        max_delay=20.0,
+        on_error=register_runtime_error,
+        raise_on_fail=False,
+    )
+
+
+async def _run_polling_with_backoff(
+    dp: Dispatcher,
+    bot: Bot,
+    stop_event: asyncio.Event,
+    logger: logging.Logger,
+) -> None:
+    delay = 2.0
+    while not stop_event.is_set():
+        try:
+            await dp.start_polling(bot, handle_signals=False)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Partner polling failed, will retry")
+            await register_runtime_error(
+                action_type="partner_polling_error",
+                error=exc,
+                payload="partner-bot",
+            )
+            if await wait_or_stop(stop_event, delay):
+                return
+            delay = min(delay * 2, 60.0)
+
+
 async def main() -> None:
     setup_logging(service_name="partner-bot")
     logger = logging.getLogger(__name__)
     install_runtime_exception_handlers(service_name="partner-bot", logger=logger)
+    start_metrics_server(service_name="partner-bot", default_port=9102)
 
     if not PARTNER_BOT_TOKEN:
         logger.error("PARTNER_BOT_TOKEN not set")
@@ -149,6 +209,8 @@ async def main() -> None:
 
     storage = await _make_storage(logger)
     dp = Dispatcher(storage=storage)
+    stop_event = asyncio.Event()
+    background_tasks: list[asyncio.Task] = []
 
     for event_type in (dp.message, dp.callback_query):
         event_type.middleware(LogContextMiddleware())
@@ -167,21 +229,46 @@ async def main() -> None:
     dp.include_router(notif_router)
 
     logger.info("Partner bot is starting ...")
-    await bot.set_my_commands(
-        [
-            BotCommand(command="start", description="Главное меню"),
-            BotCommand(command="admin", description="Панель администратора"),
-            BotCommand(command="client", description="Режим партнёра"),
-            BotCommand(command="health", description="Проверка инфраструктуры"),
-        ]
-    )
-    try:
-        await asyncio.gather(
+    await _set_commands(bot, logger)
+
+    event_task = await start_event_driven_sync(service_name="partner-bot")
+    if event_task is not None:
+        background_tasks.append(event_task)
+
+    background_tasks.append(
+        create_guarded_task(
             fsm_reminder_loop(bot, "partner"),
-            _pause_reopen_loop(),
-            dp.start_polling(bot),
+            logger=logger,
+            task_name="partner_fsm_reminder_loop",
+            action_type="partner_fsm_reminder_loop_error",
+            payload="partner-bot",
         )
+    )
+    background_tasks.append(
+        create_guarded_task(
+            _pause_reopen_loop(stop_event),
+            logger=logger,
+            task_name="partner_pause_reopen_loop",
+            action_type="partner_pause_reopen_loop_error",
+            payload="partner-bot",
+        )
+    )
+
+    try:
+        await _run_polling_with_backoff(dp, bot, stop_event, logger)
     finally:
+        stop_event.set()
+        try:
+            await dp.stop_polling()
+        except Exception:
+            pass
+        await stop_event_driven_sync()
+        await cancel_background_tasks(
+            background_tasks,
+            logger=logger,
+            scope="partner-bot",
+        )
+        await storage.close()
         await bot.session.close()
 
 

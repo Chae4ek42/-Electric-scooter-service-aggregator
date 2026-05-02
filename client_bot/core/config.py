@@ -13,7 +13,7 @@ load_dotenv(BASE_DIR / ".env")
 
 
 class SheetsConfig(BaseModel):
-    sync_interval: int = Field(None, ge=10)
+    sync_interval: int = Field(20, ge=1)
     tab_services: str
     tab_orders: str
     tab_clients: str
@@ -73,23 +73,41 @@ def _load_app_config() -> AppConfig:
 app_config = _load_app_config()
 
 
-CLIENT_BOT_TOKEN: str = os.getenv("CLIENT_BOT_TOKEN") or os.getenv(
-    "CLINET_BOT_TOKEN", ""
-)
-PARTNER_BOT_TOKEN: str = os.getenv("PARTNER_BOT_TOKEN", "")
-YANDEX_GEOCODER_API_KEY: str = os.getenv("YANDEX_GEOCODER_API_KEY", "")
+def _env_first(*keys: str, default: str = "") -> str:
+    for key in keys:
+        value = os.getenv(key)
+        if value is not None and value != "":
+            return value
+    return default
 
-SUPPORT_USER: str = app_config.support_user
-COOPERATION_USER: str = app_config.cooperation_user
+
+def _env_admins(default_values: list[str]) -> list[str]:
+    raw = os.getenv("ADMIN_USERNAMES", "").strip()
+    if not raw:
+        return default_values
+    return [x.strip().lstrip("@") for x in raw.split(",") if x.strip()]
+
+
+CLIENT_BOT_TOKEN: str = _env_first("CLIENT_BOT_TOKEN", "CLINET_BOT_TOKEN", default="")
+PARTNER_BOT_TOKEN: str = _env_first("PARTNER_BOT_TOKEN", default="")
+YANDEX_GEOCODER_API_KEY: str = _env_first("YANDEX_GEOCODER_API_KEY", default="")
+
+SUPPORT_USER: str = _env_first("SUPPORT_USER", default=app_config.support_user)
+COOPERATION_USER: str = _env_first(
+    "COOPERATION_USER",
+    default=app_config.cooperation_user,
+)
 ADMIN_USERNAMES: set[str] = {
-    x.strip().lstrip("@").lower() for x in app_config.admin_usernames if x.strip()
+    x.strip().lstrip("@").lower()
+    for x in _env_admins(app_config.admin_usernames)
+    if x.strip()
 }
 
-REDIS_URL: str = app_config.redis_url
-DATABASE_URL: str = app_config.database_url
+REDIS_URL: str = _env_first("REDIS_URL", default=app_config.redis_url)
+DATABASE_URL: str = _env_first("DATABASE_URL", default=app_config.database_url)
 
-GOOGLE_SHEET_ID: str = os.getenv("GOOGLE_SHEET_ID", app_config.google_sheet_id)
-GOOGLE_SA_PATH: str = app_config.google_sa_path
+GOOGLE_SHEET_ID: str = _env_first("GOOGLE_SHEET_ID", default=app_config.google_sheet_id)
+GOOGLE_SA_PATH: str = _env_first("GOOGLE_SA_PATH", default=app_config.google_sa_path)
 SHEETS_SYNC_INTERVAL: int = app_config.sheets.sync_interval
 SHEETS_COLUMNS: list[str] = app_config.sheets.columns
 SHEETS_TAB_SERVICES: str = app_config.sheets.tab_services

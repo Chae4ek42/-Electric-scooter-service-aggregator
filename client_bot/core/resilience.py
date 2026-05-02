@@ -7,6 +7,7 @@ import traceback
 from typing import Any, Coroutine
 
 from client_bot.core.database import async_session
+from client_bot.core.metrics import mark_runtime_error
 from client_bot.domain.models import UserAction
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,8 @@ async def register_runtime_error(
     safe_status = _cut(status, _MAX_STATUS_LEN) or "system_error"
     safe_payload = _cut(payload, _MAX_PAYLOAD_LEN)
     safe_error = _error_text(error)
+
+    mark_runtime_error(safe_action)
 
     try:
         async with async_session() as session:
@@ -139,6 +142,8 @@ def create_guarded_task(
         )
         try:
             loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                raise RuntimeError("event loop is closed")
             loop.create_task(
                 register_runtime_error(
                     action_type=action_type,
@@ -188,13 +193,21 @@ def install_runtime_exception_handlers(
             exc_info=exc,
         )
 
-        loop.create_task(
-            register_runtime_error(
+        payload = f"service={service_name}; message={message}; where={place!r}"
+        if loop.is_closed():
+            _enqueue_error_registration_from_any_thread(
                 action_type="asyncio_unhandled_exception",
                 error=exc or str(context),
-                payload=f"service={service_name}; message={message}; where={place!r}",
+                payload=payload,
             )
-        )
+        else:
+            loop.create_task(
+                register_runtime_error(
+                    action_type="asyncio_unhandled_exception",
+                    error=exc or str(context),
+                    payload=payload,
+                )
+            )
 
         if previous_asyncio_handler is not None:
             try:

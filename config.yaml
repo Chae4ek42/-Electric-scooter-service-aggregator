@@ -1,5 +1,6 @@
 # Инфраструктура
 redis_url: "redis://redis:6379/0"
+# Для Docker production задавайте DATABASE_URL через env
 database_url: "sqlite+aiosqlite:///data/esas.db"
 
 # Контакты поддержки
@@ -17,7 +18,7 @@ google_sa_path: "service-account-key.json"
 
 # Google Sheets
 sheets:
-    sync_interval: 20 # секунды между синхронизациями
+    sync_interval: 20 # legacy-параметр (full sync теперь event-driven)
     tab_services: "Сервисы"
     tab_orders: "Заявки"
     tab_clients: "Клиенты"

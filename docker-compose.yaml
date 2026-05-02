@@ -1,4 +1,19 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=esas
+      - POSTGRES_USER=esas
+      - POSTGRES_PASSWORD=esas
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U esas -d esas"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -17,16 +32,20 @@ services:
     env_file: .env
     environment:
       - TZ=Europe/Moscow
+      - DATABASE_URL=postgresql+asyncpg://esas:esas@postgres:5432/esas
       - LOG_FORMAT=text
       - LOG_LEVEL=INFO
       - LOG_DIR=/app/data/logs
       - LOG_FILE_MAX_MB=30
       - LOG_FILE_BACKUPS=5
+      - METRICS_PORT=9101
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
       - ./service-account-key.json:/app/service-account-key.json:ro
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     logging:
@@ -42,16 +61,20 @@ services:
     env_file: .env
     environment:
       - TZ=Europe/Moscow
+      - DATABASE_URL=postgresql+asyncpg://esas:esas@postgres:5432/esas
       - LOG_FORMAT=text
       - LOG_LEVEL=INFO
       - LOG_DIR=/app/data/logs
       - LOG_FILE_MAX_MB=30
       - LOG_FILE_BACKUPS=5
+      - METRICS_PORT=9102
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
       - ./service-account-key.json:/app/service-account-key.json:ro
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     logging:
@@ -67,15 +90,43 @@ services:
     env_file: .env
     environment:
       - TZ=Europe/Moscow
+      - DATABASE_URL=postgresql+asyncpg://esas:esas@postgres:5432/esas
       - LOG_FORMAT=text
       - LOG_LEVEL=INFO
       - LOG_DIR=/app/data/logs
       - LOG_FILE_MAX_MB=30
       - LOG_FILE_BACKUPS=5
+      - METRICS_PORT=9103
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
       - ./service-account-key.json:/app/service-account-key.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      client-bot:
+        condition: service_started
+      partner-bot:
+        condition: service_started
+      sync-service:
+        condition: service_started
     logging:
       driver: "json-file"
       options:
@@ -84,3 +135,4 @@ services:
 
 volumes:
   redis_data:
+  postgres_data:
