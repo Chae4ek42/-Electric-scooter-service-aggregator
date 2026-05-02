@@ -112,10 +112,7 @@ async def geocode_address(query: str) -> tuple[float, float] | None:
             try:
                 async with session.get(_GEOCODER_URL, params=params) as response:
                     if response.status != 200:
-                        if (
-                            response.status in _RETRYABLE_STATUSES
-                            and attempt < retries
-                        ):
+                        if response.status in _RETRYABLE_STATUSES and attempt < retries:
                             await asyncio.sleep(0.35 * (attempt + 1))
                             continue
                         logger.warning(
@@ -147,7 +144,9 @@ async def geocode_address(query: str) -> tuple[float, float] | None:
 
             result = _extract_coords(payload)
             if result is None:
-                logger.info("Geocoder returned no coordinates for query=%r", clean_query)
+                logger.info(
+                    "Geocoder returned no coordinates for query=%r", clean_query
+                )
                 return None
 
             _GEOCODE_CACHE[clean_query] = result

@@ -739,8 +739,7 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
             coords = await _geocode_service_location(new_city, new_address, new_metro)
             if coords is None:
                 await message.answer(
-                    "Не удалось определить координаты. "
-                    f"{_ADDRESS_AND_METRO_HINT}"
+                    "Не удалось определить координаты. " f"{_ADDRESS_AND_METRO_HINT}"
                 )
                 return
 

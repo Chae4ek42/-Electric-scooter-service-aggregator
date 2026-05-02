@@ -1,4 +1,4 @@
-"""Strict synchronization from Google Sheets to DB (Service Account only)."""
+"""Write-only synchronization from DB to Google Sheets (Service Account only)."""
 
 from __future__ import annotations
 
@@ -210,6 +210,13 @@ def _fetch_via_sa(
 async def sync_services_from_sheet(
     *, first_run: bool = False, dry_run: bool = False
 ) -> int:
+    logger.info(
+        "SYNC_READ_DISABLED | source=services | mode=write_only | first_run=%s | dry_run=%s",
+        first_run,
+        dry_run,
+    )
+    return 0
+
     if not _is_available():
         logger.debug("Sheets sync пропущен (GOOGLE_SHEET_ID не задан)")
         return 0
@@ -522,6 +529,12 @@ async def sync_services_from_sheet(
 
 
 async def sync_bank_details_from_sheet(*, dry_run: bool = False) -> int:
+    logger.info(
+        "SYNC_READ_DISABLED | source=bank_details | mode=write_only | dry_run=%s",
+        dry_run,
+    )
+    return 0
+
     if not _is_available():
         return 0
 
@@ -656,23 +669,13 @@ async def run_full_sync(*, first_run: bool = False, dry_run: bool = False) -> No
         sync_all_service_metrics_to_sheet,
     )
 
-    try:
-        synced_services = await sync_services_from_sheet(
-            first_run=first_run,
-            dry_run=dry_run,
-        )
-        synced_bank = await sync_bank_details_from_sheet(dry_run=dry_run)
-    except Exception as exc:
-        logger.error("SYNC_ERR | error_type=%s | error=%s", type(exc).__name__, exc)
-        if first_run:
-            raise
+    if not _is_available():
+        logger.debug("Sheets sync пропущен (GOOGLE_SHEET_ID не задан)")
         return
 
     if dry_run:
         business_logger.info(
-            "SYNC_HEALTH_OK | services_touched=%d | bank_touched=%d",
-            synced_services,
-            synced_bank,
+            "SYNC_HEALTH_OK | mode=write_only | inbound_read=disabled",
         )
         return
 

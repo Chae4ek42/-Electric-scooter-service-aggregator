@@ -76,8 +76,7 @@ router = Router(name="partner_registration")
 _PARTNER_MENU_TEXTS = PARTNER_MENU_TEXTS
 
 _ADDRESS_PRECISION_HINT = (
-    "Уточните адрес: улица, дом, корпус/строение "
-    "(например: ул. Ленина, 15 к2)."
+    "Уточните адрес: улица, дом, корпус/строение " "(например: ул. Ленина, 15 к2)."
 )
 
 _ADDRESS_AND_METRO_HINT = (
@@ -1102,8 +1101,7 @@ async def reg_address(message: types.Message, state: FSMContext) -> None:
     coords = await _geocode_draft_location(owner)
     if coords is None:
         await message.answer(
-            "Не удалось определить координаты по адресу. "
-            f"{_ADDRESS_PRECISION_HINT}"
+            "Не удалось определить координаты по адресу. " f"{_ADDRESS_PRECISION_HINT}"
         )
         return
     await _update_draft(
@@ -1509,8 +1507,7 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
     if coords is None:
         await _safe_edit_or_answer(
             callback,
-            "Не удалось определить координаты сервиса. "
-            f"{_ADDRESS_AND_METRO_HINT}",
+            "Не удалось определить координаты сервиса. " f"{_ADDRESS_AND_METRO_HINT}",
         )
         return
     await _update_draft(

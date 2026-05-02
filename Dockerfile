@@ -15,9 +15,6 @@ COPY partner_bot/ partner_bot/
 COPY sync_service/ sync_service/
 COPY media/ media/
 COPY config.yaml ./
-# Google SA key is mounted at runtime, not baked into image
-
-RUN pip install --no-cache-dir -e .
 
 # Default: client bot. Override via docker-compose `command`.
 CMD ["python", "-m", "bot"]
