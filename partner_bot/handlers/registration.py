@@ -45,7 +45,7 @@ from client_bot.services.city_search import (
     is_moscow_city,
     top_city_matches,
 )
-from client_bot.services.geocoder import build_geocode_query, geocode_address
+from client_bot.services.geocoder import geocode_with_fallback
 from client_bot.services.metro_search import top_metro_matches
 from client_bot.services.sheets_writer import add_service_row, update_service_row
 from client_bot.texts import TYPE_RU, Btn, PARTNER_MENU_TEXTS, Partner
@@ -74,6 +74,16 @@ logger = logging.getLogger(__name__)
 router = Router(name="partner_registration")
 
 _PARTNER_MENU_TEXTS = PARTNER_MENU_TEXTS
+
+_ADDRESS_PRECISION_HINT = (
+    "Уточните адрес: улица, дом, корпус/строение "
+    "(например: ул. Ленина, 15 к2)."
+)
+
+_ADDRESS_AND_METRO_HINT = (
+    "Уточните адрес и метро. "
+    "Для Москвы особенно важны корректные улица, дом и ближайшая станция."
+)
 
 
 def _pydantic_msg(exc: ValidationError) -> str:
@@ -195,8 +205,11 @@ async def _geocode_draft_location(owner: ServiceDraft) -> tuple[float, float] | 
     if not city or not address:
         return None
     metro = owner.draft_metro if is_moscow_city(city) else None
-    query = build_geocode_query(city, address, metro)
-    return await geocode_address(query)
+    return await geocode_with_fallback(
+        city=city,
+        address=address,
+        metro=metro,
+    )
 
 
 _EDIT_FIELD_LABELS = {
@@ -1062,7 +1075,7 @@ async def reg_address(message: types.Message, state: FSMContext) -> None:
             if coords is None:
                 await message.answer(
                     "Не удалось определить координаты по адресу. "
-                    "Проверьте адрес или метро и попробуйте снова."
+                    f"{_ADDRESS_AND_METRO_HINT}"
                 )
                 return
             await _update_draft(
@@ -1090,7 +1103,7 @@ async def reg_address(message: types.Message, state: FSMContext) -> None:
     if coords is None:
         await message.answer(
             "Не удалось определить координаты по адресу. "
-            "Проверьте город и адрес, затем попробуйте ещё раз."
+            f"{_ADDRESS_PRECISION_HINT}"
         )
         return
     await _update_draft(
@@ -1183,7 +1196,7 @@ async def reg_metro_ok(callback: types.CallbackQuery, state: FSMContext) -> None
         await _safe_edit_or_answer(
             callback,
             "Не удалось определить координаты по адресу и метро. "
-            "Проверьте ввод и попробуйте снова:",
+            f"{_ADDRESS_AND_METRO_HINT}",
             reg_back_kb(),
         )
         return
@@ -1223,7 +1236,7 @@ async def reg_metro_pick(callback: types.CallbackQuery, state: FSMContext) -> No
         await _safe_edit_or_answer(
             callback,
             "Не удалось определить координаты по адресу и метро. "
-            "Проверьте ввод и попробуйте снова:",
+            f"{_ADDRESS_AND_METRO_HINT}",
             reg_back_kb(),
         )
         return
@@ -1497,7 +1510,7 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
         await _safe_edit_or_answer(
             callback,
             "Не удалось определить координаты сервиса. "
-            "Проверьте город, адрес и метро (для Москвы), затем повторите отправку.",
+            f"{_ADDRESS_AND_METRO_HINT}",
         )
         return
     await _update_draft(

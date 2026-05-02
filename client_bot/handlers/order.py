@@ -46,7 +46,7 @@ from client_bot.services.city_search import (
     is_moscow_city,
     top_city_matches,
 )
-from client_bot.services.geocoder import build_geocode_query, geocode_address
+from client_bot.services.geocoder import geocode_with_fallback
 from client_bot.services.metro_search import best_metro_match, top_metro_matches
 from client_bot.services.notifications import send_by_token, send_with_retry
 from client_bot.services.order_lifecycle import (
@@ -540,12 +540,17 @@ async def handle_client_address(message: types.Message, state: FSMContext) -> No
 
     data = await state.get_data()
     city = (data.get("city") or "").strip()
-    query = build_geocode_query(city, validated.text)
-    coords = await geocode_address(query)
+    coords = await geocode_with_fallback(city=city, address=validated.text)
     if coords is None:
+        logger.info(
+            "user=%s address geocoding failed: city=%s",
+            message.from_user.id,
+            city,
+        )
         await message.answer(
             "Не удалось определить координаты по адресу. "
-            "Проверьте город и адрес, затем попробуйте ещё раз."
+            "Уточните адрес: улица, дом, корпус/строение "
+            "(например: ул. Ленина, 15 к2) и попробуйте снова."
         )
         return
 

@@ -43,7 +43,7 @@ from client_bot.domain.schemas import (
 )
 from client_bot.domain.states import PartnerProfileFSM
 from client_bot.services.city_search import is_moscow_city
-from client_bot.services.geocoder import build_geocode_query, geocode_address
+from client_bot.services.geocoder import geocode_with_fallback
 from client_bot.services.metro_search import best_metro_match
 from client_bot.services.sheets_writer import (
     set_service_available,
@@ -82,6 +82,10 @@ _FIELD_LABELS = {
 }
 
 _PARTNER_MENU_TEXTS = PARTNER_MENU_TEXTS
+_ADDRESS_AND_METRO_HINT = (
+    "Уточните адрес: улица, дом, корпус/строение "
+    "(например: ул. Ленина, 15 к2). Для Москвы также проверьте метро."
+)
 try:
     _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
 except Exception:
@@ -229,8 +233,11 @@ async def _geocode_service_location(
 ) -> tuple[float, float] | None:
     if not city or not address:
         return None
-    query = build_geocode_query(city, address, metro if is_moscow_city(city) else None)
-    return await geocode_address(query)
+    return await geocode_with_fallback(
+        city=city,
+        address=address,
+        metro=metro if is_moscow_city(city) else None,
+    )
 
 
 def _profile_edit_kb(city: str | None):
@@ -733,7 +740,7 @@ async def accept_field_value(message: types.Message, state: FSMContext) -> None:
             if coords is None:
                 await message.answer(
                     "Не удалось определить координаты. "
-                    "Проверьте город/адрес/метро и попробуйте снова."
+                    f"{_ADDRESS_AND_METRO_HINT}"
                 )
                 return
 
