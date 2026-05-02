@@ -72,19 +72,106 @@
 
 ## Миграция legacy SQLite в Postgres
 
-Если у тебя осталась старая база `data/esas.db`, её можно перенести в текущий Postgres-контур одноразовым скриптом:
+Если у тебя осталась старая база `data/esas.db`, её можно перенести в текущий Postgres-контур одноразовым скриптом `scripts/migrate_sqlite_to_postgres.py`.
+
+Скрипт делает два шага:
+
+1. По умолчанию сначала прогоняет legacy SQLite через текущие inline-миграции (`init_db()`), то есть приводит старую SQLite-схему к актуальному виду.
+2. Затем копирует данные в Postgres по всем таблицам актуальной схемы и восстанавливает sequence для `id`.
+
+### Важно перед запуском
+
+- Останови боты и sync-service, чтобы в SQLite больше никто не писал во время переноса.
+- Целевой Postgres должен быть пустым. Не поднимай `client-bot`, `partner-bot` и `sync-service` на пустом Postgres до миграции, иначе они создадут схему и могут засеять справочники раньше времени.
+- Для самого переноса используй URL вида `postgresql+psycopg://...`, а не runtime-URL `postgresql+asyncpg://...`: скрипт работает через синхронный SQLAlchemy engine.
+- В текущем Docker-образе папка `scripts/` не копируется внутрь образа, поэтому на сервере без venv удобнее запускать миграцию через одноразовый контейнер с bind mount проекта в `/app`.
+
+### Рекомендуемый сценарий на сервере через Docker Compose
+
+1. Сделай резервную копию SQLite-файла:
+
+```bash
+cp data/esas.db data/esas.db.bak.$(date +%F_%H-%M-%S)
+```
+
+2. Останови сервисы приложения, чтобы зафиксировать данные:
+
+```bash
+docker compose stop client-bot partner-bot sync-service
+```
+
+3. Подними только Postgres и дождись, пока он станет healthy:
+
+```bash
+docker compose up -d postgres
+docker compose ps
+```
+
+4. Запусти перенос через одноразовый контейнер на базе `client-bot`, примонтировав текущий проект в `/app`:
+
+```bash
+docker compose run --rm --no-deps -v "$(pwd):/app" client-bot \
+    python /app/scripts/migrate_sqlite_to_postgres.py \
+    --source-db /app/data/esas.db \
+    --target-url postgresql+psycopg://esas:esas@postgres:5432/esas
+```
+
+Ожидаемое поведение:
+
+- в stdout появятся строки вида `orders: copied 123 rows`;
+- в конце появится `Migration completed successfully.`.
+
+5. Проверь, что данные действительно появились в Postgres:
+
+```bash
+docker compose exec postgres psql -U esas -d esas -c "SELECT COUNT(*) FROM users;"
+docker compose exec postgres psql -U esas -d esas -c "SELECT COUNT(*) FROM orders;"
+docker compose exec postgres psql -U esas -d esas -c "SELECT COUNT(*) FROM services;"
+```
+
+6. После успешного переноса подними runtime-сервисы уже на Postgres:
+
+```bash
+docker compose up -d redis client-bot partner-bot sync-service
+```
+
+7. Проверь логи старта:
+
+```bash
+docker compose logs -f client-bot partner-bot sync-service
+```
+
+8. Когда убедишься, что всё работает, сделай уже backup самого Postgres:
+
+```bash
+docker compose exec -T postgres pg_dump -U esas -d esas > esas_postgres_after_migration.sql
+```
+
+### Когда нужен `--skip-normalize`
+
+Если source-SQLite уже была однажды прогнана через текущие inline-миграции и переписывать её повторно не нужно, можно пропустить первый шаг:
+
+```bash
+docker compose run --rm --no-deps -v "$(pwd):/app" client-bot \
+    python /app/scripts/migrate_sqlite_to_postgres.py \
+    --source-db /app/data/esas.db \
+    --target-url postgresql+psycopg://esas:esas@postgres:5432/esas \
+    --skip-normalize
+```
+
+### Локальный запуск, если есть venv
+
+Если перенос делается не на сервере, а локально и рядом есть Python/venv, можно запустить тот же скрипт напрямую:
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\migrate_sqlite_to_postgres.py --target-url postgresql+psycopg://esas:esas@localhost:5432/esas
 ```
 
-По умолчанию скрипт сначала прогоняет legacy SQLite через текущие inline-миграции, а затем копирует данные в Postgres по всем таблицам актуальной схемы.
+### Типовые проблемы
 
-Если source-база уже была нормализована и переписывать её не нужно:
-
-```powershell
-.\.venv\Scripts\python.exe .\scripts\migrate_sqlite_to_postgres.py --target-url postgresql+psycopg://esas:esas@localhost:5432/esas --skip-normalize
-```
+- Если получаешь ошибки duplicate key / unique violation, значит целевой Postgres уже не пустой. Очисти его и повтори перенос только в чистую БД.
+- Если запускаешь скрипт без bind mount проекта в `/app`, контейнер не увидит `scripts/migrate_sqlite_to_postgres.py`.
+- Если по ошибке подставить `postgresql+asyncpg://...` в `--target-url`, перенос может упасть, потому что этот скрипт использует синхронный движок SQLAlchemy.
 
 ## Операционный контур
 

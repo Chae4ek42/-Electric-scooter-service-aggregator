@@ -16,6 +16,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from client_bot.domain.models import Base
 
+_HHMM_TIME_COLUMNS = {
+    "open_time",
+    "close_time",
+    "draft_open_time",
+    "draft_close_time",
+    "scheduled_time",
+}
+
 
 def _sqlite_url_from_path(path: Path) -> str:
     return f"sqlite+aiosqlite:///{path.resolve().as_posix()}"
@@ -38,6 +46,44 @@ asyncio.run(init_db())
     )
 
 
+def _normalize_legacy_time_value(value: object) -> object:
+    if value is None or not isinstance(value, str):
+        return value
+
+    raw = value.strip()
+    if not raw:
+        return None
+
+    parts = raw.split(":")
+    if len(parts) not in (2, 3) or not all(part.isdigit() for part in parts):
+        return None
+
+    hours = int(parts[0])
+    minutes = int(parts[1])
+
+    # Legacy SQLite may contain HH:MM:SS or 24:00:00, while current runtime
+    # expects nullable HH:MM values that fit String(5) columns.
+    if hours == 24 and minutes == 0:
+        return "23:59"
+
+    if 0 <= hours <= 23 and 0 <= minutes <= 59:
+        return f"{hours:02d}:{minutes:02d}"
+
+    return None
+
+
+def _coerce_value_for_target(
+    target_table: Table,
+    column_name: str,
+    value: object,
+) -> object:
+    target_column = target_table.c[column_name]
+    max_length = getattr(target_column.type, "length", None)
+    if max_length == 5 and column_name in _HHMM_TIME_COLUMNS:
+        return _normalize_legacy_time_value(value)
+    return value
+
+
 def _copy_rows(
     source_conn,
     target_conn,
@@ -56,7 +102,17 @@ def _copy_rows(
 
     copied = 0
     for start in range(0, len(rows), chunk_size):
-        batch = [dict(row) for row in rows[start : start + chunk_size]]
+        batch = [
+            {
+                column_name: _coerce_value_for_target(
+                    target_table,
+                    column_name,
+                    row[column_name],
+                )
+                for column_name in common_columns
+            }
+            for row in rows[start : start + chunk_size]
+        ]
         target_conn.execute(target_table.insert(), batch)
         copied += len(batch)
     return copied
