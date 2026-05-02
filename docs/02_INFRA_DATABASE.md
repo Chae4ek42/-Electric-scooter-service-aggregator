@@ -70,6 +70,22 @@
 - Асинхронный путь: `async_session`.
 - Синхронный путь для отдельных write-back операций Sheets: `sync_engine`.
 
+## Миграция legacy SQLite в Postgres
+
+Если у тебя осталась старая база `data/esas.db`, её можно перенести в текущий Postgres-контур одноразовым скриптом:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\migrate_sqlite_to_postgres.py --target-url postgresql+psycopg://esas:esas@localhost:5432/esas
+```
+
+По умолчанию скрипт сначала прогоняет legacy SQLite через текущие inline-миграции, а затем копирует данные в Postgres по всем таблицам актуальной схемы.
+
+Если source-база уже была нормализована и переписывать её не нужно:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\migrate_sqlite_to_postgres.py --target-url postgresql+psycopg://esas:esas@localhost:5432/esas --skip-normalize
+```
+
 ## Операционный контур
 
 - `client_bot` и `partner_bot` работают поверх одной БД.
