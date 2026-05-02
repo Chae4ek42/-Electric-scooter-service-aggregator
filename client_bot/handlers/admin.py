@@ -16,9 +16,14 @@ from sqlalchemy import func, select
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
+from client_bot.services.notification_settings import (
+    ADMIN_SCOPE_CLIENT,
+    get_or_create_admin_settings,
+)
 from client_bot.texts import TYPE_RU, ORDER_STATUS_RU, Btn, Client
 from client_bot.ui.keyboards import (
     ADMIN_PAGE_SIZE,
+    adm_notif_settings_kb,
     admin_filter_kb,
     admin_main_kb,
     admin_order_detail_kb,
@@ -40,6 +45,14 @@ from client_bot.domain.models import (
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin")
+
+_ADM_NOTIF_TOGGLE_TO_ATTR = {
+    "enabled": "notif_enabled",
+    "dispute": "notif_client_dispute",
+    "client_cancel": "notif_client_cancel",
+    "no_center": "notif_no_center",
+    "completed": "notif_order_completed",
+}
 
 
 # ── Filter ────────────────────────────────────────────────────
@@ -258,6 +271,32 @@ async def _send_or_edit(
         await event.answer(text, reply_markup=markup)
 
 
+def _adm_notif_markup(settings) -> types.InlineKeyboardMarkup:
+    return adm_notif_settings_kb(
+        enabled=bool(settings.notif_enabled),
+        dispute=bool(settings.notif_client_dispute),
+        client_cancel=bool(settings.notif_client_cancel),
+        no_center=bool(settings.notif_no_center),
+        completed=bool(settings.notif_order_completed),
+    )
+
+
+def _apply_adm_notif_preset(settings, preset: str) -> bool:
+    if preset == "all_on":
+        value = True
+    elif preset == "all_off":
+        value = False
+    else:
+        return False
+
+    settings.notif_enabled = value
+    settings.notif_client_dispute = value
+    settings.notif_client_cancel = value
+    settings.notif_no_center = value
+    settings.notif_order_completed = value
+    return True
+
+
 # ══════════════════════════════════════════════════════════════
 # Вход в панель
 # ══════════════════════════════════════════════════════════════
@@ -325,6 +364,72 @@ async def adm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
         stat_lines.append(f"• {_STATUS_RU.get(status, status)}: {cnt}")
     await cb.message.edit_text("\n".join(stat_lines), reply_markup=admin_main_kb())
     await cb.answer()
+
+
+@router.callback_query(F.data == "adm:notif")
+async def adm_notif_menu(cb: types.CallbackQuery) -> None:
+    async with async_session() as session:
+        settings = await get_or_create_admin_settings(
+            session,
+            admin_user_id=cb.from_user.id,
+            scope=ADMIN_SCOPE_CLIENT,
+        )
+        await session.commit()
+
+    await cb.message.edit_text(
+        "Настройки админ-уведомлений (client bot):\n\n"
+        "[v] = уведомление включено, [ ] = выключено.",
+        reply_markup=_adm_notif_markup(settings),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:notif:toggle:"))
+async def adm_notif_toggle(cb: types.CallbackQuery) -> None:
+    field = cb.data.split(":")[3]
+    attr_name = _ADM_NOTIF_TOGGLE_TO_ATTR.get(field)
+    if attr_name is None:
+        await cb.answer("Неизвестная настройка.", show_alert=True)
+        return
+
+    async with async_session() as session:
+        settings = await get_or_create_admin_settings(
+            session,
+            admin_user_id=cb.from_user.id,
+            scope=ADMIN_SCOPE_CLIENT,
+        )
+        current = bool(getattr(settings, attr_name))
+        setattr(settings, attr_name, not current)
+        await session.commit()
+
+    await cb.message.edit_text(
+        "Настройки админ-уведомлений (client bot):\n\n"
+        "[v] = уведомление включено, [ ] = выключено.",
+        reply_markup=_adm_notif_markup(settings),
+    )
+    await cb.answer("Настройки обновлены")
+
+
+@router.callback_query(F.data.startswith("adm:notif:preset:"))
+async def adm_notif_preset(cb: types.CallbackQuery) -> None:
+    preset = cb.data.split(":")[3]
+    async with async_session() as session:
+        settings = await get_or_create_admin_settings(
+            session,
+            admin_user_id=cb.from_user.id,
+            scope=ADMIN_SCOPE_CLIENT,
+        )
+        if not _apply_adm_notif_preset(settings, preset):
+            await cb.answer("Неизвестный пресет.", show_alert=True)
+            return
+        await session.commit()
+
+    await cb.message.edit_text(
+        "Настройки админ-уведомлений (client bot):\n\n"
+        "[v] = уведомление включено, [ ] = выключено.",
+        reply_markup=_adm_notif_markup(settings),
+    )
+    await cb.answer("Настройки обновлены")
 
 
 # ══════════════════════════════════════════════════════════════

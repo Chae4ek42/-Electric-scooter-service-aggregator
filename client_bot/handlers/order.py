@@ -48,7 +48,12 @@ from client_bot.services.city_search import (
 )
 from client_bot.services.geocoder import geocode_with_fallback
 from client_bot.services.metro_search import best_metro_match, top_metro_matches
-from client_bot.services.notifications import send_by_token, send_with_retry
+from client_bot.services.admin_notifications import notify_admins
+from client_bot.services.notification_settings import (
+    ADMIN_SCOPE_CLIENT,
+    is_partner_notification_enabled,
+)
+from client_bot.services.notifications import send_by_token
 from client_bot.services.order_lifecycle import (
     ACTOR_CLIENT,
     ACTOR_SYSTEM,
@@ -867,6 +872,22 @@ async def _process_time_choice(
             "К сожалению, подходящих сервис-центров не найдено.\n"
             "Мы уведомим вас, когда появится подходящий сервис.",
         )
+        admin_text = (
+            f"⚠️ Не найден сервис для заявки #{order_id}/{order_code}\n"
+            f"Клиент ID: {callback.from_user.id}\n"
+            f"Город: {data.get('city') or '—'}\n"
+            f"Тип услуги: {_SERVICE_TYPE_RU.get(data.get('service_type') or '', data.get('service_type') or '—')}\n"
+            f"Метро: {data.get('metro_station') or '—'}\n"
+            f"Адрес: {data.get('client_address') or '—'}\n"
+            f"Дата: {data.get('scheduled_date') or '—'} {data.get('scheduled_time') or ''}".rstrip()
+        )
+        _notify_client_admins(
+            event_key="no_center",
+            text=admin_text,
+            dedupe_suffix=str(order_id),
+            order_id=order_id,
+            user_id=callback.from_user.id,
+        )
         return
 
     await state.update_data(
@@ -1210,6 +1231,16 @@ async def payment_cancel(callback: types.CallbackQuery, state: FSMContext) -> No
     )
     if notify_order and notify_text:
         _notify_partner(notify_order, notify_text, notify_kind="client_cancel")
+        _notify_client_admins(
+            event_key="client_cancel",
+            text=_build_admin_client_cancel_text(
+                notify_order,
+                _client_model_name(notify_order),
+            ),
+            dedupe_suffix=f"payment_cancel:{order_id}",
+            order_id=order_id,
+            user_id=callback.from_user.id,
+        )
 
 
 @router.callback_query(F.data == "noop")
@@ -1642,6 +1673,13 @@ async def orders_select(callback: types.CallbackQuery) -> None:
                 _build_partner_client_cancel_text(order_id, order, model_str),
                 notify_kind="client_cancel",
             )
+            _notify_client_admins(
+                event_key="client_cancel",
+                text=_build_admin_client_cancel_text(order, model_str),
+                dedupe_suffix=f"orders_select_cancel:{order_id}",
+                order_id=order_id,
+                user_id=callback.from_user.id,
+            )
             logger.info("user=%s cancelled order #%s", callback.from_user.id, order_id)
             await callback.message.answer(f"Заявка №{order_id}/{order_code} отменена.")
             await callback.answer()
@@ -1691,6 +1729,16 @@ async def my_order_cancel(callback: types.CallbackQuery) -> None:
     await callback.message.answer(f"Заявка №{order_id}/{order_code} отменена.")
     if notify_order and notify_text:
         _notify_partner(notify_order, notify_text, notify_kind="client_cancel")
+        _notify_client_admins(
+            event_key="client_cancel",
+            text=_build_admin_client_cancel_text(
+                notify_order,
+                _client_model_name(notify_order),
+            ),
+            dedupe_suffix=f"my_order_cancel:{order_id}",
+            order_id=order_id,
+            user_id=callback.from_user.id,
+        )
     await callback.answer("Заявка отменена")
 
 
@@ -1840,12 +1888,49 @@ async def my_order_comment_input(message: types.Message, state: FSMContext) -> N
             f"Устройство: {e(model_str)}\n"
             f"Дата: {e(order.scheduled_date or '—')} {e(order.scheduled_time or '')}\n"
             f"Комментарий:\n{e(comment)}",
+            notify_kind="client_comment",
         )
 
 
 # ══════════════════════════════════════════════════════════════
 # CLIENT ORDER ACTIONS (inline notifications)
 # ══════════════════════════════════════════════════════════════
+
+
+def _notify_client_admins(
+    *,
+    event_key: str,
+    text: str,
+    dedupe_suffix: str,
+    order_id: int,
+    user_id: int,
+) -> None:
+    """Fire-and-forget admin notification from client bot flows."""
+
+    async def _send() -> None:
+        from aiogram import Bot
+        from client_bot.core.config import CLIENT_BOT_TOKEN
+
+        bot = Bot(token=CLIENT_BOT_TOKEN)
+        try:
+            await notify_admins(
+                bot,
+                scope=ADMIN_SCOPE_CLIENT,
+                event_key=event_key,
+                text=text,
+                dedupe_prefix=f"admin:{event_key}:{dedupe_suffix}",
+            )
+        finally:
+            await bot.session.close()
+
+    create_guarded_task(
+        _send(),
+        logger=logger,
+        task_name=f"client_admin_notify:{event_key}:{order_id}",
+        action_type="client_admin_notify_task_error",
+        user_id=user_id,
+        payload=f"order_id={order_id}; event={event_key}",
+    )
 
 
 def _notify_partner(order: Order, text: str, notify_kind: str | None = None) -> None:
@@ -1868,16 +1953,7 @@ def _notify_partner(order: Order, text: str, notify_kind: str | None = None) -> 
                     )
                 ).scalar_one_or_none()
 
-                if notify_kind == "new_order" and settings and not settings.notif_new_order:
-                    logger.info(
-                        "PARTNER_NOTIFY_SKIPPED | order=%s | service=%s | kind=%s",
-                        order.id,
-                        order.service_id,
-                        notify_kind,
-                    )
-                    return
-
-                if notify_kind == "client_cancel" and settings and not settings.notif_cancel:
+                if not is_partner_notification_enabled(settings, notify_kind):
                     logger.info(
                         "PARTNER_NOTIFY_SKIPPED | order=%s | service=%s | kind=%s",
                         order.id,
@@ -1967,7 +2043,9 @@ def _build_partner_new_order_text(order_id: int, order: Order, model_str: str) -
     return "\n".join(lines)
 
 
-def _build_partner_client_cancel_text(order_id: int, order: Order, model_str: str) -> str:
+def _build_partner_client_cancel_text(
+    order_id: int, order: Order, model_str: str
+) -> str:
     slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
     lines = [
         f"❌ Клиент отменил заявку #{order_id}",
@@ -1983,6 +2061,35 @@ def _build_partner_client_cancel_text(order_id: int, order: Order, model_str: st
     else:
         lines.append(f"Адрес клиента: {e(order.client_address or '—')}")
     return "\n".join(lines)
+
+
+def _build_admin_client_cancel_text(order: Order, model_str: str) -> str:
+    slot = f"{order.scheduled_date or '—'} {order.scheduled_time or ''}".strip()
+    client_name = order.user.full_name if order.user else "—"
+    client_username = f"@{order.user.username}" if order.user and order.user.username else "—"
+    return "\n".join(
+        [
+            f"❌ Клиент отменил заявку #{order.id}/{_display_order_code(order)}",
+            f"Клиент: {client_name} ({client_username}, ID: {order.user_id})",
+            f"Устройство: {model_str}",
+            f"Тип услуги: {_SERVICE_TYPE_RU.get(_service_type_code(order), _service_type_code(order))}",
+            f"Дата: {slot}",
+            f"Город: {order.city or 'Москва'}",
+        ]
+    )
+
+
+def _build_admin_completed_text(order: Order, total: float) -> str:
+    client_name = order.user.full_name if order.user else "—"
+    client_username = f"@{order.user.username}" if order.user and order.user.username else "—"
+    return "\n".join(
+        [
+            f"✅ Завершена заявка #{order.id}/{_display_order_code(order)}",
+            f"Клиент: {client_name} ({client_username}, ID: {order.user_id})",
+            f"Сервис: {order.service.name if order.service else '—'} (ID: {order.service_id})",
+            f"Итоговая стоимость: {total:.0f} руб.",
+        ]
+    )
 
 
 # ── Visited? ──────────────────────────────────────────────────
@@ -2076,6 +2183,7 @@ async def confirm_estimate(callback: types.CallbackQuery) -> None:
         _notify_partner(
             order,
             f"✅ Клиент подтвердил смету по заявке #{order_id}.",
+            notify_kind="estimate",
         )
 
 
@@ -2111,6 +2219,7 @@ async def reject_estimate(callback: types.CallbackQuery) -> None:
             order,
             f"❌ Клиент отклонил смету по заявке #{order_id}.\n"
             "Свяжитесь с клиентом для уточнения.",
+            notify_kind="estimate",
         )
 
 
@@ -2233,6 +2342,14 @@ async def pay_confirm(callback: types.CallbackQuery) -> None:
                 f"Клиент оплатил и забрал устройство.\n"
                 f"Устройство: {model_str}\n"
                 f"Итого: {total:.0f} руб.",
+                notify_kind="completed",
+            )
+            _notify_client_admins(
+                event_key="completed",
+                text=_build_admin_completed_text(o, float(total)),
+                dedupe_suffix=str(order_id),
+                order_id=order_id,
+                user_id=o.user_id,
             )
 
     create_guarded_task(
@@ -2310,7 +2427,7 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
         await state.clear()
         return
 
-    import datetime
+    notify_order: Order | None = None
 
     async with async_session() as session:
         order = (
@@ -2339,6 +2456,7 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
             order.diagnostics_price,
         )
         user_obj = order.user
+        notify_order = order
 
     await state.clear()
     await message.answer(
@@ -2349,46 +2467,33 @@ async def dispute_reason_input(message: types.Message, state: FSMContext) -> Non
 
     logger.info("client %s disputed order #%s", message.from_user.id, order_id)
 
-    # Notify all admins
-    try:
-        from client_bot.core.config import CLIENT_BOT_TOKEN
-
-        from aiogram import Bot
-
-        bot = Bot(token=CLIENT_BOT_TOKEN)
-        client_info = f"@{user_obj.username}" if user_obj and user_obj.username else ""
-        client_name = user_obj.full_name if user_obj else ""
-        admin_text = (
-            f"⚠️ Оспаривание заявки #{order_id}\n\n"
-            f"Код заявки: {order_code}\n"
-            f"Клиент: {client_name} ({client_info}, ID: {message.from_user.id})\n"
-            f"Сервис: {svc_name} (ID: {svc_id})\n"
-            f"Устройство: {model_str}\n\n"
-            f"Причина оспаривания:\n{text}\n\n"
-            f"Итоговая стоимость: {total:.0f} руб.\n"
-            f"Предоплата: {prepayment:.0f} руб."
+    if notify_order is not None:
+        _notify_partner(
+            notify_order,
+            f"⚠️ Клиент оспорил заявку #{order_id}/{order_code}\n\n"
+            f"Устройство: {model_str}\n"
+            f"Причина: {text}",
+            notify_kind="dispute",
         )
-        async with async_session() as session:
-            for admin_username in ADMIN_USERNAMES:
-                # Try to find admin's user_id
-                admin_user = (
-                    await session.execute(
-                        select(User).where(User.username == admin_username)
-                    )
-                ).scalar_one_or_none()
-                if admin_user:
-                    try:
-                        await send_with_retry(
-                            bot,
-                            admin_user.id,
-                            admin_text,
-                            dedupe_key=f"admin_dispute:{order_id}:{admin_user.id}",
-                        )
-                    except Exception:
-                        pass
-        await bot.session.close()
-    except Exception:
-        logger.exception("Failed to notify admins about dispute")
+
+    client_info = f"@{user_obj.username}" if user_obj and user_obj.username else "—"
+    client_name = user_obj.full_name if user_obj else "—"
+    admin_text = (
+        f"⚠️ Оспаривание заявки #{order_id}/{order_code}\n\n"
+        f"Клиент: {client_name} ({client_info}, ID: {message.from_user.id})\n"
+        f"Сервис: {svc_name} (ID: {svc_id})\n"
+        f"Устройство: {model_str}\n\n"
+        f"Причина оспаривания:\n{text}\n\n"
+        f"Итоговая стоимость: {total:.0f} руб.\n"
+        f"Предоплата: {prepayment:.0f} руб."
+    )
+    _notify_client_admins(
+        event_key="dispute",
+        text=admin_text,
+        dedupe_suffix=str(order_id),
+        order_id=order_id,
+        user_id=message.from_user.id,
+    )
 
 
 def _client_model_name(order: Order) -> str:

@@ -376,12 +376,57 @@ class ServiceOwnerSettings(Base):
 
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), primary_key=True)
     owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    notif_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notif_new_order: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notif_cancel: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    notif_client_comment: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    notif_estimate: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    notif_dispute: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    notif_completed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     service: Mapped["Service"] = relationship(
         back_populates="owner_settings",
         lazy="selectin",
+    )
+
+
+class AdminNotificationSettings(Base):
+    __tablename__ = "admin_notification_settings"
+    __table_args__ = (Index("ix_admin_notification_settings_scope", "scope"),)
+
+    admin_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), primary_key=True)
+    notif_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # client_bot events
+    notif_client_dispute: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    notif_client_cancel: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    notif_no_center: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    notif_order_completed: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+
+    # partner_bot events
+    notif_partner_application: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    notif_partner_profile_update: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    notif_partner_status_change: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 

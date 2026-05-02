@@ -109,7 +109,9 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
         lines.append(f"<b>Категория:</b> {e(order.upgrade_category)}")
     if order.problem_description:
         lines.append(f"<b>Проблема:</b> {e(order.problem_description)}")
-    lines.append(f"<b>Дата:</b> {order.scheduled_date or '—'} {order.scheduled_time or ''}")
+    lines.append(
+        f"<b>Дата:</b> {order.scheduled_date or '—'} {order.scheduled_time or ''}"
+    )
     lines.append(f"<b>Статус:</b> {_STATUS_RU.get(order.status, order.status)}")
 
     if show_client and order.user:
@@ -136,7 +138,9 @@ def _fmt_partner_order(order: Order, show_client: bool = False) -> str:
     if order.dispute_reason:
         lines.append(f"<b>Причина оспаривания:</b> {e(order.dispute_reason)}")
     if order.client_visited is not None:
-        lines.append(f"<b>Клиент был в сервисе:</b> {'Да' if order.client_visited else 'Нет'}")
+        lines.append(
+            f"<b>Клиент был в сервисе:</b> {'Да' if order.client_visited else 'Нет'}"
+        )
 
     return "\n".join(lines)
 

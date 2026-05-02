@@ -609,12 +609,27 @@ def quick_status_kb() -> InlineKeyboardMarkup:
 # ── Notifications ─────────────────────────────────────────────
 
 
-def notif_settings_kb(new_order: bool, cancel: bool) -> InlineKeyboardMarkup:
+def notif_settings_kb(
+    *,
+    enabled: bool,
+    new_order: bool,
+    cancel: bool,
+    client_comment: bool,
+    estimate: bool,
+    dispute: bool,
+    completed: bool,
+) -> InlineKeyboardMarkup:
     def _icon(v: bool) -> str:
         return "[v]" if v else "[ ]"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(enabled)} Все уведомления",
+                    callback_data="notif:toggle:enabled",
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text=f"{_icon(new_order)} Новые заявки",
@@ -626,6 +641,40 @@ def notif_settings_kb(new_order: bool, cancel: bool) -> InlineKeyboardMarkup:
                     text=f"{_icon(cancel)} Отмены клиентом",
                     callback_data="notif:toggle:cancel",
                 )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(client_comment)} Комментарии клиента",
+                    callback_data="notif:toggle:client_comment",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(estimate)} Реакция клиента на смету",
+                    callback_data="notif:toggle:estimate",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(dispute)} Споры по заявкам",
+                    callback_data="notif:toggle:dispute",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(completed)} Завершение заявки",
+                    callback_data="notif:toggle:completed",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Включить все",
+                    callback_data="notif:preset:all_on",
+                ),
+                InlineKeyboardButton(
+                    text="Отключить все",
+                    callback_data="notif:preset:all_off",
+                ),
             ],
         ]
     )
@@ -652,6 +701,62 @@ def padm_main_kb() -> InlineKeyboardMarkup:
                     text="Статистика сервисов", callback_data="padm:services:0"
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="Настройки уведомлений", callback_data="padm:notif"
+                )
+            ],
+        ]
+    )
+
+
+def padm_notif_settings_kb(
+    *,
+    enabled: bool,
+    partner_application: bool,
+    profile_update: bool,
+    status_change: bool,
+) -> InlineKeyboardMarkup:
+    def _icon(v: bool) -> str:
+        return "[v]" if v else "[ ]"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(enabled)} Все уведомления",
+                    callback_data="padm:notif:toggle:enabled",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(partner_application)} Новые анкеты партнёров",
+                    callback_data="padm:notif:toggle:partner_application",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(profile_update)} Изменения профиля партнёра",
+                    callback_data="padm:notif:toggle:profile_update",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(status_change)} Смена статуса партнёра",
+                    callback_data="padm:notif:toggle:status_change",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Включить все",
+                    callback_data="padm:notif:preset:all_on",
+                ),
+                InlineKeyboardButton(
+                    text="Отключить все",
+                    callback_data="padm:notif:preset:all_off",
+                ),
+            ],
+            [InlineKeyboardButton(text="Главное меню", callback_data="padm:main")],
         ]
     )
 

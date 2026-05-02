@@ -10,20 +10,20 @@ import zoneinfo
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import func
 from sqlalchemy import select
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
 from client_bot.core.resilience import create_guarded_task
+from client_bot.services.admin_notifications import notify_admins
+from client_bot.services.notification_settings import ADMIN_SCOPE_PARTNER
 from client_bot.domain.models import (
     MetroStation,
     Service,
     ServiceBankDetails,
     ServiceCategory,
     ServiceDraft,
-    User,
 )
 from client_bot.domain.order_rules import parse_hydro_price_range
 from client_bot.domain.schemas import (
@@ -160,40 +160,27 @@ async def _notify_admins_about_profile_update(
     service_id: int,
     field_label: str,
 ) -> None:
-    admin_list = [u.strip().lower() for u in ADMIN_USERNAMES if u.strip()]
-    if not admin_list:
-        return
-
     actor = event.from_user
     actor_username = actor.username or ""
     actor_name = actor.full_name or ""
 
-    async with async_session() as session:
-        admins = (
-            (
-                await session.execute(
-                    select(User).where(func.lower(User.username).in_(admin_list))
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    for admin_user in admins:
-        try:
-            await event.bot.send_message(
-                admin_user.id,
-                "Партнер обновил профиль\n"
+    try:
+        await notify_admins(
+            event.bot,
+            scope=ADMIN_SCOPE_PARTNER,
+            event_key="profile_update",
+            text=(
+                "Партнёр обновил профиль\n"
                 f"Поле: {field_label}\n"
                 f"Service ID: {service_id}\n"
                 f"Partner TG ID: {actor.id}\n"
                 f"Username: @{actor_username if actor_username else '—'}\n"
-                f"Имя: {actor_name or '—'}",
-            )
-        except Exception:
-            logger.warning(
-                "Failed to notify admin %s about profile update", admin_user.id
-            )
+                f"Имя: {actor_name or '—'}"
+            ),
+            dedupe_prefix=f"partner_profile_update:{service_id}:{field_label}",
+        )
+    except Exception:
+        logger.exception("Failed to notify admins about profile update")
 
 
 async def _require_active(event) -> tuple[ServiceDraft | None, Service | None]:

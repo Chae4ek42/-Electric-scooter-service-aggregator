@@ -542,6 +542,67 @@ def admin_main_kb() -> InlineKeyboardMarkup:
                     text="Заявки партнёров", callback_data="adm:partners:0"
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="Настройки уведомлений", callback_data="adm:notif"
+                )
+            ],
+        ]
+    )
+
+
+def adm_notif_settings_kb(
+    *,
+    enabled: bool,
+    dispute: bool,
+    client_cancel: bool,
+    no_center: bool,
+    completed: bool,
+) -> InlineKeyboardMarkup:
+    def _icon(v: bool) -> str:
+        return "[v]" if v else "[ ]"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(enabled)} Все уведомления",
+                    callback_data="adm:notif:toggle:enabled",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(dispute)} Споры по заявкам",
+                    callback_data="adm:notif:toggle:dispute",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(client_cancel)} Отмены клиентом",
+                    callback_data="adm:notif:toggle:client_cancel",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(no_center)} Не найден сервис",
+                    callback_data="adm:notif:toggle:no_center",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{_icon(completed)} Завершенные заявки",
+                    callback_data="adm:notif:toggle:completed",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Включить все", callback_data="adm:notif:preset:all_on"
+                ),
+                InlineKeyboardButton(
+                    text="Отключить все", callback_data="adm:notif:preset:all_off"
+                ),
+            ],
+            [InlineKeyboardButton(text="Главное меню", callback_data="adm:main")],
         ]
     )
 

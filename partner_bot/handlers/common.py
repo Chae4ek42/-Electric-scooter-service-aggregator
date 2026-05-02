@@ -121,7 +121,9 @@ def _format_draft(owner: ServiceDraft) -> str:
         lines.append(
             f"<b>Категория ремонта:</b> {e(owner.draft_category or '(не выбрано)')}"
         )
-    lines.append(f"<b>Гидроизоляция:</b> {'Да' if owner.draft_hydroisolation else 'Нет'}")
+    lines.append(
+        f"<b>Гидроизоляция:</b> {'Да' if owner.draft_hydroisolation else 'Нет'}"
+    )
     if owner.draft_hydroisolation:
         lines.append(
             f"<b>Цена гидроизоляции:</b> {e(owner.draft_hydro_price or '(не указана)')}"
@@ -144,7 +146,9 @@ def _format_draft(owner: ServiceDraft) -> str:
         lines.append(f"<b>Диагностика:</b> {int(owner.draft_diagnostics_price)} руб.")
     else:
         lines.append("<b>Диагностика:</b> бесплатно (0 руб.)")
-    lines.append(f"<b>Входит в стоимость:</b> {'Да' if owner.draft_diag_included else 'Нет'}")
+    lines.append(
+        f"<b>Входит в стоимость:</b> {'Да' if owner.draft_diag_included else 'Нет'}"
+    )
     if owner.draft_legal_form or owner.draft_tax_system or owner.draft_bank_account:
         lines.append("")
         lines.append("<b>Банковские реквизиты:</b>")

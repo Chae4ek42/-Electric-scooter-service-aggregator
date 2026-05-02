@@ -15,6 +15,7 @@
 - `service_drafts`: анкета и статус владельца (`owner_user_id`, `service_id`, draft-поля).
 - `service_bank_details`: отдельные банковские реквизиты по `service_id`.
 - `service_owner_settings`: настройки уведомлений владельца.
+- `admin_notification_settings`: настройки уведомлений администраторов по scope (`client`/`partner`).
 - `orders`: жизненный цикл клиентских заявок.
 - `order_status_history`: аудит переходов статусов заказа (`from_status`, `to_status`, `actor`, `reason`, `metadata_json`).
 - `sheets_retry_queue`: очередь отложенных ретраев write-back в Google Sheets.
@@ -39,6 +40,16 @@
 - `Service` — производственный контур выполнения заказов.
 - Связь осуществляется через `service_id`.
 
+## Матрица уведомлений
+
+- `service_owner_settings`:
+	- master-switch `notif_enabled`;
+	- события владельца: `notif_new_order`, `notif_cancel`, `notif_client_comment`, `notif_estimate`, `notif_dispute`, `notif_completed`.
+- `admin_notification_settings`:
+	- ключ `(admin_user_id, scope)`;
+	- `scope=client`: `notif_client_dispute`, `notif_client_cancel`, `notif_no_center`, `notif_order_completed`;
+	- `scope=partner`: `notif_partner_application`, `notif_partner_profile_update`, `notif_partner_status_change`.
+
 ## Миграции и совместимость
 
 `init_db()` делает:
@@ -50,6 +61,9 @@
 5. Создание `order_status_history` и индексов `orders` / `service_drafts` для совместимости старых инсталляций.
 6. Создание `schema_versions` и фиксация применённых версий миграций.
 7. Приведение `sheets_retry_queue` к схеме delayed-retry (next_retry_at/last_error).
+8. Приведение схем уведомлений:
+	- расширение `service_owner_settings` новыми флагами;
+	- создание `admin_notification_settings` и индекса по `scope`.
 
 ## Доступ к БД
 

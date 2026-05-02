@@ -20,6 +20,11 @@ from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.formatting import e
 from client_bot.core.resilience import create_guarded_task
+from client_bot.services.admin_notifications import notify_admins
+from client_bot.services.notification_settings import (
+    ADMIN_SCOPE_PARTNER,
+    get_or_create_admin_settings,
+)
 from client_bot.domain.models import (
     Order,
     Service,
@@ -32,6 +37,7 @@ from client_bot.services.sheets_writer import update_service_row
 from client_bot.texts import Btn, ORDER_STATUS_RU, PARTNER_STATUS_RU, Partner, TYPE_RU
 from partner_bot.ui.keyboards import (
     padm_main_kb,
+    padm_notif_settings_kb,
     padm_partner_detail_kb,
     padm_partners_kb,
     padm_service_detail_kb,
@@ -43,6 +49,13 @@ from partner_bot.ui.keyboards import (
 
 logger = logging.getLogger(__name__)
 router = Router(name="partner_admin")
+
+_PADM_NOTIF_TOGGLE_TO_ATTR = {
+    "enabled": "notif_enabled",
+    "partner_application": "notif_partner_application",
+    "profile_update": "notif_partner_profile_update",
+    "status_change": "notif_partner_status_change",
+}
 
 PARTNER_PAGE_SIZE = 10
 SERVICE_PAGE_SIZE = 10
@@ -87,6 +100,46 @@ def _schedule_service_sheet_sync(service_id: int) -> None:
         task_name=f"partner_admin_sheet_sync:{service_id}",
         action_type="partner_admin_sheet_sync_error",
         payload=f"service_id={service_id}",
+    )
+
+
+def _padm_notif_markup(settings) -> types.InlineKeyboardMarkup:
+    return padm_notif_settings_kb(
+        enabled=bool(settings.notif_enabled),
+        partner_application=bool(settings.notif_partner_application),
+        profile_update=bool(settings.notif_partner_profile_update),
+        status_change=bool(settings.notif_partner_status_change),
+    )
+
+
+def _apply_padm_notif_preset(settings, preset: str) -> bool:
+    if preset == "all_on":
+        value = True
+    elif preset == "all_off":
+        value = False
+    else:
+        return False
+
+    settings.notif_enabled = value
+    settings.notif_partner_application = value
+    settings.notif_partner_profile_update = value
+    settings.notif_partner_status_change = value
+    return True
+
+
+async def _notify_partner_admins(
+    bot,
+    *,
+    event_key: str,
+    text: str,
+    dedupe_suffix: str,
+) -> None:
+    await notify_admins(
+        bot,
+        scope=ADMIN_SCOPE_PARTNER,
+        event_key=event_key,
+        text=text,
+        dedupe_prefix=f"partner_admin:{event_key}:{dedupe_suffix}",
     )
 
 
@@ -453,6 +506,72 @@ async def padm_main(cb: types.CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
+@router.callback_query(F.data == "padm:notif")
+async def padm_notif_menu(cb: types.CallbackQuery) -> None:
+    async with async_session() as session:
+        settings = await get_or_create_admin_settings(
+            session,
+            admin_user_id=cb.from_user.id,
+            scope=ADMIN_SCOPE_PARTNER,
+        )
+        await session.commit()
+
+    await cb.message.edit_text(
+        "Настройки админ-уведомлений (partner bot):\n\n"
+        "[v] = уведомление включено, [ ] = выключено.",
+        reply_markup=_padm_notif_markup(settings),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("padm:notif:toggle:"))
+async def padm_notif_toggle(cb: types.CallbackQuery) -> None:
+    field = cb.data.split(":")[3]
+    attr_name = _PADM_NOTIF_TOGGLE_TO_ATTR.get(field)
+    if attr_name is None:
+        await cb.answer("Неизвестная настройка.", show_alert=True)
+        return
+
+    async with async_session() as session:
+        settings = await get_or_create_admin_settings(
+            session,
+            admin_user_id=cb.from_user.id,
+            scope=ADMIN_SCOPE_PARTNER,
+        )
+        current = bool(getattr(settings, attr_name))
+        setattr(settings, attr_name, not current)
+        await session.commit()
+
+    await cb.message.edit_text(
+        "Настройки админ-уведомлений (partner bot):\n\n"
+        "[v] = уведомление включено, [ ] = выключено.",
+        reply_markup=_padm_notif_markup(settings),
+    )
+    await cb.answer("Настройки обновлены")
+
+
+@router.callback_query(F.data.startswith("padm:notif:preset:"))
+async def padm_notif_preset(cb: types.CallbackQuery) -> None:
+    preset = cb.data.split(":")[3]
+    async with async_session() as session:
+        settings = await get_or_create_admin_settings(
+            session,
+            admin_user_id=cb.from_user.id,
+            scope=ADMIN_SCOPE_PARTNER,
+        )
+        if not _apply_padm_notif_preset(settings, preset):
+            await cb.answer("Неизвестный пресет.", show_alert=True)
+            return
+        await session.commit()
+
+    await cb.message.edit_text(
+        "Настройки админ-уведомлений (partner bot):\n\n"
+        "[v] = уведомление включено, [ ] = выключено.",
+        reply_markup=_padm_notif_markup(settings),
+    )
+    await cb.answer("Настройки обновлены")
+
+
 @router.message(F.text == Btn.EXIT_PANEL)
 async def padm_exit(message: types.Message, state: FSMContext) -> None:
     await state.clear()
@@ -685,6 +804,7 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
 
     svc_id: int | None = None
     partner_tg_id: int | None = None
+    partner_name = "—"
 
     async with async_session() as session:
         owner = (
@@ -698,6 +818,7 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
         if owner.status != "ожидает":
             await cb.answer("Нельзя одобрить — статус не ожидает.", show_alert=True)
             return
+        partner_name = owner.draft_name or "—"
 
         cat_id = None
         if owner.draft_category:
@@ -796,6 +917,22 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
     if svc_id is not None:
         _schedule_service_sheet_sync(svc_id)
 
+    try:
+        await _notify_partner_admins(
+            cb.bot,
+            event_key="status_change",
+            text=(
+                "Статус партнёра изменён\n"
+                f"Партнёр #{owner_id}: {partner_name}\n"
+                "Было: ожидает\n"
+                "Стало: активный\n"
+                f"Администратор: @{admin_username}"
+            ),
+            dedupe_suffix=f"approve:{owner_id}",
+        )
+    except Exception:
+        logger.exception("Failed to notify admins about partner approval")
+
     await cb.answer("Партнёр одобрен!", show_alert=True)
 
     if partner_tg_id is not None:
@@ -836,6 +973,9 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
 async def padm_reject_partner(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
     partner_tg_id: int | None = None
+    partner_name = "—"
+    prev_status = "—"
+    admin_username = cb.from_user.username or str(cb.from_user.id)
 
     async with async_session() as session:
         owner = (
@@ -847,6 +987,8 @@ async def padm_reject_partner(cb: types.CallbackQuery) -> None:
             await cb.answer("Партнёр не найден.", show_alert=True)
             return
 
+        partner_name = owner.draft_name or "—"
+        prev_status = owner.status
         owner.status = "отклонён"
         partner_tg_id = owner.owner_user_id
 
@@ -861,6 +1003,22 @@ async def padm_reject_partner(cb: types.CallbackQuery) -> None:
                 svc.partnership_status = "отклонён"
 
         await session.commit()
+
+    try:
+        await _notify_partner_admins(
+            cb.bot,
+            event_key="status_change",
+            text=(
+                "Статус партнёра изменён\n"
+                f"Партнёр #{owner_id}: {partner_name}\n"
+                f"Было: {prev_status}\n"
+                "Стало: отклонён\n"
+                f"Администратор: @{admin_username}"
+            ),
+            dedupe_suffix=f"reject:{owner_id}",
+        )
+    except Exception:
+        logger.exception("Failed to notify admins about partner rejection")
 
     await cb.answer("Партнёр отклонён.", show_alert=True)
 
@@ -891,6 +1049,9 @@ async def padm_reject_partner(cb: types.CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("padm:suspend:"))
 async def padm_suspend_partner(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
+    partner_name = "—"
+    prev_status = "—"
+    admin_username = cb.from_user.username or str(cb.from_user.id)
 
     async with async_session() as session:
         owner = (
@@ -902,6 +1063,8 @@ async def padm_suspend_partner(cb: types.CallbackQuery) -> None:
             await cb.answer("Не найден.", show_alert=True)
             return
 
+        partner_name = owner.draft_name or "—"
+        prev_status = owner.status
         owner.status = "приостановлен"
         if owner.service_id:
             svc = (
@@ -914,6 +1077,22 @@ async def padm_suspend_partner(cb: types.CallbackQuery) -> None:
                 svc.partnership_status = "приостановлен"
 
         await session.commit()
+
+    try:
+        await _notify_partner_admins(
+            cb.bot,
+            event_key="status_change",
+            text=(
+                "Статус партнёра изменён\n"
+                f"Партнёр #{owner_id}: {partner_name}\n"
+                f"Было: {prev_status}\n"
+                "Стало: приостановлен\n"
+                f"Администратор: @{admin_username}"
+            ),
+            dedupe_suffix=f"suspend:{owner_id}",
+        )
+    except Exception:
+        logger.exception("Failed to notify admins about partner suspension")
 
     await cb.answer("Партнёр приостановлен.", show_alert=True)
 
@@ -935,6 +1114,9 @@ async def padm_suspend_partner(cb: types.CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("padm:unsuspend:"))
 async def padm_unsuspend_partner(cb: types.CallbackQuery) -> None:
     owner_id = int(cb.data.split(":")[2])
+    partner_name = "—"
+    prev_status = "—"
+    admin_username = cb.from_user.username or str(cb.from_user.id)
 
     async with async_session() as session:
         owner = (
@@ -946,6 +1128,8 @@ async def padm_unsuspend_partner(cb: types.CallbackQuery) -> None:
             await cb.answer("Не найден.", show_alert=True)
             return
 
+        partner_name = owner.draft_name or "—"
+        prev_status = owner.status
         owner.status = "активный"
         if owner.service_id:
             svc = (
@@ -958,6 +1142,22 @@ async def padm_unsuspend_partner(cb: types.CallbackQuery) -> None:
                 svc.partnership_status = "активный"
 
         await session.commit()
+
+    try:
+        await _notify_partner_admins(
+            cb.bot,
+            event_key="status_change",
+            text=(
+                "Статус партнёра изменён\n"
+                f"Партнёр #{owner_id}: {partner_name}\n"
+                f"Было: {prev_status}\n"
+                "Стало: активный\n"
+                f"Администратор: @{admin_username}"
+            ),
+            dedupe_suffix=f"unsuspend:{owner_id}",
+        )
+    except Exception:
+        logger.exception("Failed to notify admins about partner reactivation")
 
     await cb.answer("Партнёр восстановлен.", show_alert=True)
 

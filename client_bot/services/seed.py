@@ -586,17 +586,85 @@ async def _run_postgres_migrations(conn: Any) -> None:
     )
 
 
+async def _run_postgres_notifications_migrations(conn: Any) -> None:
+    """Add flexible partner/admin notification settings on PostgreSQL."""
+    await conn.execute(
+        text(
+            "ALTER TABLE service_owner_settings "
+            "ADD COLUMN IF NOT EXISTS notif_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE service_owner_settings "
+            "ADD COLUMN IF NOT EXISTS notif_client_comment BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE service_owner_settings "
+            "ADD COLUMN IF NOT EXISTS notif_estimate BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE service_owner_settings "
+            "ADD COLUMN IF NOT EXISTS notif_dispute BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE service_owner_settings "
+            "ADD COLUMN IF NOT EXISTS notif_completed BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+    )
+
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS admin_notification_settings (
+                admin_user_id BIGINT NOT NULL,
+                scope VARCHAR(20) NOT NULL,
+                notif_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                notif_client_dispute BOOLEAN NOT NULL DEFAULT TRUE,
+                notif_client_cancel BOOLEAN NOT NULL DEFAULT TRUE,
+                notif_no_center BOOLEAN NOT NULL DEFAULT TRUE,
+                notif_order_completed BOOLEAN NOT NULL DEFAULT TRUE,
+                notif_partner_application BOOLEAN NOT NULL DEFAULT TRUE,
+                notif_partner_profile_update BOOLEAN NOT NULL DEFAULT TRUE,
+                notif_partner_status_change BOOLEAN NOT NULL DEFAULT TRUE,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (admin_user_id, scope)
+            )
+            """
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_admin_notification_settings_scope "
+            "ON admin_notification_settings(scope)"
+        )
+    )
+
+
 async def init_db() -> None:
     """Create all tables, run migrations, seed initial data."""
     if engine.url.get_backend_name() != "sqlite":
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await _ensure_schema_versions_table(conn)
-            version = "2026_01_postgres_baseline"
-            if not await _is_schema_version_applied(conn, version):
-                await _run_postgres_migrations(conn)
-                await _mark_schema_version(conn, version)
-                logger.info("Migration: applied %s", version)
+            migrations = [
+                ("2026_01_postgres_baseline", _run_postgres_migrations),
+                (
+                    "2026_02_postgres_notifications_flex",
+                    _run_postgres_notifications_migrations,
+                ),
+            ]
+            for version, migration in migrations:
+                if not await _is_schema_version_applied(conn, version):
+                    await migration(conn)
+                    await _mark_schema_version(conn, version)
+                    logger.info("Migration: applied %s", version)
 
         await seed_database()
         return
@@ -1103,6 +1171,13 @@ async def init_db() -> None:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='service_owner_settings'"
         )
         settings_exists = await cursor.fetchone()
+        owner_settings_extra_cols = (
+            ("notif_enabled", "INTEGER NOT NULL DEFAULT 1"),
+            ("notif_client_comment", "INTEGER NOT NULL DEFAULT 1"),
+            ("notif_estimate", "INTEGER NOT NULL DEFAULT 1"),
+            ("notif_dispute", "INTEGER NOT NULL DEFAULT 1"),
+            ("notif_completed", "INTEGER NOT NULL DEFAULT 1"),
+        )
         if settings_exists:
             cursor = await raw_conn.execute(
                 "PRAGMA table_info('service_owner_settings')"
@@ -1114,8 +1189,13 @@ async def init_db() -> None:
                     CREATE TABLE service_owner_settings_new (
                         service_id INTEGER PRIMARY KEY,
                         owner_user_id INTEGER NOT NULL UNIQUE,
+                        notif_enabled INTEGER NOT NULL DEFAULT 1,
                         notif_new_order INTEGER NOT NULL DEFAULT 1,
                         notif_cancel INTEGER NOT NULL DEFAULT 1,
+                        notif_client_comment INTEGER NOT NULL DEFAULT 1,
+                        notif_estimate INTEGER NOT NULL DEFAULT 1,
+                        notif_dispute INTEGER NOT NULL DEFAULT 1,
+                        notif_completed INTEGER NOT NULL DEFAULT 1,
                         FOREIGN KEY(service_id) REFERENCES services(id)
                     )
                     """)
@@ -1123,14 +1203,24 @@ async def init_db() -> None:
                     INSERT OR IGNORE INTO service_owner_settings_new (
                         service_id,
                         owner_user_id,
+                        notif_enabled,
                         notif_new_order,
-                        notif_cancel
+                        notif_cancel,
+                        notif_client_comment,
+                        notif_estimate,
+                        notif_dispute,
+                        notif_completed
                     )
                     SELECT
                         sos.owner_id,
                         COALESCE(sd.owner_user_id, sos.owner_id),
+                        1,
                         COALESCE(sos.notif_new_order, 1),
-                        COALESCE(sos.notif_cancel, 1)
+                        COALESCE(sos.notif_cancel, 1),
+                        1,
+                        1,
+                        1,
+                        1
                     FROM service_owner_settings sos
                     LEFT JOIN service_drafts sd ON sd.service_id = sos.owner_id
                     WHERE sos.owner_id IS NOT NULL
@@ -1157,13 +1247,28 @@ async def init_db() -> None:
                         service_id
                     )
                     """)
+
+                cursor = await raw_conn.execute(
+                    "PRAGMA table_info('service_owner_settings')"
+                )
+                settings_cols = {row[1] for row in await cursor.fetchall()}
+                for col_name, col_type in owner_settings_extra_cols:
+                    if col_name not in settings_cols:
+                        await raw_conn.execute(
+                            f"ALTER TABLE service_owner_settings ADD COLUMN {col_name} {col_type}"
+                        )
         else:
             await raw_conn.execute("""
                 CREATE TABLE service_owner_settings (
                     service_id INTEGER PRIMARY KEY,
                     owner_user_id INTEGER NOT NULL UNIQUE,
+                    notif_enabled INTEGER NOT NULL DEFAULT 1,
                     notif_new_order INTEGER NOT NULL DEFAULT 1,
                     notif_cancel INTEGER NOT NULL DEFAULT 1,
+                    notif_client_comment INTEGER NOT NULL DEFAULT 1,
+                    notif_estimate INTEGER NOT NULL DEFAULT 1,
+                    notif_dispute INTEGER NOT NULL DEFAULT 1,
+                    notif_completed INTEGER NOT NULL DEFAULT 1,
                     FOREIGN KEY(service_id) REFERENCES services(id)
                 )
                 """)
@@ -1173,13 +1278,39 @@ async def init_db() -> None:
             INSERT OR IGNORE INTO service_owner_settings (
                 service_id,
                 owner_user_id,
+                notif_enabled,
                 notif_new_order,
-                notif_cancel
+                notif_cancel,
+                notif_client_comment,
+                notif_estimate,
+                notif_dispute,
+                notif_completed
             )
-            SELECT service_id, owner_user_id, 1, 1
+            SELECT service_id, owner_user_id, 1, 1, 1, 1, 1, 1, 1
             FROM service_drafts
             WHERE service_id IS NOT NULL
             """)
+
+        await raw_conn.execute("""
+            CREATE TABLE IF NOT EXISTS admin_notification_settings (
+                admin_user_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                notif_enabled INTEGER NOT NULL DEFAULT 1,
+                notif_client_dispute INTEGER NOT NULL DEFAULT 1,
+                notif_client_cancel INTEGER NOT NULL DEFAULT 1,
+                notif_no_center INTEGER NOT NULL DEFAULT 1,
+                notif_order_completed INTEGER NOT NULL DEFAULT 1,
+                notif_partner_application INTEGER NOT NULL DEFAULT 1,
+                notif_partner_profile_update INTEGER NOT NULL DEFAULT 1,
+                notif_partner_status_change INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (admin_user_id, scope)
+            )
+            """)
+        await raw_conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_admin_notification_settings_scope "
+            "ON admin_notification_settings(scope)"
+        )
 
         cursor = await raw_conn.execute("PRAGMA table_info('metro_stations')")
         metro_cols = {row[1] for row in await cursor.fetchall()}

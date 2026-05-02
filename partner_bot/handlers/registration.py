@@ -9,12 +9,13 @@ import re
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
 from client_bot.core.resilience import create_guarded_task
+from client_bot.services.admin_notifications import notify_admins
+from client_bot.services.notification_settings import ADMIN_SCOPE_PARTNER
 from client_bot.domain.models import (
     MetroStation,
     Service,
@@ -22,7 +23,6 @@ from client_bot.domain.models import (
     ServiceCategory,
     ServiceDraft,
     ServiceOwnerSettings,
-    User,
 )
 from client_bot.domain.order_rules import parse_hydro_price_range
 from client_bot.domain.schemas import (
@@ -342,42 +342,27 @@ async def _notify_admins_about_active_profile_edit(
     service_id: int,
     field_key: str | None,
 ) -> None:
-    admin_list = [u.strip().lower() for u in ADMIN_USERNAMES if u.strip()]
-    if not admin_list:
-        return
-
     field_label = _EDIT_FIELD_LABELS.get(field_key or "", field_key or "Профиль")
     actor = event.from_user
     actor_username = actor.username or ""
     actor_name = actor.full_name or ""
-
-    async with async_session() as session:
-        admins = (
-            (
-                await session.execute(
-                    select(User).where(func.lower(User.username).in_(admin_list))
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    for admin_user in admins:
-        try:
-            await event.bot.send_message(
-                admin_user.id,
-                "Партнер обновил профиль\n"
+    try:
+        await notify_admins(
+            event.bot,
+            scope=ADMIN_SCOPE_PARTNER,
+            event_key="profile_update",
+            text=(
+                "Партнёр обновил профиль\n"
                 f"Поле: {field_label}\n"
                 f"Service ID: {service_id}\n"
                 f"Partner TG ID: {actor.id}\n"
                 f"Username: @{actor_username if actor_username else '—'}\n"
-                f"Имя: {actor_name or '—'}",
-            )
-        except Exception:
-            logger.warning(
-                "Failed to notify admin %s about active profile edit",
-                admin_user.id,
-            )
+                f"Имя: {actor_name or '—'}"
+            ),
+            dedupe_prefix=f"partner_profile_update:{service_id}:{field_key or 'profile'}",
+        )
+    except Exception:
+        logger.exception("Failed to notify admins about active profile edit")
 
 
 def _next_empty_state(owner: ServiceDraft) -> str | None:
@@ -1652,41 +1637,23 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
 
     # Notify admins about new application
     try:
-        admin_list = [u.strip().lower() for u in ADMIN_USERNAMES if u.strip()]
-        if admin_list:
-            async with async_session() as session:
-                from sqlalchemy import func
-
-                admins = (
-                    (
-                        await session.execute(
-                            select(User).where(
-                                func.lower(User.username).in_(admin_list)
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-            for admin_user in admins:
-                try:
-                    _type_ru = {
-                        "repair": "Ремонт",
-                        "upgrade": "Апгрейд",
-                        "complex": "Комплекс",
-                    }
-                    _stype_label = _type_ru.get(
-                        owner.draft_service_type or "", owner.draft_service_type or ""
-                    )
-                    await callback.bot.send_message(
-                        admin_user.id,
-                        f"📋 Новая заявка на партнёрство!\n"
-                        f"Сервис: {owner.draft_name}\n"
-                        f"Тип: {_stype_label}\n"
-                        f"Откройте /start → Панель администратора для проверки.",
-                    )
-                except Exception:
-                    logger.warning("Failed to notify admin %s", admin_user.id)
+        _stype_label = {
+            "repair": "Ремонт",
+            "upgrade": "Апгрейд",
+            "complex": "Комплекс",
+        }.get(owner.draft_service_type or "", owner.draft_service_type or "")
+        await notify_admins(
+            callback.bot,
+            scope=ADMIN_SCOPE_PARTNER,
+            event_key="partner_application",
+            text=(
+                "📋 Новая заявка на партнёрство!\n"
+                f"Сервис: {owner.draft_name or '—'}\n"
+                f"Тип: {_stype_label or '—'}\n"
+                "Откройте /start → Панель администратора для проверки."
+            ),
+            dedupe_prefix=f"partner_application:{owner.id}",
+        )
     except Exception:
         logger.exception("Failed to notify admins about new application")
 
