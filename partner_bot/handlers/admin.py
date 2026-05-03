@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import logging
 import math
+import zoneinfo
 from dataclasses import dataclass
 from typing import Sequence, Union
 
@@ -62,10 +63,25 @@ SERVICE_PAGE_SIZE = 10
 SERVICE_ORDERS_PAGE_SIZE = 10
 _STATUS_RU = PARTNER_STATUS_RU
 
+try:
+    _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
+except Exception:
+    _MSK = datetime.timezone(datetime.timedelta(hours=3), name="MSK")
+
 
 def _display_order_code(order: Order) -> str:
     code = (order.order_code or "").strip()
     return code or f"{order.id:06d}"
+
+
+def _format_pause_until(value: datetime.datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        dt = value.replace(tzinfo=_MSK)
+    else:
+        dt = value.astimezone(_MSK)
+    return dt.strftime("%d.%m.%Y %H:%M")
 
 
 @dataclass
@@ -157,10 +173,22 @@ def _fmt_partner(owner: ServiceDraft) -> str:
     type_label = TYPE_RU.get(
         owner.draft_service_type or "", owner.draft_service_type or "—"
     )
+    service = owner.service
+    availability = "—"
+    if service is not None:
+        availability = "Да" if service.is_available else "Нет"
+
     lines = [
         f"<b>Партнёр #</b><code>{owner.id}</code>",
         f"<b>Telegram ID:</b> <code>{owner.owner_user_id}</code>",
         f"<b>Статус:</b> {_STATUS_RU.get(owner.status, owner.status)}",
+        f"<b>Доступность:</b> {availability}",
+    ]
+    if service is not None and not service.is_available:
+        pause_text = _format_pause_until(service.pause_until)
+        lines.append(f"<b>Закрыт до:</b> {pause_text or 'вручную'}")
+
+    lines += [
         "",
         f"<b>Название:</b> {e(owner.draft_name or '—')}",
         f"<b>Тип:</b> {type_label}",
@@ -417,6 +445,12 @@ def _format_service_stats_text(
         f"<b>Название:</b> {e(service.name or '—')}",
         f"<b>Тип:</b> {TYPE_RU.get(service.service_type or '', service.service_type or '—')}",
         f"<b>Доступность:</b> {'Да' if service.is_available else 'Нет'}",
+    ]
+    if not service.is_available:
+        pause_text = _format_pause_until(service.pause_until)
+        lines.append(f"<b>Закрыт до:</b> {pause_text or 'вручную'}")
+
+    lines += [
         f"<b>Адрес:</b> {e(service.address or '—')}",
         f"<b>Метро:</b> {e(service.nearest_metro or '—')}",
         f"<b>Телефон:</b> {e(service.phone or '—')}",
@@ -588,7 +622,11 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
     status_filter = parts[4] if len(parts) >= 5 and parts[3] == "status" else None
 
     async with async_session() as session:
-        q = select(ServiceDraft).where(ServiceDraft.registration_complete.is_(True))
+        q = (
+            select(ServiceDraft)
+            .options(selectinload(ServiceDraft.service))
+            .where(ServiceDraft.registration_complete.is_(True))
+        )
         if status_filter:
             q = q.where(ServiceDraft.status == status_filter)
 
@@ -783,7 +821,9 @@ async def padm_partner_detail(cb: types.CallbackQuery) -> None:
     async with async_session() as session:
         owner = (
             await session.execute(
-                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+                select(ServiceDraft)
+                .options(selectinload(ServiceDraft.service))
+                .where(ServiceDraft.id == owner_id)
             )
         ).scalar_one_or_none()
     if not owner:

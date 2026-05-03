@@ -930,9 +930,14 @@ def padm_partners_kb(
         "приостановлен": "Приостановлен",
     }
     for o in owners:
-        label = (
-            f"#{o.id} | {o.draft_name or '?'} | {_STATUS_SHORT.get(o.status, o.status)}"
-        )
+        service = getattr(o, "service", None)
+        if service is None:
+            availability = "—"
+        else:
+            availability = (
+                "Да" if bool(getattr(service, "is_available", False)) else "Нет"
+            )
+        label = f"#{o.id} | {o.draft_name or '?'} | {_STATUS_SHORT.get(o.status, o.status)} | дост.: {availability}"
         rows.append(
             [InlineKeyboardButton(text=label, callback_data=f"padm:partner:{o.id}")]
         )

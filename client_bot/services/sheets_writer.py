@@ -203,6 +203,45 @@ def update_service_row(svc: Service) -> bool:
         return False
 
 
+def sync_all_services_to_sheet() -> bool:
+    """Rewrite the "Сервисы" worksheet with all services from DB."""
+    if not _is_enabled():
+        return False
+    try:
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import Session, selectinload
+
+        from client_bot.core.database import sync_engine
+
+        gc = _get_client()
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        ws = _ensure_worksheet(sh, SHEETS_TAB_SERVICES, SHEETS_COLUMNS)
+
+        with Session(sync_engine) as session:
+            services = (
+                session.execute(
+                    sa_select(Service)
+                    .options(selectinload(Service.category_rel))
+                    .order_by(Service.id)
+                )
+                .scalars()
+                .all()
+            )
+            rows = [_service_to_row(svc) for svc in services]
+
+        ws.clear()
+        ws.update(
+            range_name="A1",
+            values=[SHEETS_COLUMNS] + rows,
+            value_input_option="USER_ENTERED",
+        )
+        logger.info("SHEETS_WRITE | op=sync_services | count=%d", len(rows))
+        return True
+    except Exception:
+        logger.exception("SHEETS_WRITE_ERR | op=sync_services")
+        return False
+
+
 def set_service_available(service_id: int, available: bool) -> bool:
     if not _is_enabled():
         return False

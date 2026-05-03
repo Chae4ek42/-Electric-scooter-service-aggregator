@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import math
+import zoneinfo
 from typing import Union
 
 from aiogram import F, Router, types
@@ -12,6 +14,7 @@ from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from client_bot.core.config import ADMIN_USERNAMES
 from client_bot.core.database import async_session
@@ -81,6 +84,11 @@ class AdminFSM(StatesGroup):
 
 _STATUS_RU = ORDER_STATUS_RU
 
+try:
+    _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
+except Exception:
+    _MSK = datetime.timezone(datetime.timedelta(hours=3), name="MSK")
+
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -88,6 +96,16 @@ _STATUS_RU = ORDER_STATUS_RU
 def _display_order_code(order: Order) -> str:
     code = (order.order_code or "").strip()
     return code or f"{order.id:06d}"
+
+
+def _format_pause_until(value: datetime.datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        dt = value.replace(tzinfo=_MSK)
+    else:
+        dt = value.astimezone(_MSK)
+    return dt.strftime("%d.%m.%Y %H:%M")
 
 
 def _fmt_order(order: Order) -> str:
@@ -192,6 +210,12 @@ def _fmt_service(service: Service) -> str:
         f"<b>Категория:</b> {e(category)}",
         f"<b>Статус партнёрства:</b> {e(service.partnership_status or '—')}",
         f"<b>Доступен:</b> {'Да' if service.is_available else 'Нет'}",
+    ]
+    if not service.is_available:
+        pause_text = _format_pause_until(service.pause_until)
+        lines.append(f"<b>Закрыт до:</b> {pause_text or 'вручную'}")
+
+    lines += [
         "",
         f"<b>Адрес:</b> {e(service.address or '—')}",
         f"<b>Метро:</b> {e(service.nearest_metro or '—')}",
@@ -652,10 +676,22 @@ _PARTNER_STATUS_RU: dict[str, str] = {
 
 def _fmt_partner_short(owner: ServiceDraft) -> str:
     type_map = {"repair": "Ремонт", "upgrade": "Апгрейд", "complex": "Комплекс"}
+    service = owner.service
+    availability = "—"
+    if service is not None:
+        availability = "Да" if service.is_available else "Нет"
+
     lines = [
         f"<b>Партнёр #</b><code>{owner.id}</code>",
         f"<b>TG ID:</b> <code>{owner.owner_user_id}</code>",
         f"<b>Статус:</b> {_PARTNER_STATUS_RU.get(owner.status, owner.status)}",
+        f"<b>Доступность:</b> {availability}",
+    ]
+    if service is not None and not service.is_available:
+        pause_text = _format_pause_until(service.pause_until)
+        lines.append(f"<b>Закрыт до:</b> {pause_text or 'вручную'}")
+
+    lines += [
         f"<b>Название:</b> {e(owner.draft_name or '—')}",
         f"<b>Тип:</b> {type_map.get(owner.draft_service_type or '', owner.draft_service_type or '—')}",
         f"<b>Адрес:</b> {e(owner.draft_address or '—')}",
@@ -675,6 +711,7 @@ async def adm_partners_list(cb: types.CallbackQuery) -> None:
             (
                 await session.execute(
                     select(ServiceDraft)
+                    .options(selectinload(ServiceDraft.service))
                     .where(ServiceDraft.registration_complete.is_(True))
                     .order_by(ServiceDraft.registered_at.desc())
                 )
@@ -706,7 +743,15 @@ async def adm_partners_list(cb: types.CallbackQuery) -> None:
     }
     rows: list[list[InlineKeyboardButton]] = []
     for o in owners:
-        label = f"#{o.id} | {o.draft_name or '?'} | {_SHORT.get(o.status, o.status)}"
+        service = o.service
+        if service is None:
+            availability = "—"
+        else:
+            availability = "Да" if service.is_available else "Нет"
+        label = (
+            f"#{o.id} | {o.draft_name or '?'} | {_SHORT.get(o.status, o.status)} | "
+            f"дост.: {availability}"
+        )
         rows.append(
             [
                 InlineKeyboardButton(
@@ -747,7 +792,9 @@ async def adm_partner_detail(cb: types.CallbackQuery) -> None:
     async with async_session() as session:
         owner = (
             await session.execute(
-                select(ServiceDraft).where(ServiceDraft.id == owner_id)
+                select(ServiceDraft)
+                .options(selectinload(ServiceDraft.service))
+                .where(ServiceDraft.id == owner_id)
             )
         ).scalar_one_or_none()
     if not owner:

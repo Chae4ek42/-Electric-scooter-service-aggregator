@@ -672,6 +672,7 @@ async def run_full_sync(
         sync_all_clients_to_sheet,
         sync_all_orders_to_sheet,
         sync_all_service_metrics_to_sheet,
+        sync_all_services_to_sheet,
     )
 
     if not _is_available():
@@ -685,6 +686,14 @@ async def run_full_sync(
         return True
 
     success = True
+
+    try:
+        services_ok = await asyncio.to_thread(sync_all_services_to_sheet)
+        if not services_ok:
+            success = False
+    except Exception as exc:
+        logger.warning("SYNC_SERVICES_ERR | error=%s", exc)
+        success = False
 
     try:
         orders_ok = await asyncio.to_thread(sync_all_orders_to_sheet)
