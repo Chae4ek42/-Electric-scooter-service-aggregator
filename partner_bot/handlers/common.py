@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import F, Router, types
 from aiogram.filters import Command, CommandStart
@@ -54,6 +55,19 @@ _DAY_ORDER = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 logger = logging.getLogger(__name__)
 router = Router(name="partner_common")
 
+_DRAFT_EMPTY_MARKERS = {
+    "-",
+    "—",
+    "?",
+    "(не заполнено)",
+    "не заполнено",
+    "none",
+    "null",
+    "n/a",
+    "na",
+}
+_TEXT_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]")
+
 
 def _sort_days(raw: str | None) -> str:
     """Sort comma-separated working days Mon→Sun."""
@@ -74,9 +88,70 @@ async def _get_owner(tg_id: int) -> ServiceDraft | None:
         ).scalar_one_or_none()
 
 
+def _draft_text_filled(value: str | None) -> bool:
+    if value is None:
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    if text.lower() in _DRAFT_EMPTY_MARKERS:
+        return False
+    return bool(_TEXT_TOKEN_RE.search(text))
+
+
 def _draft_complete(owner: ServiceDraft) -> bool:
-    """Draft is considered complete only by explicit completion flag."""
-    return bool(owner.registration_complete)
+    """Returns True when all main required fields are filled."""
+    city = (owner.draft_city or "").strip()
+    required = [
+        city if _draft_text_filled(city) else "",
+        owner.draft_name if _draft_text_filled(owner.draft_name) else "",
+        (
+            owner.draft_service_type
+            if _draft_text_filled(owner.draft_service_type)
+            else ""
+        ),
+        owner.draft_address if _draft_text_filled(owner.draft_address) else "",
+        owner.draft_phone if _draft_text_filled(owner.draft_phone) else "",
+        owner.draft_open_time if _draft_text_filled(owner.draft_open_time) else "",
+        owner.draft_close_time if _draft_text_filled(owner.draft_close_time) else "",
+        (
+            owner.draft_working_days
+            if _draft_text_filled(owner.draft_working_days)
+            else ""
+        ),
+    ]
+    if is_moscow_city(city):
+        required.append(
+            owner.draft_metro if _draft_text_filled(owner.draft_metro) else ""
+        )
+    if owner.draft_service_type == "upgrade":
+        required.append(
+            owner.draft_upgrade_categories
+            if _draft_text_filled(owner.draft_upgrade_categories)
+            else ""
+        )
+    if owner.draft_service_type == "repair":
+        required.append(
+            owner.draft_category if _draft_text_filled(owner.draft_category) else ""
+        )
+    if owner.draft_service_type == "complex":
+        required.append(
+            owner.draft_category if _draft_text_filled(owner.draft_category) else ""
+        )
+        required.append(
+            owner.draft_upgrade_categories
+            if _draft_text_filled(owner.draft_upgrade_categories)
+            else ""
+        )
+    if owner.draft_hydroisolation:
+        required.append(
+            owner.draft_hydro_price
+            if _draft_text_filled(owner.draft_hydro_price)
+            else ""
+        )
+    if owner.draft_diagnostics_price is None:
+        required.append("")
+    return all(required)
 
 
 def _format_draft(owner: ServiceDraft) -> str:

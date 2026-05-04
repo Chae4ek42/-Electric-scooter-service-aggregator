@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable
 
 from client_bot.core.config import (
@@ -16,8 +17,22 @@ from client_bot.core.config import (
     SHEETS_TAB_SERVICES,
 )
 from client_bot.domain.models import Service
+from client_bot.services.city_search import is_moscow_city
 
 logger = logging.getLogger(__name__)
+
+_EMPTY_MARKERS = {
+    "-",
+    "—",
+    "?",
+    "(не заполнено)",
+    "не заполнено",
+    "none",
+    "null",
+    "n/a",
+    "na",
+}
+_TEXT_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]")
 
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -126,6 +141,52 @@ def _service_to_row(svc: Service) -> list[str]:
     return row
 
 
+def _text_filled(value: str | None) -> bool:
+    if value is None:
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    if text.lower() in _EMPTY_MARKERS:
+        return False
+    return bool(_TEXT_TOKEN_RE.search(text))
+
+
+def _service_ready_for_export(svc: Service) -> bool:
+    city = (svc.city or "").strip()
+
+    required_text = [
+        svc.name,
+        svc.service_type,
+        city,
+        svc.address,
+        svc.phone,
+        svc.open_time,
+        svc.close_time,
+        svc.working_days,
+    ]
+    if not all(_text_filled(v) for v in required_text):
+        return False
+
+    if svc.service_type in ("repair", "complex") and svc.category_id is None:
+        return False
+    if svc.service_type in ("upgrade", "complex") and not _text_filled(
+        svc.upgrade_categories
+    ):
+        return False
+
+    if is_moscow_city(city) and not _text_filled(svc.nearest_metro):
+        return False
+
+    if svc.has_hydroisolation and not _text_filled(svc.hydroisolation_price):
+        return False
+
+    if svc.diagnostics_price is None:
+        return False
+
+    return True
+
+
 def _ensure_worksheet(sh, name: str, headers: list[str]):
     try:
         ws = sh.worksheet(name)
@@ -171,9 +232,9 @@ def add_service_row(svc: Service) -> bool:
 def update_service_row(svc: Service) -> bool:
     if not _is_enabled():
         return False
-    if not svc.registration_complete:
+    if not svc.registration_complete or not _service_ready_for_export(svc):
         logger.info(
-            "SHEETS_WRITE_SKIP | op=update | service_id=%s | reason=registration_incomplete",
+            "SHEETS_WRITE_SKIP | op=update | service_id=%s | reason=incomplete_service",
             svc.id,
         )
         return False
@@ -236,7 +297,7 @@ def sync_all_services_to_sheet() -> bool:
             rows = [
                 _service_to_row(svc)
                 for svc in services
-                if svc.registration_complete
+                if svc.registration_complete and _service_ready_for_export(svc)
             ]
 
         ws.clear()
@@ -550,6 +611,7 @@ def sync_all_service_metrics_to_sheet() -> bool:
                 .scalars()
                 .all()
             )
+            services = [svc for svc in services if _service_ready_for_export(svc)]
 
             rows: list[list[str | int | float]] = []
             for svc in services:

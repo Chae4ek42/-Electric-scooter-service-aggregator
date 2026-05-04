@@ -102,18 +102,32 @@ def test_draft_edit_keyboard_has_type_and_category_controls() -> None:
     assert "Категории апгрейда" in upgrade_labels
 
 
-def test_draft_complete_follows_registration_flag() -> None:
+def test_draft_complete_rejects_placeholder_values() -> None:
     from partner_bot.handlers.common import _draft_complete
 
-    owner = types.SimpleNamespace(registration_complete=True)
-    assert _draft_complete(owner) is True
+    owner = types.SimpleNamespace(
+        draft_city="Москва",
+        draft_name="Тестовый сервис",
+        draft_service_type="complex",
+        draft_address="—",
+        draft_phone="+79990000000",
+        draft_open_time="10:00",
+        draft_close_time="20:00",
+        draft_working_days="Пн,Вт,Ср",
+        draft_metro="Курская",
+        draft_upgrade_categories="Окраска",
+        draft_category="Механика",
+        draft_hydroisolation=False,
+        draft_hydro_price=None,
+        draft_diagnostics_price=500.0,
+        draft_diag_included=False,
+    )
 
-    owner.registration_complete = False
     assert _draft_complete(owner) is False
 
 
 @pytest.mark.asyncio
-async def test_ensure_owner_keeps_existing_complete_flag() -> None:
+async def test_ensure_owner_resets_stale_complete_flag_for_incomplete_pending() -> None:
     import partner_bot.handlers.registration as reg
 
     owner_user_id = uniq_user_id()
@@ -132,7 +146,7 @@ async def test_ensure_owner_keeps_existing_complete_flag() -> None:
 
     owner = await reg._ensure_owner(owner_user_id)
 
-    assert owner.registration_complete is True
+    assert owner.registration_complete is False
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,7 @@ from client_bot.domain.models import (
 )
 from client_bot.services.sheets_writer import update_service_row
 from client_bot.texts import Btn, ORDER_STATUS_RU, PARTNER_STATUS_RU, Partner, TYPE_RU
+from partner_bot.handlers.common import _draft_complete
 from partner_bot.ui.keyboards import (
     padm_main_kb,
     padm_notif_settings_kb,
@@ -237,21 +238,22 @@ def _fmt_partner(owner: ServiceDraft) -> str:
 
 async def _panel_stats() -> tuple[int, list[tuple[str, int]]]:
     async with async_session() as session:
-        total = (
-            await session.execute(
-                select(func.count())
-                .select_from(ServiceDraft)
-                .where(ServiceDraft.registration_complete.is_(True))
+        owners = (
+            (
+                await session.execute(
+                    select(ServiceDraft).where(
+                        ServiceDraft.registration_complete.is_(True)
+                    )
+                )
             )
-        ).scalar_one()
-        stats_rows = (
-            await session.execute(
-                select(ServiceDraft.status, func.count(ServiceDraft.id))
-                .where(ServiceDraft.registration_complete.is_(True))
-                .group_by(ServiceDraft.status)
-            )
-        ).all()
-    return total, [(status, int(cnt)) for status, cnt in stats_rows]
+            .scalars()
+            .all()
+        )
+    valid_owners = [owner for owner in owners if _draft_complete(owner)]
+    by_status: dict[str, int] = {}
+    for owner in valid_owners:
+        by_status[owner.status] = by_status.get(owner.status, 0) + 1
+    return len(valid_owners), [(status, cnt) for status, cnt in by_status.items()]
 
 
 async def _service_stats_page(
@@ -635,6 +637,7 @@ async def padm_partners_list(cb: types.CallbackQuery) -> None:
             .scalars()
             .all()
         )
+    all_owners = [owner for owner in all_owners if _draft_complete(owner)]
 
     total = len(all_owners)
     owners = all_owners[page * PARTNER_PAGE_SIZE : (page + 1) * PARTNER_PAGE_SIZE]
