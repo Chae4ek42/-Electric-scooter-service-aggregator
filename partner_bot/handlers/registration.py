@@ -49,7 +49,12 @@ from client_bot.services.geocoder import geocode_with_fallback
 from client_bot.services.metro_search import top_metro_matches
 from client_bot.services.sheets_writer import add_service_row, update_service_row
 from client_bot.texts import TYPE_RU, Btn, PARTNER_MENU_TEXTS, Partner
-from partner_bot.handlers.common import _draft_complete, _format_draft, _get_owner
+from partner_bot.handlers.common import (
+    _draft_complete,
+    _draft_text_filled,
+    _format_draft,
+    _get_owner,
+)
 from partner_bot.ui.keyboards import (
     BACK_BTN,
     draft_edit_kb,
@@ -151,9 +156,19 @@ async def _ensure_owner(tg_id: int) -> ServiceDraft:
             draft = ServiceDraft(
                 owner_user_id=tg_id,
                 status="ожидает",
+                registration_complete=False,
                 registered_at=datetime.datetime.now(tz=datetime.timezone.utc),
             )
             session.add(draft)
+            await session.commit()
+            await session.refresh(draft)
+        elif (
+            draft.status != "активный"
+            and draft.registration_complete
+            and not _draft_complete(draft)
+        ):
+            # Safety net for stale DB flags: incomplete pending draft must not be marked complete.
+            draft.registration_complete = False
             await session.commit()
             await session.refresh(draft)
         return draft
@@ -169,6 +184,8 @@ async def _update_draft(tg_id: int, **kwargs) -> None:
         if draft:
             for k, v in kwargs.items():
                 setattr(draft, k, v)
+            if "registration_complete" not in kwargs and draft.status != "активный":
+                draft.registration_complete = False
             await session.commit()
 
 
@@ -367,24 +384,28 @@ async def _notify_admins_about_active_profile_edit(
 
 def _next_empty_state(owner: ServiceDraft) -> str | None:
     """Find next state that needs filling."""
-    if not owner.draft_city:
+    if not _draft_text_filled(owner.draft_city):
         return RegistrationFSM.reg_city_search.state
-    if not owner.draft_name:
+    if not _draft_text_filled(owner.draft_name):
         return RegistrationFSM.reg_name.state
-    if not owner.draft_service_type:
+    if not _draft_text_filled(owner.draft_service_type):
         return RegistrationFSM.reg_service_type.state
-    if owner.draft_service_type == "repair" and not owner.draft_category:
+    if owner.draft_service_type == "repair" and not _draft_text_filled(
+        owner.draft_category
+    ):
         return RegistrationFSM.reg_category.state
-    if owner.draft_service_type == "upgrade" and not owner.draft_upgrade_categories:
+    if owner.draft_service_type == "upgrade" and not _draft_text_filled(
+        owner.draft_upgrade_categories
+    ):
         return RegistrationFSM.reg_upgrade_categories.state
     if owner.draft_service_type == "complex":
-        if not owner.draft_category:
+        if not _draft_text_filled(owner.draft_category):
             return RegistrationFSM.reg_category.state
-        if not owner.draft_upgrade_categories:
+        if not _draft_text_filled(owner.draft_upgrade_categories):
             return RegistrationFSM.reg_upgrade_categories.state
-    if not owner.draft_address:
+    if not _draft_text_filled(owner.draft_address):
         return RegistrationFSM.reg_address.state
-    if is_moscow_city(owner.draft_city) and not owner.draft_metro:
+    if is_moscow_city(owner.draft_city) and not _draft_text_filled(owner.draft_metro):
         return RegistrationFSM.reg_metro_search.state
     more = [
         ("draft_phone", RegistrationFSM.reg_phone.state),
@@ -393,9 +414,9 @@ def _next_empty_state(owner: ServiceDraft) -> str | None:
         ("draft_close_time", RegistrationFSM.reg_hours.state),
     ]
     for field, state in more:
-        if not getattr(owner, field, None):
+        if not _draft_text_filled(getattr(owner, field, None)):
             return state
-    if owner.draft_hydroisolation and not owner.draft_hydro_price:
+    if owner.draft_hydroisolation and not _draft_text_filled(owner.draft_hydro_price):
         return RegistrationFSM.reg_hydro_price.state
     if owner.draft_diagnostics_price is None:
         return RegistrationFSM.reg_diagnostics.state
@@ -1517,6 +1538,11 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
         if draft is None:
             await _safe_edit_or_answer(callback, "Анкета не найдена.")
             return
+        if not _draft_complete(draft):
+            draft.registration_complete = False
+            await session.commit()
+            await _safe_edit_or_answer(callback, "Анкета не заполнена полностью.")
+            return
 
         cat_id = None
         if draft.draft_category:
@@ -1660,6 +1686,7 @@ async def reg_submit(callback: types.CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(RegistrationFSM.reg_confirm, F.data == "reg:restart")
 async def reg_restart(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await _update_draft(callback.from_user.id, registration_complete=False)
     await state.set_state(RegistrationFSM.reg_city_search)
     await _safe_edit_or_answer(
         callback, "Начнем заново. Введите город сервисного центра:"
