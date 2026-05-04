@@ -101,6 +101,11 @@ def _draft_text_filled(value: str | None) -> bool:
 
 def _draft_complete(owner: ServiceDraft) -> bool:
     """Returns True when all main required fields are filled."""
+    if (getattr(owner, "status", None) or "").strip().lower() == "активный":
+        # Active services are already moderated and should not disappear
+        # from admin flows because of legacy optional gaps.
+        return True
+
     city = (owner.draft_city or "").strip()
     required = [
         city if _draft_text_filled(city) else "",

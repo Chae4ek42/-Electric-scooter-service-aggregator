@@ -134,6 +134,10 @@ def _draft_text_filled(value: str | None) -> bool:
 
 
 def _draft_complete_for_admin(owner: ServiceDraft) -> bool:
+    if (getattr(owner, "status", None) or "").strip().lower() == "активный":
+        # Active services are already moderated and must stay visible in admin UI.
+        return True
+
     city = (owner.draft_city or "").strip()
     required = [
         city if _draft_text_filled(city) else "",

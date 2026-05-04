@@ -126,6 +126,31 @@ def test_draft_complete_rejects_placeholder_values() -> None:
     assert _draft_complete(owner) is False
 
 
+def test_draft_complete_keeps_active_visible_even_with_legacy_gaps() -> None:
+    from partner_bot.handlers.common import _draft_complete
+
+    owner = types.SimpleNamespace(
+        status="активный",
+        draft_city="Москва",
+        draft_name="Legacy Active",
+        draft_service_type="complex",
+        draft_address="Адрес",
+        draft_phone="+79990000000",
+        draft_open_time="10:00",
+        draft_close_time="20:00",
+        draft_working_days="Пн,Вт,Ср",
+        draft_metro="",
+        draft_upgrade_categories="",
+        draft_category="Механика",
+        draft_hydroisolation=True,
+        draft_hydro_price="",
+        draft_diagnostics_price=None,
+        draft_diag_included=False,
+    )
+
+    assert _draft_complete(owner) is True
+
+
 @pytest.mark.asyncio
 async def test_ensure_owner_resets_stale_complete_flag_for_incomplete_pending() -> None:
     import partner_bot.handlers.registration as reg
@@ -174,11 +199,15 @@ async def test_admin_approve_rejects_incomplete_draft_and_resets_flag() -> None:
 
     assert callback.answer_calls
     assert callback.answer_calls[-1][1] is True
-    assert "анкета заполнена не полностью" in (callback.answer_calls[-1][0] or "").lower()
+    assert (
+        "анкета заполнена не полностью" in (callback.answer_calls[-1][0] or "").lower()
+    )
 
     async with async_session() as session:
         reloaded = (
-            await session.execute(select(ServiceDraft).where(ServiceDraft.id == draft_id))
+            await session.execute(
+                select(ServiceDraft).where(ServiceDraft.id == draft_id)
+            )
         ).scalar_one()
         assert reloaded.registration_complete is False
         assert reloaded.status == "ожидает"

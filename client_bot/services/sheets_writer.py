@@ -153,6 +153,11 @@ def _text_filled(value: str | None) -> bool:
 
 
 def _service_ready_for_export(svc: Service) -> bool:
+    if (svc.partnership_status or "").strip().lower() == "активный":
+        # Active services were already moderated; keep them in sheets
+        # even if legacy optional fields are incomplete.
+        return True
+
     city = (svc.city or "").strip()
 
     required_text = [
