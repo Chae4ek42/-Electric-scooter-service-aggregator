@@ -861,6 +861,15 @@ async def padm_approve_partner(cb: types.CallbackQuery) -> None:
         if owner.status != "ожидает":
             await cb.answer("Нельзя одобрить — статус не ожидает.", show_alert=True)
             return
+        # Guard against stale admin messages: incomplete draft must never be approved.
+        if not _draft_complete(owner):
+            owner.registration_complete = False
+            await session.commit()
+            await cb.answer(
+                "Нельзя одобрить: анкета заполнена не полностью.",
+                show_alert=True,
+            )
+            return
         partner_name = owner.draft_name or "—"
 
         cat_id = None

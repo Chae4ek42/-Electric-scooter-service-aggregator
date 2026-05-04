@@ -150,6 +150,41 @@ async def test_ensure_owner_resets_stale_complete_flag_for_incomplete_pending() 
 
 
 @pytest.mark.asyncio
+async def test_admin_approve_rejects_incomplete_draft_and_resets_flag() -> None:
+    import partner_bot.handlers.admin as padm
+
+    owner_user_id = uniq_user_id()
+
+    async with async_session() as session:
+        draft = ServiceDraft(
+            owner_user_id=owner_user_id,
+            status="ожидает",
+            registration_complete=True,
+            registered_at=datetime.datetime.now(tz=datetime.timezone.utc),
+            draft_name="Тест",
+            draft_service_type="repair",
+        )
+        session.add(draft)
+        await session.commit()
+        await session.refresh(draft)
+        draft_id = draft.id
+
+    callback = FakeCallback(f"padm:approve:{draft_id}", user_id=uniq_user_id())
+    await padm.padm_approve_partner(callback)
+
+    assert callback.answer_calls
+    assert callback.answer_calls[-1][1] is True
+    assert "анкета заполнена не полностью" in (callback.answer_calls[-1][0] or "").lower()
+
+    async with async_session() as session:
+        reloaded = (
+            await session.execute(select(ServiceDraft).where(ServiceDraft.id == draft_id))
+        ).scalar_one()
+        assert reloaded.registration_complete is False
+        assert reloaded.status == "ожидает"
+
+
+@pytest.mark.asyncio
 async def test_service_type_edit_to_upgrade_requests_upgrade_categories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
