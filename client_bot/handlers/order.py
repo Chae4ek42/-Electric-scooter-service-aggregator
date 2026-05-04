@@ -1909,9 +1909,14 @@ def _notify_client_admins(
 
     async def _send() -> None:
         from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.enums import ParseMode
         from client_bot.core.config import CLIENT_BOT_TOKEN
 
-        bot = Bot(token=CLIENT_BOT_TOKEN)
+        bot = Bot(
+            token=CLIENT_BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
         try:
             await notify_admins(
                 bot,
